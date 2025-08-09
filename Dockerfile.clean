@@ -1,0 +1,50 @@
+FROM ubuntu:22.04
+
+# Prevent interactive prompts during package installation
+ENV DEBIAN_FRONTEND=noninteractive
+ENV DISPLAY=:98
+
+# Install all necessary packages
+RUN apt-get update && apt-get install -y \
+    xvfb \
+    x11vnc \
+    xfce4 \
+    xfce4-terminal \
+    python3 \
+    python3-pip \
+    xdotool \
+    scrot \
+    wmctrl \
+    wget \
+    xz-utils \
+    xsel \
+    xclip \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Python packages
+RUN pip3 install fastapi uvicorn pydantic
+
+# Download and install Firefox
+RUN cd /tmp && \
+    wget -q -O firefox.tar.xz "https://download.mozilla.org/?product=firefox-latest-ssl&os=linux64&lang=en-US" && \
+    tar -xJf firefox.tar.xz && \
+    mv firefox /opt/firefox && \
+    ln -sf /opt/firefox/firefox /usr/local/bin/firefox && \
+    rm firefox.tar.xz
+
+# Create app directory
+RUN mkdir -p /app
+
+# Copy server and startup script
+COPY cua_server.py /app/
+COPY start.sh /
+
+# Make startup script executable
+RUN chmod +x /start.sh
+
+# Expose ports
+EXPOSE 5900 8001
+
+# Set the startup command
+CMD ["/start.sh"]
