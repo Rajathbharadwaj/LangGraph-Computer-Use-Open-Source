@@ -187,17 +187,22 @@ async def move_cursor(x: int, y: int) -> str:
 
 
 @tool
-async def scroll_at_location(x: int, y: int, scroll_x: int = 0, scroll_y: int = -3) -> str:
-    """Scroll at the specified location.
+async def scroll_at_location(x: int, y: int, scroll_x: int = 0, scroll_y: int = 3) -> str:
+    """SCROLL the page content using mouse wheel at the specified location.
+    
+    This simulates mouse wheel scrolling (NOT moving the mouse cursor).
+    Use this to scroll through web pages, documents, or feed content.
     
     Args:
-        x: X coordinate where to scroll
-        y: Y coordinate where to scroll
-        scroll_x: Horizontal scroll amount (positive = right, negative = left)
-        scroll_y: Vertical scroll amount (positive = down, negative = up)
+        x: X coordinate where to perform the scroll wheel action
+        y: Y coordinate where to perform the scroll wheel action  
+        scroll_x: Horizontal scroll wheel amount (positive = right, negative = left)
+        scroll_y: Vertical scroll wheel amount (positive = scroll DOWN the page, negative = scroll UP the page)
         
     Returns:
         Success message or error description
+        
+    Example: To scroll down in a Twitter feed, use scroll_at_location(400, 400, 0, 3)
     """
     client = await get_cua_client()
     result = await client._request("POST", "/scroll", {
@@ -412,6 +417,23 @@ def create_sync_tools():
         except Exception as e:
             return f"Key press failed: {str(e)}"
     
+    def sync_scroll(x: int, y: int, scroll_x: int = 0, scroll_y: int = 3) -> str:
+        """SCROLL the page content using mouse wheel (NOT move cursor).
+        
+        Simulates mouse wheel scrolling to scroll through web pages, feeds, documents.
+        Args: x,y = where to scroll, scroll_y = positive scrolls DOWN, negative scrolls UP
+        """
+        try:
+            result = sync_client._request("POST", "/scroll", {
+                "x": x, "y": y, "scroll_x": scroll_x, "scroll_y": scroll_y
+            })
+            if result.get("success"):
+                return f"Successfully scrolled at ({x}, {y}) by ({scroll_x}, {scroll_y})"
+            else:
+                return f"Scroll failed: {result.get('error', 'Unknown error')}"
+        except Exception as e:
+            return f"Scroll failed: {str(e)}"
+    
     def sync_navigate(url: str) -> str:
         """Sync version of navigate to URL"""
         try:
@@ -465,13 +487,19 @@ def create_sync_tools():
         description="Press key combinations like ['ctrl', 'c'] or ['Return']"
     )
     
+    scroll_tool = StructuredTool.from_function(
+        func=sync_scroll,
+        name="scroll_at_location",
+        description="SCROLL page content using mouse wheel (NOT move cursor). Use to scroll through web pages, Twitter feeds, documents. Positive scroll_y scrolls DOWN, negative scrolls UP. Example: scroll_at_location(400, 400, 0, 3) scrolls down in center of page"
+    )
+    
     navigate_tool = StructuredTool.from_function(
         func=sync_navigate,
         name="navigate_to_url",
         description="Navigate to a URL in the browser"
     )
     
-    return [screenshot_tool, screenshot_desc_tool, click_tool, type_tool, keys_tool, navigate_tool]
+    return [screenshot_tool, screenshot_desc_tool, click_tool, type_tool, keys_tool, scroll_tool, navigate_tool]
 
 
 # Convenience function to get all tools

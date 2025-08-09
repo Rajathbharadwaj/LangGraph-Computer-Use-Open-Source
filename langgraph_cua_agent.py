@@ -43,22 +43,30 @@ Available tools:
 - type_text: Type text at current cursor position
 - press_keys: Press key combinations (e.g., ['ctrl', 'c'], ['Return'])
 - navigate_to_url: Navigate to a URL in browser
+- scroll_at_location: SCROLL page content using mouse wheel (NOT move cursor) - use to scroll through feeds, pages, documents
 
 Best practices:
 1. Always take a screenshot first to see the current state - the tool will analyze what's on screen
 2. Use the vision analysis to understand what elements are available
 3. Be precise with click coordinates based on the vision analysis
-4. Wait between actions when needed
-5. Use keyboard shortcuts when appropriate (Ctrl+L for address bar, etc.)
+4. Complete tasks efficiently - don't repeat the same action multiple times
+5. If something doesn't work after 2-3 attempts, try a different approach
+6. When a task is complete, provide a final summary and stop
+
+IMPORTANT: Be decisive and efficient. Avoid loops by:
+- Not taking excessive screenshots of the same content
+- Not clicking the same element repeatedly
+- Stopping when the task is clearly complete
+- Providing a final response when the objective is met
 
 When interacting with the computer:
 - The screenshot tool uses Anthropic Claude to analyze what's on screen
 - You'll get detailed descriptions of UI elements and their locations
 - Coordinates are in pixels from top-left (0,0)
-- Always verify actions worked by taking another screenshot
+- Always verify actions worked, but don't over-verify
 """
     
-    # Create the agent with memory
+    # Create the agent with better configuration
     memory = MemorySaver()
     agent = create_react_agent(
         llm,
@@ -83,7 +91,8 @@ async def run_cua_agent_task(task: str, config: Optional[Dict[str, Any]] = None)
         print(f"🤖 Starting task: {task}")
         print("=" * 60)
         
-        # Run the agent
+        # Set reasonable recursion limit to prevent infinite loops
+        config["recursion_limit"] = 15  # Lower limit forces more efficient execution
         response = agent.invoke(
             {"messages": [HumanMessage(content=task)]},
             config
