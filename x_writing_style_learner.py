@@ -336,7 +336,15 @@ class XWritingStyleManager:
             profile = self.analyze_writing_style()
         
         # Build few-shot prompt
-        prompt = f"""You are writing a {content_type} in the style of this user.
+        prompt = f"""You are a writing style mimic. Your ONLY job is to write EXACTLY like this specific user.
+
+CRITICAL RULES:
+1. You MUST sound INDISTINGUISHABLE from this user
+2. Copy their EXACT tone, vocabulary, and sentence patterns
+3. Match their writing length PRECISELY (target: {profile.avg_comment_length if content_type == 'comment' else profile.avg_post_length} chars)
+4. Use their EXACT style - don't be generic or formal
+5. If they're casual, be casual. If they're technical, be technical.
+6. NEVER use hashtags - X's algorithm penalizes them
 
 WRITING STYLE PROFILE:
 - Tone: {profile.tone}
@@ -346,9 +354,7 @@ WRITING STYLE PROFILE:
 - Sentence structure: {profile.sentence_structure}
 - Technical terms: {', '.join(profile.technical_terms[:5])}
 
-IMPORTANT: DO NOT use hashtags. X's algorithm now penalizes posts with hashtags.
-
-EXAMPLES OF USER'S WRITING:
+EXAMPLES OF USER'S WRITING (STUDY THESE CAREFULLY):
 """
         
         for i, example in enumerate(examples, 1):
@@ -362,19 +368,45 @@ EXAMPLES OF USER'S WRITING:
             prompt += "\n"
         
         prompt += f"""
-NOW, write a {content_type} for this context:
+STEP 1: ANALYZE THE USER'S STYLE
+Before writing, take a moment to deeply understand this user's unique voice:
+
+1. What specific words/phrases do they use repeatedly?
+2. How do they structure their sentences? (short/long, simple/complex)
+3. What's their emotional tone? (excited, casual, sarcastic, technical, friendly)
+4. Do they use slang, emojis, or technical terms?
+5. How formal or casual are they?
+6. What makes their writing UNIQUE and recognizable?
+
+Take your time to internalize these patterns. You need to BECOME this user.
+
+---
+
+STEP 2: NOW WRITE THE {content_type.upper()}
 Context: {context}
 
-Write in the EXACT same style as the examples above. Match:
-- Tone and personality
-- Sentence length and structure
-- Use of emojis (if user uses them)
-- Technical terminology (if user uses it)
-- Question style (if user asks questions)
+CRITICAL INSTRUCTIONS:
+You MUST write this {content_type} so that it's IMPOSSIBLE to tell it wasn't written by the user themselves.
 
-CRITICAL: Do NOT include hashtags. X's algorithm penalizes them.
+REPLICATE EXACTLY:
+1. Their vocabulary and word choice (use THEIR words, not generic ones)
+2. Their sentence rhythm and flow (match their pacing)
+3. Their level of formality/casualness (don't be more polished than them)
+4. Their punctuation style and emoji usage
+5. Their length (around {profile.avg_comment_length if content_type == 'comment' else profile.avg_post_length} chars)
 
-Your {content_type}:"""
+If they're sarcastic, be sarcastic. If they're enthusiastic, be enthusiastic.
+If they use "dude" or "man", use those words. If they use technical jargon, use that jargon.
+If they write in lowercase, write in lowercase. If they use "..." a lot, use "..." a lot.
+
+DO NOT:
+- Sound generic or AI-like
+- Use hashtags (X penalizes them)
+- Be more formal or polished than the user
+- Add extra context the user wouldn't add
+- Use words or phrases the user never uses
+
+Your {content_type} (write ONLY the content, nothing else):"""
         
         return prompt
     
@@ -417,7 +449,7 @@ Your {content_type}:"""
         few_shot_prompt = self.generate_few_shot_prompt(
             context=context,
             content_type=content_type,
-            num_examples=3
+            num_examples=7  # More examples for better style matching
         )
         
         # Append feedback context if available

@@ -113,7 +113,9 @@ async def initialize_stealth_browser():
     """Initialize Playwright stealth browser"""
     global playwright_instance, browser, context, page
     
-    if browser is not None:
+    # Check if already initialized (context is the key for persistent context)
+    if context is not None and page is not None:
+        print("⚠️ Browser already initialized, skipping...")
         return True
     
     try:
@@ -244,7 +246,26 @@ async def click(request: ClickRequest):
             # Ensure we're on the main tab before clicking
             await ensure_main_tab()
             
-            await page.mouse.click(request.x, request.y)
+            # Use JavaScript click to avoid navigation issues
+            # This clicks the topmost element at the coordinates
+            await page.evaluate(f"""
+                (x, y) => {{
+                    const element = document.elementFromPoint(x, y);
+                    if (element) {{
+                        // Prevent default navigation
+                        element.addEventListener('click', (e) => {{
+                            if (element.tagName === 'A' && !element.getAttribute('data-testid')) {{
+                                e.preventDefault();
+                                e.stopPropagation();
+                            }}
+                        }}, {{ once: true, capture: true }});
+                        
+                        // Click the element
+                        element.click();
+                    }}
+                }}
+            """, request.x, request.y)
+            
             return {
                 "success": True, 
                 "message": f"Stealth clicked at ({request.x}, {request.y})"
@@ -385,7 +406,12 @@ async def navigate(request: NavigateRequest):
             # Ensure we're on the main tab before navigating
             await ensure_main_tab()
             
+            # Navigate on the main page
             await page.goto(request.url, wait_until="domcontentloaded")
+            
+            # Close any popups/extra tabs that might have opened
+            await ensure_main_tab()
+            
             return {
                 "success": True, 
                 "message": f"Stealth navigated to: {request.url}"
@@ -738,8 +764,12 @@ async def load_session(request: dict):
     Request body: {"cookies": [...]}
     """
     try:
+        # Initialize browser if not already done
         if not context:
-            return {"success": False, "error": "No active browser context"}
+            print("🔄 Browser not initialized, initializing now...")
+            init_result = await initialize_stealth_browser()
+            if not init_result or not context:
+                return {"success": False, "error": "Failed to initialize browser"}
         
         cookies = request.get("cookies", [])
         if not cookies:
@@ -833,7 +863,28 @@ async def root():
 async def startup():
     """Initialize stealth browser on startup"""
     print("🚀 Starting Stealth CUA Server...")
-    await initialize_stealth_browser()
+    try:
+        result = await initialize_stealth_browser()
+        if result:
+            print("✅ Stealth browser initialized successfully on startup")
+        else:
+            print("❌ Stealth browser initialization failed on startup")
+    except Exception as e:
+        print(f"❌ Error during stealth browser initialization: {e}")
+        import traceback
+        traceback.print_exc()
+
+@app.post("/initialize")
+async def manual_initialize():
+    """Manually trigger browser initialization"""
+    try:
+        result = await initialize_stealth_browser()
+        if result:
+            return {"success": True, "message": "Browser initialized"}
+        else:
+            return {"success": False, "error": "Initialization failed"}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
 
 if __name__ == "__main__":
     # Run the server

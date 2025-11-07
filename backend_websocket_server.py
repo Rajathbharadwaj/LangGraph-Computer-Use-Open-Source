@@ -11,6 +11,10 @@ from datetime import datetime
 import asyncio
 import json
 import os
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
 
 # LangGraph SDK for agent control
 from langgraph_sdk import get_client
@@ -132,6 +136,13 @@ async def generate_preview(data: dict):
         if feedback:
             context = f"{context}\n\nUSER FEEDBACK: {feedback}\nPlease incorporate this feedback in your response."
         
+        # Generate the few-shot prompt first (so we can return it)
+        few_shot_prompt = style_manager.generate_few_shot_prompt(
+            context=context,
+            content_type=content_type,
+            num_examples=7  # Increased from 3 to 7 for better style learning
+        )
+        
         # Generate content
         generated = await style_manager.generate_content(
             context=context,
@@ -142,7 +153,8 @@ async def generate_preview(data: dict):
             "success": True,
             "content": generated.content,
             "mentions": getattr(generated, 'mentions', []),
-            "content_type": content_type
+            "content_type": content_type,
+            "few_shot_prompt": few_shot_prompt
         }
         
     except Exception as e:
@@ -201,6 +213,98 @@ async def save_feedback(data: dict):
         
     except Exception as e:
         print(f"❌ Error saving feedback: {e}")
+        import traceback
+        traceback.print_exc()
+        return {"success": False, "error": str(e)}
+
+
+@app.post("/api/agent/create-post")
+async def agent_create_post(data: dict):
+    """
+    Generate a styled post and publish it to X via the Docker VNC extension.
+    
+    Request body:
+    {
+        "user_id": "user_xxx",  // Extension user ID (for scraping/posting)
+        "clerk_user_id": "user_yyy",  // Clerk user ID (for style/memory)
+        "context": "What to write about",
+        "post_text": "Optional: pre-generated text to post directly"
+    }
+    
+    If post_text is provided, it will be posted directly.
+    Otherwise, content will be generated using the user's writing style.
+    """
+    try:
+        user_id = data.get("user_id")  # Extension user ID
+        clerk_user_id = data.get("clerk_user_id")  # Clerk user ID
+        context = data.get("context", "")
+        post_text = data.get("post_text", "")
+        
+        if not user_id:
+            return {"success": False, "error": "Missing user_id"}
+        
+        print(f"📝 Creating post for user: {user_id}")
+        
+        # If no post_text provided, generate it
+        if not post_text:
+            if not context:
+                return {"success": False, "error": "Missing context or post_text"}
+            
+            print(f"🎨 Generating styled post...")
+            
+            # Initialize style manager
+            from x_writing_style_learner import XWritingStyleManager
+            style_manager = XWritingStyleManager(store, user_id)
+            
+            # Generate content
+            generated = await style_manager.generate_content(
+                context=context,
+                content_type="post"
+            )
+            
+            post_text = generated.content
+            print(f"✅ Generated post: {post_text[:50]}...")
+        
+        # Validate post length
+        if len(post_text) > 280:
+            return {
+                "success": False,
+                "error": f"Post too long ({len(post_text)} chars, max 280)"
+            }
+        
+        # Call extension backend to create post
+        print(f"📤 Sending post to extension backend...")
+        
+        import requests
+        response = requests.post(
+            "http://localhost:8001/extension/create-post",
+            json={
+                "post_text": post_text,
+                "user_id": user_id
+            },
+            timeout=20
+        )
+        
+        result = response.json()
+        
+        if result.get("success"):
+            print(f"✅ Post created successfully!")
+            return {
+                "success": True,
+                "post_text": post_text,
+                "message": "Post created successfully!",
+                "timestamp": result.get("timestamp", "")
+            }
+        else:
+            print(f"❌ Failed to create post: {result.get('error')}")
+            return {
+                "success": False,
+                "error": result.get("error", "Unknown error"),
+                "post_text": post_text
+            }
+        
+    except Exception as e:
+        print(f"❌ Error creating post: {e}")
         import traceback
         traceback.print_exc()
         return {"success": False, "error": str(e)}
@@ -1367,7 +1471,18 @@ async def run_agent(data: dict):
             })
         
         # Stream agent execution in background
-        asyncio.create_task(stream_agent_execution(user_id, thread_id, task))
+        task_obj = asyncio.create_task(stream_agent_execution(user_id, thread_id, task))
+        
+        # Add error handler for the background task
+        def task_done_callback(task):
+            try:
+                task.result()  # This will raise any exception that occurred
+            except Exception as e:
+                print(f"❌ Background task error: {e}")
+                import traceback
+                traceback.print_exc()
+        
+        task_obj.add_done_callback(task_done_callback)
         
         return {
             "success": True,
@@ -1646,6 +1761,72 @@ async def get_user_thread(user_id: str):
         "user_id": user_id,
         "thread_id": thread_id
     }
+
+@app.get("/api/agent/threads/{thread_id}/messages")
+async def get_thread_messages(thread_id: str):
+    """
+    Fetch all messages for a specific thread from LangGraph's PostgreSQL store
+    """
+    try:
+        print(f"📖 Fetching messages for thread: {thread_id}")
+        
+        # Get thread state from LangGraph
+        state = await langgraph_client.threads.get_state(thread_id)
+        
+        if not state or "values" not in state:
+            return {
+                "success": True,
+                "messages": [],
+                "thread_id": thread_id
+            }
+        
+        # Extract messages from state
+        messages_data = state["values"].get("messages", [])
+        
+        # Format messages for frontend
+        formatted_messages = []
+        for msg in messages_data:
+            # LangGraph stores messages as BaseMessage objects
+            role = "user" if msg.get("type") == "human" else "assistant"
+            content = msg.get("content", "")
+            
+            # Handle content that's an array of objects (from LangGraph)
+            if isinstance(content, list):
+                # Extract text from content blocks
+                text_parts = []
+                for block in content:
+                    if isinstance(block, dict) and "text" in block:
+                        text_parts.append(block["text"])
+                    elif isinstance(block, str):
+                        text_parts.append(block)
+                content = "\n".join(text_parts)
+            elif not isinstance(content, str):
+                content = str(content)
+            
+            formatted_messages.append({
+                "role": role,
+                "content": content,
+                "timestamp": msg.get("additional_kwargs", {}).get("timestamp", "")
+            })
+        
+        print(f"✅ Retrieved {len(formatted_messages)} messages for thread {thread_id}")
+        
+        return {
+            "success": True,
+            "messages": formatted_messages,
+            "thread_id": thread_id,
+            "count": len(formatted_messages)
+        }
+        
+    except Exception as e:
+        print(f"❌ Error fetching thread messages: {e}")
+        import traceback
+        traceback.print_exc()
+        return {
+            "success": False,
+            "error": str(e),
+            "messages": []
+        }
 
 if __name__ == "__main__":
     import uvicorn
