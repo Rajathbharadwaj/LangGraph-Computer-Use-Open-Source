@@ -92,13 +92,11 @@ main-backend: ## Start Main Backend (port 8002)
 	@bash -c "source $(HOME)/miniconda3/etc/profile.d/conda.sh && conda activate newat && (python backend_websocket_server.py > $(LOG_DIR)/main_backend.log 2>&1 &); sleep 1"
 	@echo "$(GREEN)✅ Main Backend started (port 8002)$(NC)"
 
-langgraph: ## Start LangGraph Server (port 8124)
-	@echo "$(YELLOW)🤖 Starting LangGraph Server...$(NC)"
-	@lsof -ti:8124 | xargs -r kill -9 2>/dev/null || true
-	@sleep 1
-	@setsid $(HOME)/cua/start_langgraph.sh </dev/null >/dev/null 2>&1 &
-	@sleep 5
-	@echo "$(GREEN)✅ LangGraph Server started (port 8124)$(NC)"
+langgraph: ## Start LangGraph Server with PostgreSQL (port 8124)
+	@echo "$(YELLOW)🤖 Starting LangGraph Server with PostgreSQL...$(NC)"
+	@docker-compose -f docker-compose.langgraph.yml up -d > /dev/null 2>&1
+	@sleep 8
+	@echo "$(GREEN)✅ LangGraph Server started with persistent storage (port 8124)$(NC)"
 
 omniserver: ## Start OmniParser Server (port 8003)
 	@echo "$(YELLOW)🔍 Starting OmniParser Server...$(NC)"
@@ -125,7 +123,7 @@ stop: docker-stop ## Stop all services
 	@echo "$(YELLOW)🖥️  Stopping Main Backend...$(NC)"
 	@lsof -ti:8002 | xargs -r kill -9 2>/dev/null && echo "$(GREEN)✅ Stopped$(NC)" || echo "$(YELLOW)⚠️  Not running$(NC)"
 	@echo "$(YELLOW)🤖 Stopping LangGraph Server...$(NC)"
-	@lsof -ti:8124 | xargs -r kill -9 2>/dev/null && echo "$(GREEN)✅ Stopped$(NC)" || echo "$(YELLOW)⚠️  Not running$(NC)"
+	@docker-compose -f docker-compose.langgraph.yml down > /dev/null 2>&1 && echo "$(GREEN)✅ Stopped$(NC)" || echo "$(YELLOW)⚠️  Not running$(NC)"
 	@echo "$(YELLOW)🔍 Stopping OmniParser Server...$(NC)"
 	@lsof -ti:8003 | xargs -r kill -9 2>/dev/null && echo "$(GREEN)✅ Stopped$(NC)" || echo "$(YELLOW)⚠️  Not running$(NC)"
 	@echo "$(YELLOW)🎨 Stopping Frontend...$(NC)"
@@ -152,8 +150,11 @@ status: ## Check status of all services
 	@ss -tlnp 2>/dev/null | grep -q ":8124 " && echo "   $(GREEN)✅ LangGraph Server (8124)$(NC)" || echo "   $(RED)❌ LangGraph Server (8124)$(NC)"
 	@ss -tlnp 2>/dev/null | grep -q ":8005 " && echo "   $(GREEN)✅ Docker Browser API (8005)$(NC)" || echo "   $(RED)❌ Docker Browser API (8005)$(NC)"
 	@echo ""
-	@echo "$(YELLOW)🐳 Docker Container:$(NC)"
+	@echo "$(YELLOW)🐳 Docker Containers:$(NC)"
 	@docker ps | grep -q stealth-browser && echo "   $(GREEN)✅ stealth-browser (running)$(NC)" || echo "   $(RED)❌ stealth-browser (not running)$(NC)"
+	@docker ps | grep -q cua-langgraph-api && echo "   $(GREEN)✅ cua-langgraph-api (running)$(NC)" || echo "   $(RED)❌ cua-langgraph-api (not running)$(NC)"
+	@docker ps | grep -q cua-langgraph-postgres && echo "   $(GREEN)✅ cua-langgraph-postgres (running)$(NC)" || echo "   $(RED)❌ cua-langgraph-postgres (not running)$(NC)"
+	@docker ps | grep -q cua-langgraph-redis && echo "   $(GREEN)✅ cua-langgraph-redis (running)$(NC)" || echo "   $(RED)❌ cua-langgraph-redis (not running)$(NC)"
 	@echo ""
 
 restart: stop start ## Restart all services
@@ -169,7 +170,7 @@ logs-backend: ## View Main Backend logs
 	@tail -f $(LOG_DIR)/main_backend.log
 
 logs-langgraph: ## View LangGraph logs
-	@tail -f $(LOG_DIR)/langgraph.log
+	@docker-compose -f docker-compose.langgraph.yml logs -f langgraph-api
 
 logs-frontend: ## View Frontend logs
 	@tail -f $(LOG_DIR)/frontend.log

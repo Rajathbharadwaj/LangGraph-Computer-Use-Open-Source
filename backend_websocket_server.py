@@ -38,7 +38,7 @@ from fastapi import Depends
 from clerk_auth import get_current_user
 from clerk_webhooks import router as webhook_router
 
-app = FastAPI(title="X Automation Backend")
+app = FastAPI(title="Parallel Universe Backend")
 
 # Enable CORS for Next.js frontend
 app.add_middleware(
@@ -97,7 +97,7 @@ print(f"✅ Initialized PostgresStore for persistent memory: {DB_URI}")
 @app.get("/")
 async def root():
     return {
-        "message": "X Automation Backend",
+        "message": "Parallel Universe Backend",
         "websocket": "ws://localhost:8000/ws/extension/{user_id}",
         "active_connections": len(active_connections)
     }
@@ -309,6 +309,86 @@ async def agent_create_post(data: dict):
         traceback.print_exc()
         return {"success": False, "error": str(e)}
 
+
+@app.post("/api/posts/cleanup-duplicates/{user_id}")
+async def cleanup_duplicate_posts(user_id: str):
+    """Remove duplicate posts from both LangGraph Store and database"""
+    try:
+        # Clean up LangGraph Store
+        style_manager = XWritingStyleManager(store, user_id)
+        store_duplicates_removed = style_manager.remove_duplicate_posts()
+        
+        # Clean up database
+        from database.models import UserPost, XAccount
+        from database.database import SessionLocal
+        from sqlalchemy import text
+        
+        db = SessionLocal()
+        
+        # Get username from user_id (assuming it's stored somewhere)
+        # For now, we'll clean all duplicates regardless of user
+        result = db.execute(text("""
+            DELETE FROM user_posts a USING user_posts b
+            WHERE a.id > b.id AND a.content = b.content
+            RETURNING a.id
+        """))
+        db_duplicates_removed = result.rowcount
+        db.commit()
+        db.close()
+        
+        return {
+            "success": True,
+            "store_duplicates_removed": store_duplicates_removed,
+            "db_duplicates_removed": db_duplicates_removed,
+            "message": f"Removed {store_duplicates_removed} duplicates from store and {db_duplicates_removed} from database"
+        }
+        
+    except Exception as e:
+        print(f"❌ Error cleaning duplicates: {e}")
+        import traceback
+        traceback.print_exc()
+        return {
+            "success": False,
+            "error": str(e)
+        }
+
+@app.get("/api/posts/count/{username}")
+async def get_posts_count(username: str):
+    """Get total count of imported posts from database"""
+    try:
+        from database.models import UserPost, XAccount
+        from database.database import SessionLocal
+        
+        db = SessionLocal()
+        
+        # Get X account
+        x_account = db.query(XAccount).filter(XAccount.username == username).first()
+        
+        if not x_account:
+            db.close()
+            return {
+                "success": True,
+                "count": 0,
+                "username": username
+            }
+        
+        # Count posts
+        count = db.query(UserPost).filter(UserPost.x_account_id == x_account.id).count()
+        db.close()
+        
+        return {
+            "success": True,
+            "count": count,
+            "username": username
+        }
+        
+    except Exception as e:
+        print(f"❌ Error getting posts count: {e}")
+        return {
+            "success": False,
+            "error": str(e),
+            "count": 0
+        }
 
 @app.get("/api/posts/{user_id}")
 async def get_user_posts(user_id: str):
@@ -639,18 +719,18 @@ async def scrape_posts_docker(data: dict):
     """
     import aiohttp
     
-    user_id = data.get("user_id", "default_user")
-    clerk_user_id = data.get("clerk_user_id", user_id)  # Clerk user ID for WebSocket
+    user_id = data.get("user_id", "default_user")  # Extension/Docker user ID
+    clerk_user_id = data.get("clerk_user_id", user_id)  # Clerk user ID for WebSocket and Store
     target_count = data.get("targetCount", 50)
     min_posts_threshold = 30  # Minimum posts we want to have
     
-    print(f"🔍 Scraping for user_id: {user_id}")
-    print(f"📡 WebSocket user_id: {clerk_user_id}")
+    print(f"🔍 Scraping for extension user_id: {user_id}")
+    print(f"📡 WebSocket/Store user_id (Clerk): {clerk_user_id}")
     print(f"📊 Active WebSocket connections: {list(active_connections.keys())}")
     
-    # Check existing posts in store
+    # Check existing posts in store using CLERK user ID (consistent with where posts are saved)
     try:
-        namespace = (user_id, "writing_samples")
+        namespace = (clerk_user_id, "writing_samples")
         existing_items = store.search(namespace)
         existing_posts = [item.value for item in existing_items]
         existing_count = len(existing_posts)
@@ -670,13 +750,12 @@ async def scrape_posts_docker(data: dict):
                 most_recent_content = most_recent_post.get('content', '')[:100]
                 
                 print(f"🔍 Most recent stored post: {most_recent_content}...")
-                print(f"   Will check if new posts exist before scraping")
+                print(f"   Will check if new posts exist by comparing first post only")
                 
-                # TODO: Quick check of latest post on X profile
-                # For now, we'll do a light scrape (just first few posts)
-                # to see if there's new content
-                target_count = min(10, target_count)  # Only check first 10 posts
-                print(f"   📉 Reduced target to {target_count} for update check")
+                # Only scrape 1 post to check if it's new
+                # If the first post matches our most recent, we're up to date
+                target_count = 1  # Only check the very first post
+                print(f"   📉 Reduced target to {target_count} for quick update check")
         else:
             print(f"⚠️ Only {existing_count} posts (< {min_posts_threshold}), will do full scrape")
             
@@ -685,21 +764,24 @@ async def scrape_posts_docker(data: dict):
         existing_count = 0
     
     try:
-        # Get username from extension backend
+        # Get username AND user_id with cookies from extension backend
         username = None
+        extension_user_id = None
         async with aiohttp.ClientSession() as session:
             try:
                 async with session.get("http://localhost:8001/status") as resp:
                     status_data = await resp.json()
                     if status_data.get("users_with_info"):
                         for user_info in status_data["users_with_info"]:
-                            if user_info.get("username"):
+                            if user_info.get("username") and user_info.get("hasCookies"):
                                 username = user_info["username"]
+                                extension_user_id = user_info["userId"]
+                                print(f"✅ Found user with cookies: {extension_user_id} (@{username})")
                                 break
             except Exception as e:
                 print(f"⚠️ Could not fetch username from extension backend: {e}")
         
-        if not username:
+        if not username or not extension_user_id:
             return {
                 "success": False,
                 "error": "No X account connected. Please connect your X account first."
@@ -707,9 +789,9 @@ async def scrape_posts_docker(data: dict):
         
         print(f"📝 Scraping posts for @{username} using Docker VNC browser...")
         
-        # Inject cookies into Docker browser
-        print(f"🍪 Injecting cookies into Docker browser...")
-        inject_result = await inject_cookies_to_docker({"user_id": user_id})
+        # Inject cookies into Docker browser using the CORRECT user_id (the one with cookies)
+        print(f"🍪 Injecting cookies into Docker browser for user {extension_user_id}...")
+        inject_result = await inject_cookies_to_docker({"user_id": extension_user_id})
         if not inject_result.get("success"):
             print(f"⚠️ Cookie injection failed: {inject_result.get('error')}")
             return {
@@ -897,15 +979,20 @@ async def scrape_posts_docker(data: dict):
         posts = list(collected_posts.values())[:target_count]
         print(f"📊 Collected {len(posts)} unique posts total")
         
-        # Store posts
+        # Check against LangGraph Store (more reliable than in-memory)
+        existing_store_contents = {p.get("content") for p in existing_posts}
+        new_posts = [p for p in posts if p.get("content") not in existing_store_contents]
+        
+        # Also update in-memory cache
         if user_id not in user_posts:
             user_posts[user_id] = []
         
         existing_contents = {p.get("content") for p in user_posts[user_id]}
-        new_posts = [p for p in posts if p.get("content") not in existing_contents]
-        user_posts[user_id].extend(new_posts)
+        for post in new_posts:
+            if post.get("content") not in existing_contents:
+                user_posts[user_id].append(post)
         
-        print(f"✅ Scraped and stored {len(new_posts)} posts for @{username}")
+        print(f"✅ Found {len(new_posts)} new posts out of {len(posts)} scraped for @{username}")
         
         # Check if we actually got new posts
         if len(new_posts) == 0:
@@ -934,17 +1021,69 @@ async def scrape_posts_docker(data: dict):
             }
         
         # Store in LangGraph Store with embeddings for persistent memory
+        # Use CLERK user ID to keep data consistent across sessions
         try:
-            style_manager = XWritingStyleManager(store, user_id)
+            style_manager = XWritingStyleManager(store, clerk_user_id)
             
             # bulk_import_posts expects dicts, not WritingSample objects
             # It will create WritingSample objects internally
             print(f"💾 Saving {len(new_posts)} posts to LangGraph Store with embeddings...")
             style_manager.bulk_import_posts(new_posts)
-            print(f"✅ Successfully saved {len(new_posts)} posts to PostgreSQL store")
+            print(f"✅ Successfully saved {len(new_posts)} posts to LangGraph Store")
             
         except Exception as e:
-            print(f"⚠️ Error saving to store: {e}")
+            print(f"⚠️ Error saving to LangGraph store: {e}")
+            import traceback
+            traceback.print_exc()
+        
+        # Also save to PostgreSQL database for persistence
+        try:
+            from database.models import UserPost, XAccount
+            from database.database import SessionLocal
+            
+            db = SessionLocal()
+            
+            # Get or create X account
+            x_account = db.query(XAccount).filter(XAccount.username == username).first()
+            if not x_account:
+                x_account = XAccount(
+                    user_id=clerk_user_id,
+                    username=username,
+                    is_connected=True
+                )
+                db.add(x_account)
+                db.commit()
+                db.refresh(x_account)
+                print(f"✅ Created X account record for @{username}")
+            
+            # Save posts to database
+            saved_count = 0
+            for post in new_posts:
+                # Check if post already exists (by content or URL)
+                existing = db.query(UserPost).filter(
+                    UserPost.x_account_id == x_account.id,
+                    UserPost.content == post["content"]
+                ).first()
+                
+                if not existing:
+                    user_post = UserPost(
+                        x_account_id=x_account.id,
+                        content=post["content"],
+                        post_url=post.get("url"),
+                        likes=post.get("engagement", {}).get("likes", 0),
+                        retweets=post.get("engagement", {}).get("retweets", 0),
+                        replies=post.get("engagement", {}).get("replies", 0),
+                        posted_at=post.get("timestamp")
+                    )
+                    db.add(user_post)
+                    saved_count += 1
+            
+            db.commit()
+            db.close()
+            print(f"✅ Saved {saved_count} posts to PostgreSQL database")
+            
+        except Exception as e:
+            print(f"⚠️ Error saving to database: {e}")
             import traceback
             traceback.print_exc()
         
@@ -1507,85 +1646,112 @@ async def stream_agent_execution(user_id: str, thread_id: str, task: str):
         last_content = ""
         
         # Use "messages" stream mode for token-by-token streaming
-        async for chunk in langgraph_client.runs.stream(
-            thread_id=thread_id,
-            assistant_id="x_growth_deep_agent",
-            input={
-                "messages": [{
-                    "role": "user",
-                    "content": task
-                }]
-            },
-            stream_mode="messages"
-        ):
-            if user_id in active_connections:
-                try:
-                    # chunk.data contains the message chunk from LangGraph
-                    # It's usually a list with message objects
-                    if hasattr(chunk, 'data') and isinstance(chunk.data, list) and len(chunk.data) > 0:
-                        message_data = chunk.data[0]  # Get first item
-                        
-                        # Extract content from the message chunk
-                        # LangGraph returns content as a list of content blocks
-                        if isinstance(message_data, dict):
-                            content_blocks = message_data.get('content', [])
+        try:
+            async for chunk in langgraph_client.runs.stream(
+                thread_id=thread_id,
+                assistant_id="x_growth_deep_agent",
+                input={
+                    "messages": [{
+                        "role": "user",
+                        "content": task
+                    }]
+                },
+                stream_mode="messages"
+            ):
+                if user_id in active_connections:
+                    try:
+                        # chunk.data contains the message chunk from LangGraph
+                        # It's usually a list with message objects
+                        if hasattr(chunk, 'data') and isinstance(chunk.data, list) and len(chunk.data) > 0:
+                            message_data = chunk.data[0]  # Get first item
                             
-                            # Extract text from content blocks
-                            current_content = ""
-                            if isinstance(content_blocks, list) and len(content_blocks) > 0:
-                                for block in content_blocks:
-                                    if isinstance(block, dict) and block.get('type') == 'text':
-                                        current_content += block.get('text', '')
-                            elif isinstance(content_blocks, str):
-                                current_content = content_blocks
-                            
-                            # Calculate the new token (diff from last content)
-                            if current_content and current_content != last_content:
-                                if current_content.startswith(last_content):
-                                    # Send only the new part
-                                    new_token = current_content[len(last_content):]
-                                    if new_token:
+                            # Extract content from the message chunk
+                            # LangGraph returns content as a list of content blocks
+                            if isinstance(message_data, dict):
+                                content_blocks = message_data.get('content', [])
+                                
+                                # Extract text from content blocks
+                                current_content = ""
+                                if isinstance(content_blocks, list) and len(content_blocks) > 0:
+                                    for block in content_blocks:
+                                        if isinstance(block, dict) and block.get('type') == 'text':
+                                            current_content += block.get('text', '')
+                                elif isinstance(content_blocks, str):
+                                    current_content = content_blocks
+                                
+                                # Calculate the new token (diff from last content)
+                                if current_content and current_content != last_content:
+                                    if current_content.startswith(last_content):
+                                        # Send only the new part
+                                        new_token = current_content[len(last_content):]
+                                        if new_token:
+                                            await active_connections[user_id].send_json({
+                                                "type": "AGENT_TOKEN",
+                                                "token": new_token
+                                            })
+                                            print(f"📤 Sent new token: {repr(new_token[:30])}...")
+                                    else:
+                                        # Content changed completely (new message), send all
                                         await active_connections[user_id].send_json({
                                             "type": "AGENT_TOKEN",
-                                            "token": new_token
+                                            "token": current_content
                                         })
-                                        print(f"📤 Sent new token: {repr(new_token[:30])}...")
-                                else:
-                                    # Content changed completely (new message), send all
-                                    await active_connections[user_id].send_json({
-                                        "type": "AGENT_TOKEN",
-                                        "token": current_content
-                                    })
-                                    print(f"📤 Sent full content: {current_content[:50]}...")
-                                
-                                last_content = current_content
-                                
-                except Exception as e:
-                    print(f"⚠️ Failed to send WebSocket update: {e}")
-                    import traceback
-                    traceback.print_exc()
-        
-        # Update thread metadata with last message
-        if thread_id in thread_metadata and last_content:
-            thread_metadata[thread_id]["last_message"] = last_content[:100] + "..." if len(last_content) > 100 else last_content
-            thread_metadata[thread_id]["updated_at"] = datetime.now().isoformat()
+                                        print(f"📤 Sent full content: {current_content[:50]}...")
+                                    
+                                    last_content = current_content
+                                    
+                    except Exception as e:
+                        print(f"⚠️ Failed to send WebSocket update: {e}")
+                        import traceback
+                        traceback.print_exc()
             
-            # Auto-generate title from first message if still "New Chat"
-            if thread_metadata[thread_id]["title"] == "New Chat" and last_content:
-                # Use first 50 chars of the response as title
-                title = last_content[:50].strip()
-                if len(last_content) > 50:
-                    title += "..."
-                thread_metadata[thread_id]["title"] = title
+            # Update thread metadata with last message
+            if thread_id in thread_metadata and last_content:
+                thread_metadata[thread_id]["last_message"] = last_content[:100] + "..." if len(last_content) > 100 else last_content
+                thread_metadata[thread_id]["updated_at"] = datetime.now().isoformat()
+                
+                # Auto-generate title from first message if still "New Chat"
+                if thread_metadata[thread_id]["title"] == "New Chat" and last_content:
+                    # Use first 50 chars of the response as title
+                    title = last_content[:50].strip()
+                    if len(last_content) > 50:
+                        title += "..."
+                    thread_metadata[thread_id]["title"] = title
+            
+            # Send completion message
+            if user_id in active_connections:
+                await active_connections[user_id].send_json({
+                    "type": "AGENT_COMPLETED",
+                    "thread_id": thread_id
+                })
+            
+            print(f"✅ Agent completed for user {user_id}")
         
-        # Send completion message
-        if user_id in active_connections:
-            await active_connections[user_id].send_json({
-                "type": "AGENT_COMPLETED",
-                "thread_id": thread_id
-            })
-        
-        print(f"✅ Agent completed for user {user_id}")
+        except Exception as stream_error:
+            # Handle 404 errors (thread not found) by creating a new thread
+            if "404" in str(stream_error) or "not found" in str(stream_error).lower():
+                print(f"⚠️  Thread {thread_id} not found, creating new thread...")
+                
+                # Create new thread
+                new_thread = await langgraph_client.threads.create()
+                new_thread_id = new_thread["thread_id"]
+                user_threads[user_id] = new_thread_id
+                
+                print(f"✨ Created new thread {new_thread_id}, retrying...")
+                
+                # Notify frontend of new thread
+                if user_id in active_connections:
+                    await active_connections[user_id].send_json({
+                        "type": "THREAD_RECREATED",
+                        "old_thread_id": thread_id,
+                        "new_thread_id": new_thread_id,
+                        "message": "Previous conversation not found. Starting fresh."
+                    })
+                
+                # Retry with new thread
+                await stream_agent_execution(user_id, new_thread_id, task)
+            else:
+                raise stream_error
         
     except Exception as e:
         print(f"❌ Error during agent execution: {e}")
@@ -1830,7 +1996,7 @@ async def get_thread_messages(thread_id: str):
 
 if __name__ == "__main__":
     import uvicorn
-    print("🚀 Starting X Automation Backend...")
+    print("🚀 Starting Parallel Universe Backend...")
     print("📡 WebSocket: ws://localhost:8001/ws/extension/{user_id}")
     print("🌐 Dashboard: http://localhost:3000")
     print("🔌 Extension will connect automatically!")

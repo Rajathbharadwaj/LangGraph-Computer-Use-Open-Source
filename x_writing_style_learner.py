@@ -103,23 +103,75 @@ class XWritingStyleManager:
     
     def bulk_import_posts(self, posts: List[Dict]):
         """
-        Bulk import user's past X posts
+        Bulk import user's past X posts with deduplication
         
         Args:
             posts: List of post dicts with keys: content, timestamp, engagement, etc.
         """
+        namespace = (self.user_id, "writing_samples")
+        saved_count = 0
+        skipped_count = 0
+        
         for post in posts:
-            sample = WritingSample(
-                sample_id=str(uuid.uuid4()),
-                user_id=self.user_id,
-                timestamp=post.get("timestamp", datetime.now().isoformat()),
-                content_type="post",
-                content=post["content"],
-                context=post.get("context"),
-                engagement=post.get("engagement", {"likes": 0, "replies": 0, "reposts": 0}),
-                topic=post.get("topic")
+            content = post["content"]
+            
+            # Check if this post already exists (by content)
+            existing_items = self.store.search(
+                namespace,
+                query=content,
+                limit=5  # Check top 5 similar items
             )
-            self.save_writing_sample(sample)
+            
+            # Check for exact content match
+            is_duplicate = False
+            for item in existing_items:
+                if item.value.get("content") == content:
+                    is_duplicate = True
+                    skipped_count += 1
+                    break
+            
+            if not is_duplicate:
+                sample = WritingSample(
+                    sample_id=str(uuid.uuid4()),
+                    user_id=self.user_id,
+                    timestamp=post.get("timestamp", datetime.now().isoformat()),
+                    content_type="post",
+                    content=content,
+                    context=post.get("context"),
+                    engagement=post.get("engagement", {"likes": 0, "replies": 0, "reposts": 0}),
+                    topic=post.get("topic")
+                )
+                self.save_writing_sample(sample)
+                saved_count += 1
+        
+        print(f"📊 Import complete: {saved_count} new posts saved, {skipped_count} duplicates skipped")
+    
+    def remove_duplicate_posts(self):
+        """
+        Remove duplicate posts from the store, keeping only the first occurrence
+        """
+        namespace = (self.user_id, "writing_samples")
+        
+        # Get all items
+        all_items = list(self.store.search(namespace))
+        
+        # Track seen content
+        seen_content = set()
+        duplicates_to_delete = []
+        
+        for item in all_items:
+            content = item.value.get("content")
+            if content in seen_content:
+                duplicates_to_delete.append(item.key)
+            else:
+                seen_content.add(content)
+        
+        # Delete duplicates
+        for key in duplicates_to_delete:
+            self.store.delete(namespace, key)
+        
+        print(f"🧹 Removed {len(duplicates_to_delete)} duplicate posts from store")
+        return len(duplicates_to_delete)
     
     # ========================================================================
     # RETRIEVE SIMILAR EXAMPLES (Few-Shot)
@@ -336,7 +388,7 @@ class XWritingStyleManager:
             profile = self.analyze_writing_style()
         
         # Build few-shot prompt
-        prompt = f"""You are a writing style mimic. Your ONLY job is to write EXACTLY like this specific user.
+        prompt = f"""You are a Parallel Universe AI writing assistant. Your ONLY job is to write EXACTLY like this specific user.
 
 CRITICAL RULES:
 1. You MUST sound INDISTINGUISHABLE from this user
@@ -515,7 +567,7 @@ def create_style_aware_comment_generator_subagent(user_id: str, store):
     return {
         "name": "style_aware_comment_generator",
         "description": "Generate comments in the user's authentic writing style using few-shot examples",
-        "system_prompt": f"""You are a comment generation specialist that writes in the user's style.
+        "system_prompt": f"""You are a Parallel Universe AI comment generation specialist that writes in the user's style.
 
 YOUR JOB: Generate comments that sound EXACTLY like the user wrote them.
 

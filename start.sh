@@ -31,7 +31,7 @@ sleep 2
 
 # Start Firefox
 echo "🦊 Starting Firefox..."
-firefox --no-sandbox --disable-dev-shm-usage &
+firefox --remote-debugging-port=9222 --remote-allow-hosts=localhost --remote-allow-origins=* --no-sandbox --disable-dev-shm-usage &
 sleep 5
 
 # Start API server

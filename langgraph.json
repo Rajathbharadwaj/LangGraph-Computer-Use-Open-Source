@@ -1,0 +1,52 @@
+{
+  "dependencies": ["."],
+  "graphs": {
+    "cua_agent": "./langgraph_cua_agent.py:graph",
+    "cua_react_agent": "./langgraph_cua_agent.py:create_cua_agent",
+    "playwright_cua_agent": "./langgraph_playwright_agent.py:create_playwright_agent_graph",
+    "supervisor_cua_agent": "./supervisor_playwright_agent.py:create_supervisor_agent_graph",
+    "x_growth_deep_agent": "./x_growth_deep_agent.py:create_x_growth_agent"
+  },
+  "env": "./.env",
+  "python_version": "3.12",
+  "pip_installer": "pip",
+  "dockerfile_lines": [
+    "# Install system dependencies for GUI interaction",
+    "RUN apt-get update && apt-get install -y \\",
+    "    xvfb \\", 
+    "    x11vnc \\",
+    "    fluxbox \\",
+    "    curl \\",
+    "    firefox-esr \\",
+    "    wget \\",
+    "    && rm -rf /var/lib/apt/lists/*",
+    "",
+    "# Set display environment variable", 
+    "ENV DISPLAY=:99"
+  ],
+  "store": {
+    "ttl": {
+      "refresh_on_read": true,
+      "sweep_interval_minutes": 60,
+      "default_ttl": 1440
+    }
+  },
+  "checkpointer": {
+    "ttl": {
+      "strategy": "delete",
+      "sweep_interval_minutes": 120,
+      "default_ttl": 43200
+    }
+  },
+  "http": {
+    "cors": {
+      "allow_origins": ["*"],
+      "allow_methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+      "allow_headers": ["*"]
+    },
+    "configurable_headers": {
+      "include": ["x-cua-host", "x-cua-port", "x-omniparser-url"],
+      "exclude": []
+    }
+  }
+}

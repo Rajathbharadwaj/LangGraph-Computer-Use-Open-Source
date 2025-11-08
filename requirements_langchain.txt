@@ -15,6 +15,12 @@ requests>=2.28.0
 # Data validation
 pydantic>=2.0.0
 
+# Environment management
+python-dotenv>=1.0.0
+
+# Image processing for screenshots
+pillow>=10.0.0
+
 # Optional: Other LLM providers
 # langchain-anthropic>=0.1.0
 # langchain-google-genai>=1.0.0

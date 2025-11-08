@@ -1,0 +1,48 @@
+STDIN
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Test Extension Connection</title>
+</head>
+<body>
+    <h1>Extension Connection Test</h1>
+    <div id="status">Checking...</div>
+    
+    <script>
+        const userId = 'user_test123';
+        const wsUrl = `ws://localhost:8001/ws/extension/${userId}`;
+        
+        console.log('🔌 Attempting to connect to:', wsUrl);
+        
+        const ws = new WebSocket(wsUrl);
+        
+        ws.onopen = () => {
+            console.log('✅ WebSocket connected!');
+            document.getElementById('status').innerHTML = '✅ Connected to backend!';
+            document.getElementById('status').style.color = 'green';
+            
+            // Send test message
+            ws.send(JSON.stringify({
+                type: 'TEST',
+                message: 'Hello from test page'
+            }));
+        };
+        
+        ws.onerror = (error) => {
+            console.error('❌ WebSocket error:', error);
+            document.getElementById('status').innerHTML = '❌ Connection failed! Check console.';
+            document.getElementById('status').style.color = 'red';
+        };
+        
+        ws.onmessage = (event) => {
+            console.log('📨 Received:', event.data);
+        };
+        
+        ws.onclose = () => {
+            console.log('🔌 Connection closed');
+            document.getElementById('status').innerHTML = '⚠️ Connection closed';
+            document.getElementById('status').style.color = 'orange';
+        };
+    </script>
+</body>
+</html>
