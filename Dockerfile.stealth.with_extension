@@ -24,14 +24,21 @@ RUN apt-get update && apt-get install -y \
     npm \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Python packages including Playwright
+# Install Python packages including Patchright (drop-in Playwright replacement with stealth)
 RUN pip3 install fastapi uvicorn pydantic \
-    playwright playwright-stealth \
+    patchright \
     anthropic python-dotenv aiohttp \
     requests pillow asyncio cryptography
 
-# Install Playwright browsers and dependencies (with GUI support, not headless-shell)
-RUN python3 -m playwright install chromium --with-deps
+# Install Google Chrome for extension support
+RUN wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | apt-key add - && \
+    echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" > /etc/apt/sources.list.d/google-chrome.list && \
+    apt-get update && \
+    apt-get install -y google-chrome-stable && \
+    rm -rf /var/lib/apt/lists/*
+
+# Install Patchright browsers and dependencies (with GUI support, not headless-shell)
+RUN python3 -m patchright install chromium --with-deps
 # Ensure we have the full browser, not just headless shell
 ENV PLAYWRIGHT_BROWSERS_PATH=/root/.cache/ms-playwright
 

@@ -1,6 +1,16 @@
 // Content script - runs on x.com pages, performs actual automation
 
-console.log('🚀 X Automation Extension loaded on', window.location.href);
+console.log('🚀 [DOCKER EXTENSION] Content script loaded on', window.location.href);
+
+// Wake up the service worker by sending it a message
+console.log('📡 [DOCKER EXTENSION] Waking up service worker...');
+chrome.runtime.sendMessage({ type: 'CONTENT_SCRIPT_READY', url: window.location.href }, (response) => {
+  if (chrome.runtime.lastError) {
+    console.log('⚠️ [DOCKER EXTENSION] Service worker not responding:', chrome.runtime.lastError);
+  } else {
+    console.log('✅ [DOCKER EXTENSION] Service worker responded:', response);
+  }
+});
 
 // Check if user is logged into X
 function checkLoginStatus() {
@@ -173,57 +183,88 @@ async function commentOnPost(postUrl, commentText) {
 // Create a new post
 async function createPost(postText) {
   try {
-    console.log('📝 Creating post:', postText);
+    console.log('📝 [DOCKER EXTENSION] Creating post:', postText);
+    console.log('📍 [DOCKER EXTENSION] Current URL:', window.location.href);
     
     // Navigate to home if not already there
     if (!window.location.href.includes('x.com/home')) {
+      console.log('🔄 [DOCKER EXTENSION] Navigating to home...');
       window.location.href = 'https://x.com/home';
       await new Promise(resolve => setTimeout(resolve, 2000));
     }
     
+    console.log('🔍 [DOCKER EXTENSION] Looking for compose box...');
     // Find the "What's happening?" compose box
     // X has multiple textareas, we want the main one at the top
     const composeBox = document.querySelector('[data-testid="tweetTextarea_0"]');
     
+    console.log('📦 [DOCKER EXTENSION] Compose box found:', !!composeBox);
+    
     if (!composeBox) {
+      console.error('❌ [DOCKER EXTENSION] Compose box not found!');
       return { success: false, error: 'Compose box not found. Make sure you are on the home timeline.' };
     }
     
     // Click to focus (in case it's not already focused)
+    console.log('👆 [DOCKER EXTENSION] Clicking compose box...');
     composeBox.click();
-    await new Promise(resolve => setTimeout(resolve, 300));
+    await new Promise(resolve => setTimeout(resolve, 500));
     
-    // Type the post text
+    // Type the post text - use simplest possible method
+    console.log('⌨️ [DOCKER EXTENSION] Typing text...');
     composeBox.focus();
+    
+    // Set text directly
+    console.log('📝 [DOCKER EXTENSION] Setting text content...');
     composeBox.textContent = postText;
     
-    // Trigger input event to enable the Post button
-    const inputEvent = new Event('input', { bubbles: true });
-    composeBox.dispatchEvent(inputEvent);
+    // Trigger input events to notify React
+    console.log('📢 [DOCKER EXTENSION] Triggering input events...');
+    composeBox.dispatchEvent(new Event('input', { bubbles: true }));
+    composeBox.dispatchEvent(new Event('change', { bubbles: true }));
+    composeBox.dispatchEvent(new InputEvent('input', { bubbles: true, data: postText }));
+    composeBox.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true }));
     
-    // Wait a bit for X's UI to process
-    await new Promise(resolve => setTimeout(resolve, 800));
+    console.log('✍️ [DOCKER EXTENSION] Text typed, waiting for UI update...');
+    console.log('📄 [DOCKER EXTENSION] Text in box:', composeBox.textContent);
+    
+    // Wait longer for X's UI to process and enable the button
+    await new Promise(resolve => setTimeout(resolve, 2000));
     
     // Find and click the "Post" button
     // The main post button has data-testid="tweetButtonInline" or "tweetButton"
+    console.log('🔍 [DOCKER EXTENSION] Looking for post button...');
     let postButton = document.querySelector('[data-testid="tweetButtonInline"]');
     if (!postButton) {
       postButton = document.querySelector('[data-testid="tweetButton"]');
     }
+    
+    console.log('🔘 [DOCKER EXTENSION] Post button found:', !!postButton);
     
     if (!postButton) {
       return { success: false, error: 'Post button not found. Text may be too long or empty.' };
     }
     
     // Check if button is disabled
-    if (postButton.disabled || postButton.getAttribute('aria-disabled') === 'true') {
-      return { success: false, error: 'Post button is disabled. Check text length (max 280 chars).' };
+    const isDisabled = postButton.disabled || postButton.getAttribute('aria-disabled') === 'true';
+    console.log('🔒 [DOCKER EXTENSION] Button disabled:', isDisabled);
+    console.log('🔒 [DOCKER EXTENSION] Button aria-disabled:', postButton.getAttribute('aria-disabled'));
+    console.log('🔒 [DOCKER EXTENSION] Button disabled property:', postButton.disabled);
+    
+    // Try clicking anyway - sometimes the button works even if marked disabled
+    console.log('🖱️ [DOCKER EXTENSION] Attempting to click post button...');
+    
+    try {
+      // Try direct click first
+      postButton.click();
+      console.log('✅ [DOCKER EXTENSION] Direct click succeeded');
+    } catch (e) {
+      console.log('⚠️ [DOCKER EXTENSION] Direct click failed, trying dispatchEvent');
+      // If direct click fails, try triggering click event
+      postButton.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
     }
     
-    // Click the Post button
-    postButton.click();
-    
-    console.log('✅ Post button clicked!');
+    console.log('✅ [DOCKER EXTENSION] Post button clicked!');
     
     // Wait for post to be published
     await new Promise(resolve => setTimeout(resolve, 2000));

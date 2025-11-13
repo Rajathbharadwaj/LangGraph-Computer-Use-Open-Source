@@ -1,5 +1,7 @@
 // Background service worker - manages WebSocket connection to your backend
 
+console.log('🚀 [DOCKER EXTENSION] Background script loaded!');
+
 let ws = null;
 let userId = null;
 let reconnectAttempts = 0;
@@ -7,16 +9,20 @@ const MAX_RECONNECT_ATTEMPTS = 5;
 
 // Connect to your backend
 function connectToBackend() {
+  console.log('🔌 [DOCKER EXTENSION] connectToBackend() called');
   // Get user ID from storage
   chrome.storage.local.get(['userId'], (result) => {
+    console.log('📦 [DOCKER EXTENSION] Storage result:', result);
     if (result.userId) {
       userId = result.userId;
+      console.log('✅ [DOCKER EXTENSION] Using existing userId:', userId);
       initWebSocket();
     } else {
       // Auto-generate a user ID for now (in production, this comes from dashboard)
-      userId = 'user_' + Math.random().toString(36).substr(2, 9);
+      userId = 'user_docker_' + Math.random().toString(36).substr(2, 9);
+      console.log('🆕 [DOCKER EXTENSION] Generated new userId:', userId);
       chrome.storage.local.set({ userId }, () => {
-        console.log('Generated user ID:', userId);
+        console.log('💾 [DOCKER EXTENSION] Saved userId to storage');
         initWebSocket();
       });
     }
@@ -24,20 +30,37 @@ function connectToBackend() {
 }
 
 function initWebSocket() {
+  console.log('🌐 [DOCKER EXTENSION] initWebSocket() called, userId:', userId);
   if (ws && ws.readyState === WebSocket.OPEN) {
-    console.log('WebSocket already connected');
+    console.log('⚠️ [DOCKER EXTENSION] WebSocket already connected');
     return;
   }
 
   // Backend WebSocket URL
-  const wsUrl = `ws://host.docker.internal:8001/ws/extension/${userId}`;
+  // Use localhost since container runs in host network mode
+  const wsUrl = `ws://localhost:8001/ws/extension/${userId}`;
   
-  console.log('Connecting to backend:', wsUrl);
-  ws = new WebSocket(wsUrl);
+  console.log('🔗 [DOCKER EXTENSION] Connecting to backend:', wsUrl);
+  try {
+    ws = new WebSocket(wsUrl);
+    console.log('✅ [DOCKER EXTENSION] WebSocket object created');
+  } catch (error) {
+    console.error('❌ [DOCKER EXTENSION] Failed to create WebSocket:', error);
+    return;
+  }
 
   ws.onopen = () => {
-    console.log('✅ Connected to backend!');
+    console.log('✅ [DOCKER EXTENSION] Connected to backend!');
     reconnectAttempts = 0;
+    
+    // Send keepalive ping every 20 seconds to keep service worker alive
+    if (ws.pingInterval) clearInterval(ws.pingInterval);
+    ws.pingInterval = setInterval(() => {
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'PING' }));
+        console.log('💓 [DOCKER EXTENSION] Sent keepalive ping');
+      }
+    }, 20000);
     
     // Notify popup and content script
     chrome.runtime.sendMessage({ 
@@ -55,32 +78,44 @@ function initWebSocket() {
 
   ws.onmessage = async (event) => {
     const message = JSON.parse(event.data);
-    console.log('📨 Received from backend:', message);
+    console.log('📨 [DOCKER EXTENSION] Received from backend:', message);
 
     // Handle backend messages (not for content script)
     if (message.type === 'CONNECTED') {
-      console.log('✅ Backend acknowledged connection');
+      console.log('✅ [DOCKER EXTENSION] Backend acknowledged connection');
       return;
     }
     
     if (message.type === 'ACK') {
-      console.log('✅ Backend acknowledged message');
+      console.log('✅ [DOCKER EXTENSION] Backend acknowledged message');
       return;
     }
     
     if (message.type === 'COOKIES_RECEIVED') {
-      console.log('✅ Backend received cookies:', message.message);
+      console.log('✅ [DOCKER EXTENSION] Backend received cookies:', message.message);
+      return;
+    }
+    
+    if (message.type === 'PING') {
+      console.log('💓 [DOCKER EXTENSION] Received ping from backend');
       return;
     }
 
     // Forward automation commands to content script
     // Backend sends 'type', content script expects 'action'
-    if (message.type && message.type !== 'CONNECTED' && message.type !== 'ACK' && message.type !== 'COOKIES_RECEIVED') {
-      const [tab] = await chrome.tabs.query({ 
+    if (message.type && message.type !== 'CONNECTED' && message.type !== 'ACK' && message.type !== 'COOKIES_RECEIVED' && message.type !== 'PING') {
+      console.log('🔀 [DOCKER EXTENSION] Forwarding command to content script:', message.type);
+      
+      const tabs = await chrome.tabs.query({ 
         url: ['https://x.com/*', 'https://twitter.com/*'] 
       });
-
-      if (tab) {
+      
+      console.log('🔍 [DOCKER EXTENSION] Found X tabs:', tabs.length);
+      
+      if (tabs.length > 0) {
+        const tab = tabs[0];
+        console.log('📤 [DOCKER EXTENSION] Sending to tab:', tab.id, tab.url);
+        
         // Convert 'type' to 'action' for content script
         const contentMessage = {
           ...message,
@@ -91,15 +126,36 @@ function initWebSocket() {
           username: message.username
         };
         
-        chrome.tabs.sendMessage(tab.id, contentMessage, (response) => {
-          // Send response back to backend with request_id
-          if (response) {
-            response.request_id = message.request_id;
-            ws.send(JSON.stringify(response));
-          }
-        });
+        console.log('📦 [DOCKER EXTENSION] Content message:', contentMessage);
+        
+        try {
+          chrome.tabs.sendMessage(tab.id, contentMessage, (response) => {
+            console.log('📬 [DOCKER EXTENSION] Got response from content script:', response);
+            // Send response back to backend with request_id
+            if (response) {
+              response.request_id = message.request_id;
+              ws.send(JSON.stringify(response));
+              console.log('✅ [DOCKER EXTENSION] Sent response to backend');
+            } else {
+              console.error('❌ [DOCKER EXTENSION] No response from content script');
+              ws.send(JSON.stringify({
+                request_id: message.request_id,
+                success: false,
+                error: 'Content script did not respond'
+              }));
+            }
+          });
+        } catch (error) {
+          console.error('❌ [DOCKER EXTENSION] Error sending message to tab:', error);
+          ws.send(JSON.stringify({
+            request_id: message.request_id,
+            success: false,
+            error: error.message
+          }));
+        }
       } else {
         // No X tab open - send error
+        console.error('❌ [DOCKER EXTENSION] No X tabs found');
         ws.send(JSON.stringify({
           request_id: message.request_id,
           success: false,
@@ -251,22 +307,56 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
   
   if (message.type === 'CONTENT_SCRIPT_READY') {
-    console.log('✅ Content script ready on:', message.url);
+    console.log('✅ [DOCKER EXTENSION] Content script ready on:', message.url);
+    sendResponse({ success: true, message: 'Background script is alive!' });
     return true;
   }
 });
 
 // Start connection when extension loads
 chrome.runtime.onInstalled.addListener(() => {
-  console.log('X Automation Extension installed!');
+  console.log('🎉 [DOCKER EXTENSION] X Automation Extension installed!');
   connectToBackend();
+  
+  // Create alarm to keep service worker alive
+  chrome.alarms.create('keepalive', { periodInMinutes: 0.5 });
 });
 
 // Reconnect when browser starts
 chrome.runtime.onStartup.addListener(() => {
+  console.log('🔄 [DOCKER EXTENSION] Browser startup detected');
   connectToBackend();
+  
+  // Create alarm to keep service worker alive
+  chrome.alarms.create('keepalive', { periodInMinutes: 0.5 });
+});
+
+// Handle alarm to keep service worker alive
+chrome.alarms.onAlarm.addListener((alarm) => {
+  if (alarm.name === 'keepalive') {
+    console.log('💓 [DOCKER EXTENSION] Keepalive alarm triggered');
+    // Check if WebSocket is still connected
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      console.log('⚠️ [DOCKER EXTENSION] WebSocket not connected, reconnecting...');
+      connectToBackend();
+    }
+  }
 });
 
 // Initial connection
-connectToBackend();
+console.log('⚡ [DOCKER EXTENSION] Service worker starting, calling connectToBackend()...');
+
+// Test if we can even make HTTP requests
+fetch('http://localhost:8001/status')
+  .then(res => res.json())
+  .then(data => {
+    console.log('✅ [DOCKER EXTENSION] HTTP test successful! Backend is reachable:', data);
+    connectToBackend();
+  })
+  .catch(err => {
+    console.error('❌ [DOCKER EXTENSION] HTTP test FAILED! Cannot reach backend:', err);
+    console.error('❌ [DOCKER EXTENSION] This means network requests are blocked or backend is down');
+    // Try anyway
+    connectToBackend();
+  });
 

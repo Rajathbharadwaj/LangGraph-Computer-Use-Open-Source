@@ -29,10 +29,8 @@ echo "🗂️ Starting desktop..."
 xfdesktop &
 sleep 2
 
-# Start Firefox (traditional, kept for compatibility)
-echo "🦊 Starting Firefox (traditional)..."
-firefox --no-sandbox --disable-dev-shm-usage &
-sleep 3
+# Note: Chrome/Firefox not started here - Playwright will handle browser with extension
+echo "🎭 Browser will be started by Playwright with extension support..."
 
 # Initialize Playwright browsers (required for stealth)
 echo "🎭 Initializing Playwright browsers..."
@@ -42,28 +40,15 @@ sleep 2
 # Start Stealth API server
 echo "🥷 Starting Stealth CUA Server..."
 cd /app
-python3 -c "
-import asyncio
-from stealth_cua_server import startup, app
-import uvicorn
+uvicorn stealth_cua_server:app --host 0.0.0.0 --port 8005 &
 
-async def main():
-    await startup()
-    config = uvicorn.Config(
-        'stealth_cua_server:app',
-        host='0.0.0.0',
-        port=8005,
-        reload=False,
-        access_log=False
-    )
-    server = uvicorn.Server(config)
-    await server.serve()
+# Wait for server to start
+sleep 8
 
-if __name__ == '__main__':
-    asyncio.run(main())
-" &
-
-sleep 5
+# Initialize browser with extension
+echo "🎭 Initializing Playwright browser with extension..."
+curl -X POST http://localhost:8005/initialize 2>/dev/null
+sleep 3
 
 echo "✅ All services started!"
 echo "======================================="

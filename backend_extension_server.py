@@ -342,7 +342,7 @@ async def create_post(request: CreatePostRequest):
         "post_text": request.post_text
     }
     
-    response = await send_to_extension(request.user_id, command, timeout=15)
+    response = await send_to_extension(request.user_id, command, timeout=30)
     return response
 
 

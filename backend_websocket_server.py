@@ -68,12 +68,16 @@ user_threads = {}  # {user_id: thread_id}
 # Format: {thread_id: {"user_id": str, "title": str, "created_at": str, "last_message": str}}
 thread_metadata = {}
 
+# Track active runs for cancellation
+# Format: {user_id: {"thread_id": str, "run_id": str, "task": asyncio.Task, "cancelled": bool}}
+active_runs = {}
+
 # Initialize LangGraph client
 langgraph_client = get_client(url="http://localhost:8124")
 
 # Initialize PostgreSQL Store for persistent memory (writing samples, preferences, etc.)
-# Using the same database as the main app
-DB_URI = os.environ.get("DATABASE_URL", "postgresql://postgres:password@localhost:5432/xgrowth")
+# Using the same database as the main app (port 5433 to avoid conflict with other postgres instances)
+DB_URI = os.environ.get("DATABASE_URL", "postgresql://postgres:password@localhost:5433/xgrowth")
 
 # Create store instance (not using context manager since we need it globally)
 from psycopg_pool import ConnectionPool
@@ -1576,6 +1580,12 @@ async def generate_ai_content(
 async def run_agent(data: dict):
     """
     Run the X Growth Deep Agent with streaming updates
+    
+    Implements LangGraph's double-texting behavior with rollback strategy:
+    - If agent is already running, uses multitask_strategy="rollback" 
+    - This stops the previous run and DELETES it from the database
+    - Starts the new run with the new message
+    - Clean conversation history (no interrupted runs)
     """
     user_id = data.get("user_id")
     task = data.get("task", "Help me grow my X account")
@@ -1598,6 +1608,15 @@ async def run_agent(data: dict):
         
         thread_id = user_threads[user_id]
         
+        # 🔥 DOUBLE-TEXTING: Check if there's already a run in progress
+        is_double_texting = user_id in active_runs and not active_runs[user_id].get("cancelled")
+        
+        if is_double_texting:
+            print(f"⚡ Double-texting detected! User sent new message while agent is running")
+            print(f"   Previous run will be rolled back (deleted)")
+            # Set cancellation flag for the old streaming loop
+            active_runs[user_id]["cancelled"] = True
+        
         # Start the agent run (will stream via WebSocket)
         print(f"🤖 Starting agent for user {user_id} with task: {task}")
         
@@ -1606,11 +1625,14 @@ async def run_agent(data: dict):
             await active_connections[user_id].send_json({
                 "type": "AGENT_STARTED",
                 "thread_id": thread_id,
-                "task": task
+                "task": task,
+                "is_double_texting": is_double_texting
             })
         
-        # Stream agent execution in background
-        task_obj = asyncio.create_task(stream_agent_execution(user_id, thread_id, task))
+        # Stream agent execution in background with rollback strategy if double-texting
+        task_obj = asyncio.create_task(
+            stream_agent_execution(user_id, thread_id, task, use_rollback=is_double_texting)
+        )
         
         # Add error handler for the background task
         def task_done_callback(task):
@@ -1626,7 +1648,8 @@ async def run_agent(data: dict):
         return {
             "success": True,
             "thread_id": thread_id,
-            "message": "Agent started successfully"
+            "message": "Agent started successfully",
+            "double_texting": is_double_texting
         }
         
     except Exception as e:
@@ -1635,29 +1658,65 @@ async def run_agent(data: dict):
         traceback.print_exc()
         return {"success": False, "error": str(e)}
 
-async def stream_agent_execution(user_id: str, thread_id: str, task: str):
+async def stream_agent_execution(user_id: str, thread_id: str, task: str, use_rollback: bool = False):
     """
     Stream agent execution to WebSocket with token-by-token streaming
+    
+    Args:
+        user_id: User identifier
+        thread_id: LangGraph thread ID
+        task: User's message/task
+        use_rollback: If True, uses multitask_strategy="rollback" for double-texting
+                     (deletes the previous run completely)
     """
+    run_id = None
     try:
         print(f"🔄 Starting agent stream for user {user_id}, thread {thread_id}")
+        if use_rollback:
+            print(f"   Using rollback strategy (double-texting - will delete previous run)")
         
         # Track the last sent content to calculate diffs
         last_content = ""
         
+        # Mark this run as active (will be populated with run_id once we get it)
+        active_runs[user_id] = {
+            "thread_id": thread_id,
+            "run_id": None,  # Will be set when we get it from the stream
+            "cancelled": False,
+            "task": asyncio.current_task()
+        }
+        
         # Use "messages" stream mode for token-by-token streaming
+        # If double-texting, use rollback strategy to delete the previous run
+        stream_kwargs = {
+            "thread_id": thread_id,
+            "assistant_id": "x_growth_deep_agent",
+            "input": {
+                "messages": [{
+                    "role": "user",
+                    "content": task
+                }]
+            },
+            "stream_mode": "messages"
+        }
+        
+        # Add multitask_strategy if double-texting
+        if use_rollback:
+            stream_kwargs["multitask_strategy"] = "rollback"
+        
         try:
-            async for chunk in langgraph_client.runs.stream(
-                thread_id=thread_id,
-                assistant_id="x_growth_deep_agent",
-                input={
-                    "messages": [{
-                        "role": "user",
-                        "content": task
-                    }]
-                },
-                stream_mode="messages"
-            ):
+            async for chunk in langgraph_client.runs.stream(**stream_kwargs):
+                # Check if cancelled
+                if user_id in active_runs and active_runs[user_id].get("cancelled"):
+                    print(f"🛑 Run cancelled by user {user_id}")
+                    break
+                
+                # Extract run_id from chunk if available
+                if run_id is None and hasattr(chunk, 'metadata'):
+                    run_id = chunk.metadata.get('run_id')
+                    if run_id and user_id in active_runs:
+                        active_runs[user_id]["run_id"] = run_id
+                        print(f"📝 Tracking run_id: {run_id}")
                 if user_id in active_connections:
                     try:
                         # chunk.data contains the message chunk from LangGraph
@@ -1720,10 +1779,17 @@ async def stream_agent_execution(user_id: str, thread_id: str, task: str):
             
             # Send completion message
             if user_id in active_connections:
+                # Check if it was cancelled
+                was_cancelled = user_id in active_runs and active_runs[user_id].get("cancelled")
+                
                 await active_connections[user_id].send_json({
-                    "type": "AGENT_COMPLETED",
+                    "type": "AGENT_CANCELLED" if was_cancelled else "AGENT_COMPLETED",
                     "thread_id": thread_id
                 })
+            
+            # Clean up active run
+            if user_id in active_runs:
+                del active_runs[user_id]
             
             print(f"✅ Agent completed for user {user_id}")
         
@@ -1748,8 +1814,8 @@ async def stream_agent_execution(user_id: str, thread_id: str, task: str):
                         "message": "Previous conversation not found. Starting fresh."
                     })
                 
-                # Retry with new thread
-                await stream_agent_execution(user_id, new_thread_id, task)
+                # Retry with new thread (preserve use_rollback parameter)
+                await stream_agent_execution(user_id, new_thread_id, task, use_rollback)
             else:
                 raise stream_error
         
@@ -1757,6 +1823,10 @@ async def stream_agent_execution(user_id: str, thread_id: str, task: str):
         print(f"❌ Error during agent execution: {e}")
         import traceback
         traceback.print_exc()
+        
+        # Clean up active run
+        if user_id in active_runs:
+            del active_runs[user_id]
         
         # Send error to frontend
         if user_id in active_connections:
@@ -1768,25 +1838,28 @@ async def stream_agent_execution(user_id: str, thread_id: str, task: str):
             except:
                 pass
 
-@app.post("/api/agent/stop")
-async def stop_agent(data: dict):
+# Stop button removed - use double-texting instead!
+# Just send a new message while agent is running and it will automatically
+# use multitask_strategy="rollback" to cancel the previous run
+
+@app.get("/api/agent/status/{user_id}")
+async def get_agent_status(user_id: str):
     """
-    Stop a running agent
+    Check if an agent is currently running for a user
     """
-    thread_id = data.get("thread_id")
-    
-    if not thread_id:
-        return {"success": False, "error": "thread_id is required"}
-    
     try:
-        # Note: LangGraph SDK doesn't have a direct cancel method yet
-        # This would need to be implemented based on your agent's architecture
-        print(f"🛑 Stop requested for thread {thread_id}")
+        is_running = user_id in active_runs and not active_runs[user_id].get("cancelled")
         
-        return {
-            "success": True,
-            "message": "Stop signal sent (implementation pending)"
-        }
+        if is_running:
+            return {
+                "is_running": True,
+                "thread_id": active_runs[user_id].get("thread_id"),
+                "run_id": active_runs[user_id].get("run_id")
+            }
+        else:
+            return {
+                "is_running": False
+            }
     except Exception as e:
         return {"success": False, "error": str(e)}
 
@@ -1882,31 +1955,121 @@ async def create_new_thread(data: dict):
 @app.get("/api/agent/threads/list/{user_id}")
 async def list_user_threads(user_id: str):
     """
-    List all threads for a user
+    List all threads for a user using LangGraph SDK
     """
     try:
-        # Get threads from metadata that belong to this user
-        user_thread_list = [
-            {
-                "thread_id": tid,
-                **metadata
+        # Use LangGraph SDK to search threads by metadata
+        print(f"🔍 Searching threads for user: {user_id}")
+        threads_response = await langgraph_client.threads.search(
+            metadata={"user_id": user_id},
+            limit=100  # Adjust as needed
+        )
+        
+        if not threads_response:
+            print(f"📋 No threads found for user {user_id}")
+            return {
+                "success": True,
+                "threads": [],
+                "count": 0
             }
-            for tid, metadata in thread_metadata.items()
-            if metadata["user_id"] == user_id
-        ]
+        
+        print(f"📋 Found {len(threads_response)} thread(s) for user {user_id}")
+        
+        # Process threads from search response
+        threads_list = []
+        for thread in threads_response:
+            try:
+                thread_id = thread['thread_id']
+                # Get thread state to fetch messages
+                state = await langgraph_client.threads.get_state(thread_id)
+                
+                # state is a dict with 'values' key
+                if state and "values" in state:
+                    values_dict = state["values"]
+                    messages = values_dict.get("messages", [])
+                    
+                    print(f"🔍 Thread {thread_id}: Found {len(messages)} messages")
+                    
+                    # Skip empty threads (no messages)
+                    if not messages:
+                        print(f"   ⏭️ Skipping empty thread")
+                        continue
+                    
+                    if messages:
+                        first_msg = messages[0] if isinstance(messages[0], dict) else (messages[0].dict() if hasattr(messages[0], 'dict') else {})
+                        print(f"   First message structure: {first_msg.keys() if isinstance(first_msg, dict) else 'not a dict'}")
+                    
+                    # Extract first user message as title
+                    title = "New Chat"
+                    last_message = None
+                    created_at = None
+                    updated_at = None
+                    
+                    for msg in messages:
+                        # Handle both dict and LangChain message objects
+                        msg_dict = msg if isinstance(msg, dict) else (msg.dict() if hasattr(msg, 'dict') else {})
+                        
+                        # Check message type/role (could be 'human', 'user', 'HumanMessage', etc.)
+                        msg_type = msg_dict.get("type", "").lower()
+                        msg_role = msg_dict.get("role", "").lower()
+                        msg_class = msg_dict.get("__class__", {}).get("__name__", "").lower() if isinstance(msg_dict.get("__class__"), dict) else ""
+                        
+                        is_human = "human" in msg_type or "user" in msg_type or "user" in msg_role or "human" in msg_class
+                        is_ai = "ai" in msg_type or "assistant" in msg_type or "assistant" in msg_role or "ai" in msg_class
+                        
+                        if is_human and (title == "New Chat" or not title):
+                            content = msg_dict.get("content", "")
+                            if isinstance(content, str) and content.strip():
+                                title = content[:50] + ("..." if len(content) > 50 else "")
+                        
+                        # Get last AI message
+                        if is_ai:
+                            content = msg_dict.get("content", "")
+                            if isinstance(content, str) and content.strip():
+                                last_message = content[:100] + ("..." if len(content) > 100 else "")
+                            elif isinstance(content, list):
+                                # Extract text from content blocks
+                                text_parts = [block.get("text", "") for block in content if isinstance(block, dict) and block.get("type") == "text"]
+                                if text_parts:
+                                    last_message = " ".join(text_parts)[:100]
+                    
+                    # Use metadata from state if available
+                    # state might be a dict or an object
+                    if isinstance(state, dict):
+                        metadata = state.get("metadata", {})
+                        created_at = metadata.get("created_at") or state.get("created_at") or thread.get("created_at")
+                        updated_at = metadata.get("updated_at") or state.get("updated_at") or thread.get("updated_at")
+                    else:
+                        metadata = getattr(state, 'metadata', {}) or {}
+                        created_at = metadata.get("created_at") or getattr(state, 'created_at', None) or thread.get("created_at")
+                        updated_at = metadata.get("updated_at") or getattr(state, 'created_at', None) or thread.get("updated_at")
+                    
+                    threads_list.append({
+                        "thread_id": thread_id,
+                        "title": title,
+                        "last_message": last_message,
+                        "created_at": created_at,
+                        "updated_at": updated_at,
+                        "user_id": user_id
+                    })
+            except Exception as e:
+                print(f"⚠️ Error fetching thread {thread_id}: {e}")
+                continue
         
         # Sort by updated_at (most recent first)
-        user_thread_list.sort(key=lambda x: x.get("updated_at", x["created_at"]), reverse=True)
+        threads_list.sort(key=lambda x: x.get("updated_at", x["created_at"]), reverse=True)
         
-        print(f"📋 Found {len(user_thread_list)} threads for user {user_id}")
+        print(f"📋 Found {len(threads_list)} threads for user {user_id}")
         
         return {
             "success": True,
-            "threads": user_thread_list,
-            "count": len(user_thread_list)
+            "threads": threads_list,
+            "count": len(threads_list)
         }
     except Exception as e:
         print(f"❌ Error listing threads: {e}")
+        import traceback
+        traceback.print_exc()
         return {"success": False, "error": str(e)}
 
 @app.get("/api/agent/threads/{user_id}")

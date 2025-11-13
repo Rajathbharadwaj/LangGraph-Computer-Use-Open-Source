@@ -12,10 +12,12 @@ import asyncio
 from fastapi import FastAPI
 from pydantic import BaseModel
 import uvicorn
-from playwright.async_api import async_playwright, Browser, BrowserContext, Page
-from playwright_stealth import stealth
+from patchright.async_api import async_playwright, Browser, BrowserContext, Page
+# playwright_stealth not needed with patchright - it has built-in stealth
 import json
 from typing import Optional
+
+# Patchright has built-in stealth - no need for playwright_stealth
 
 # os.environ['DISPLAY'] = ':98'  # Not needed for headless mode
 app = FastAPI(title='Stealth CUA Server')
@@ -86,7 +88,7 @@ async def ensure_main_tab():
             print("⚠️ Main page lost, recreating...")
             if context:
                 main_page = await context.new_page()
-                await stealth(main_page)
+                # Patchright automatically applies stealth
                 page = main_page
                 return True
             return False
@@ -171,7 +173,7 @@ async def initialize_stealth_browser():
             )
         
         page = await context.new_page()
-        await stealth(page)
+        # Patchright automatically applies stealth
         
         # Set as main page
         global main_page
@@ -245,30 +247,38 @@ async def click(request: ClickRequest):
         if stealth_mode and page:
             # Ensure we're on the main tab before clicking
             await ensure_main_tab()
-            
-            # Use JavaScript click to avoid navigation issues
-            # This clicks the topmost element at the coordinates
-            await page.evaluate(f"""
-                (x, y) => {{
-                    const element = document.elementFromPoint(x, y);
+
+            # Log what element is at these coordinates BEFORE clicking
+            element_info = await page.evaluate(f"""
+                () => {{
+                    const element = document.elementFromPoint({request.x}, {request.y});
                     if (element) {{
-                        // Prevent default navigation
-                        element.addEventListener('click', (e) => {{
-                            if (element.tagName === 'A' && !element.getAttribute('data-testid')) {{
-                                e.preventDefault();
-                                e.stopPropagation();
-                            }}
-                        }}, {{ once: true, capture: true }});
-                        
-                        // Click the element
-                        element.click();
+                        return {{
+                            tag: element.tagName,
+                            class: element.className,
+                            testId: element.getAttribute('data-testid'),
+                            ariaLabel: element.getAttribute('aria-label'),
+                            text: element.innerText?.substring(0, 50)
+                        }};
                     }}
+                    return null;
                 }}
-            """, request.x, request.y)
-            
+            """)
+            print(f"🎯 Clicking at ({request.x}, {request.y}) on element: {element_info}")
+
+            # Use Playwright's mouse click - this properly triggers all event handlers
+            # including React's synthetic events
+            await page.mouse.click(request.x, request.y)
+
+            # Longer delay to ensure click is processed
+            await asyncio.sleep(0.5)
+
+            print(f"✅ Click completed at ({request.x}, {request.y})")
+
             return {
-                "success": True, 
-                "message": f"Stealth clicked at ({request.x}, {request.y})"
+                "success": True,
+                "message": f"Stealth clicked at ({request.x}, {request.y})",
+                "element": element_info
             }
         else:
             # Fallback to xdotool
@@ -677,7 +687,7 @@ async def get_status():
     return {
         "success": True,
         "mode": "stealth" if stealth_mode else "xdotool",
-        "stealth_browser_ready": browser is not None,
+        "stealth_browser_ready": context is not None and page is not None,
         "current_url": page.url if page else None,
         "message": "Stealth CUA Server running"
     }
@@ -884,6 +894,165 @@ async def manual_initialize():
         else:
             return {"success": False, "error": "Initialization failed"}
     except Exception as e:
+        return {"success": False, "error": str(e)}
+
+@app.post("/inject-cookies")
+async def inject_cookies(data: dict):
+    """Inject cookies into the browser context"""
+    global context
+    
+    if not context:
+        return {"success": False, "error": "Browser not initialized"}
+    
+    try:
+        cookies = data.get("cookies", [])
+        if not cookies:
+            return {"success": False, "error": "No cookies provided"}
+        
+        # Fix cookie format for Playwright
+        fixed_cookies = []
+        for cookie in cookies:
+            fixed_cookie = cookie.copy()
+            # Playwright expects sameSite to be one of: Strict, Lax, None (capitalized)
+            if 'sameSite' in fixed_cookie:
+                same_site = fixed_cookie['sameSite']
+                if same_site and same_site.lower() in ['strict', 'lax', 'none']:
+                    fixed_cookie['sameSite'] = same_site.capitalize()
+                elif same_site == 'no_restriction':
+                    fixed_cookie['sameSite'] = 'None'
+                elif same_site == 'unspecified':
+                    fixed_cookie['sameSite'] = 'Lax'
+                else:
+                    # Remove invalid sameSite values
+                    del fixed_cookie['sameSite']
+            fixed_cookies.append(fixed_cookie)
+        
+        # Add cookies to the browser context
+        await context.add_cookies(fixed_cookies)
+        
+        return {
+            "success": True,
+            "message": f"Injected {len(fixed_cookies)} cookies",
+            "count": len(fixed_cookies)
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+@app.post("/create-post-playwright")
+async def create_post_playwright(data: dict):
+    """Create a post using Playwright - types like a real user"""
+    global page
+    
+    if not page:
+        return {"success": False, "error": "Browser not initialized"}
+    
+    try:
+        post_text = data.get("text", "")
+        if not post_text:
+            return {"success": False, "error": "No text provided"}
+        
+        print(f"🎯 Creating post with Playwright: {post_text}")
+        
+        # Click the compose box
+        compose_box = page.locator('[data-testid="tweetTextarea_0"]')
+        await compose_box.click()
+        await page.wait_for_timeout(500)
+        
+        # Type the text (this sends real keyboard events!)
+        await compose_box.type(post_text, delay=50)  # 50ms between keypresses
+        await page.wait_for_timeout(1000)
+        
+        # Click the Post button
+        post_button = page.locator('[data-testid="tweetButtonInline"]')
+        await post_button.click()
+        
+        # Wait for post to be published
+        await page.wait_for_timeout(2000)
+        
+        return {
+            "success": True,
+            "message": "Post created successfully",
+            "post_text": post_text
+        }
+    except Exception as e:
+        print(f"❌ Error creating post: {e}")
+        return {"success": False, "error": str(e)}
+
+@app.post("/playwright/click")
+async def playwright_click(data: dict):
+    """Click an element using Playwright's locator"""
+    global page
+    
+    if not page:
+        return {"success": False, "error": "Browser not initialized"}
+    
+    try:
+        selector = data.get("selector", "")
+        timeout = data.get("timeout", 5000)
+        
+        if not selector:
+            return {"success": False, "error": "No selector provided"}
+        
+        print(f"🖱️ Clicking element: {selector}")
+        
+        locator = page.locator(selector)
+        await locator.click(timeout=timeout)
+        
+        return {"success": True, "message": f"Clicked {selector}"}
+    except Exception as e:
+        print(f"❌ Error clicking element: {e}")
+        return {"success": False, "error": str(e)}
+
+@app.post("/playwright/type")
+async def playwright_type(data: dict):
+    """Type text into an element using Playwright's locator"""
+    global page
+    
+    if not page:
+        return {"success": False, "error": "Browser not initialized"}
+    
+    try:
+        selector = data.get("selector", "")
+        text = data.get("text", "")
+        delay = data.get("delay", 50)
+        timeout = data.get("timeout", 5000)
+        
+        if not selector:
+            return {"success": False, "error": "No selector provided"}
+        if not text:
+            return {"success": False, "error": "No text provided"}
+        
+        print(f"⌨️ Typing into {selector}: {text}")
+        
+        locator = page.locator(selector)
+        await locator.type(text, delay=delay, timeout=timeout)
+        
+        return {"success": True, "message": f"Typed text into {selector}"}
+    except Exception as e:
+        print(f"❌ Error typing text: {e}")
+        return {"success": False, "error": str(e)}
+
+@app.post("/playwright/evaluate")
+async def playwright_evaluate(data: dict):
+    """Evaluate JavaScript in the page context"""
+    global page
+    
+    if not page:
+        return {"success": False, "error": "Browser not initialized"}
+    
+    try:
+        script = data.get("script", "")
+        
+        if not script:
+            return {"success": False, "error": "No script provided"}
+        
+        print(f"🔧 Evaluating script: {script[:100]}...")
+        
+        result = await page.evaluate(script)
+        
+        return {"success": True, "result": result}
+    except Exception as e:
+        print(f"❌ Error evaluating script: {e}")
         return {"success": False, "error": str(e)}
 
 if __name__ == "__main__":

@@ -16,7 +16,7 @@ services:
         image: postgres:15-alpine
         container_name: cua-langgraph-postgres
         ports:
-            - "5432:5432"
+            - "5433:5432"
         environment:
             POSTGRES_DB: xgrowth
             POSTGRES_USER: postgres
@@ -45,3 +45,8 @@ services:
         environment:
             REDIS_URI: redis://langgraph-redis:6379
             DATABASE_URI: postgres://postgres:password@langgraph-postgres:5432/xgrowth?sslmode=disable
+        volumes:
+            - ./async_playwright_tools.py:/api/async_playwright_tools.py
+            - ./x_growth_deep_agent.py:/api/x_growth_deep_agent.py
+        extra_hosts:
+            - "host.docker.internal:host-gateway"

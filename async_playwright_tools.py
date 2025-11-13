@@ -16,7 +16,11 @@ from pydantic import BaseModel, Field
 class AsyncPlaywrightClient:
     """Async HTTP client for Playwright CUA server - ASGI compatible"""
     
-    def __init__(self, host: str = 'localhost', port: int = 8005):
+    def __init__(self, host: str = None, port: int = 8005):
+        # Use environment variable or default to host.docker.internal for Docker compatibility
+        if host is None:
+            import os
+            host = os.getenv('CUA_HOST', 'host.docker.internal')
         self.base_url = f"http://{host}:{port}"
         self._session = None
     
@@ -28,17 +32,19 @@ class AsyncPlaywrightClient:
             )
         return self._session
     
-    async def _request(self, method: str, endpoint: str, data: dict = None) -> Dict[str, Any]:
+    async def _request(self, method: str, endpoint: str, data: dict = None, timeout: int = 30) -> Dict[str, Any]:
         """Make async HTTP request to the Playwright CUA server"""
         url = f"{self.base_url}{endpoint}"
         try:
+            # Create session with custom timeout for this request
+            timeout_obj = aiohttp.ClientTimeout(total=timeout)
             session = await self.get_session()
             
             if method.upper() == "GET":
-                async with session.get(url) as response:
+                async with session.get(url, timeout=timeout_obj) as response:
                     return await response.json()
             elif method.upper() == "POST":
-                async with session.post(url, json=data) as response:
+                async with session.post(url, json=data, timeout=timeout_obj) as response:
                     return await response.json()
         except Exception as e:
             print(f"Async Playwright Client Request Error: {e}")
@@ -861,618 +867,396 @@ SCREENSHOT_DATA: {screenshot_b64}
     @tool
     async def like_post(author_or_content: str) -> str:
         """
-        LIKE a specific post on social media by identifying it precisely.
-        
+        LIKE a specific post on X (Twitter) using reliable selector-based clicking.
+        Finds posts by text content and clicks like button using CSS selectors.
+
         Args:
             author_or_content: Specific identifier for the post:
-                             - Author name: "akshay", "@akshay_pachaar" 
+                             - Author name: "akshay", "@akshay_pachaar"
                              - Specific content: "dots-ocr 1.7B vision-language"
                              - Company: "LangChain", "OpenAI", "Anthropic"
                              - Unique phrases: "100+ languages", "open-source OCR"
-        
+
         Examples:
         - like_post("akshay") -> Likes Akshay's post about dots-ocr
         - like_post("dots-ocr vision-language") -> Likes the specific OCR model post
         - like_post("LangChain DeepAgent") -> Likes LangChain's DeepAgent post
-        
-        This tool finds the exact post and clicks its corresponding like button.
+
+        This tool uses selector-based clicking which is more reliable than coordinates.
         """
         try:
-            print(f"🔍 Looking for post by: '{author_or_content}'")
-            
-            # Get DOM elements to find like buttons
-            result = await _global_client._request("GET", "/dom/elements")
+            print(f"❤️ Looking for post by: '{author_or_content}' to like")
+
+            # Step 1: Find posts that match the search term
+            result = await _global_client._request("POST", "/playwright/evaluate", {
+                "script": """(() => {
+                    const articles = Array.from(document.querySelectorAll('article'));
+                    return articles.map((article, index) => {
+                        const likeButton = article.querySelector('[data-testid="like"]');
+                        if (!likeButton) return null;
+
+                        const text = article.innerText || '';
+
+                        return {
+                            index: index,
+                            text: text,
+                            ariaLabel: likeButton.getAttribute('aria-label') || ''
+                        };
+                    }).filter(article => article && article.text.length > 20);
+                })()"""
+            })
+
             if not result.get("success"):
-                return f"Failed to get page elements: {result.get('error', 'Unknown error')}"
-            
-            elements = result.get("elements", [])
-            
-            # Find like buttons and posts more precisely
-            like_buttons = []
-            individual_posts = []
-            
-            for el in elements:
-                # Look for like buttons using data-testid (more reliable)
-                test_id = el.get('testId', '')
-                aria_label = el.get('ariaLabel', '').lower()
-                
-                # Primary method: Use data-testid="like"
-                if test_id == 'like' or (test_id == '' and 'like' in aria_label and 'likes' in aria_label):
-                    like_buttons.append(el)
-                
-                # Look for individual posts (articles or substantial content blocks)
-                tag_name = el.get('tagName', '').lower()
-                text = el.get('text', '')
-                
-                # Focus on article tags or substantial content that looks like individual posts
-                if tag_name == 'article' or (len(text) > 100 and len(text) < 2000):
-                    # Exclude navigation/timeline aggregations
-                    if not ('for you' in text.lower() and 'following' in text.lower() and len(text) > 1000):
-                        individual_posts.append(el)
-            
-            print(f"📊 Found {len(like_buttons)} like buttons and {len(individual_posts)} individual posts")
-            
-            # Find the specific post with better matching
-            target_post = None
-            target_like_button = None
-            
+                return f"❌ Failed to find posts: {result.get('error', 'Unknown error')}"
+
+            articles = result.get("result", [])
+
+            if not articles:
+                return "❌ No posts found on the page. Make sure you're on X timeline."
+
+            print(f"📊 Found {len(articles)} posts with like buttons")
+
+            # Step 2: Find the post matching the search term
             search_term = author_or_content.lower()
-            
-            print(f"🔍 Searching through {len(individual_posts)} posts for: '{search_term}'")
-            
-            for i, post_el in enumerate(individual_posts):
-                content_text = post_el.get('text', '').lower()
-                
-                # Enhanced matching - check for author names, content, or specific phrases
-                is_match = False
-                match_reason = ""
-                
+            target_article = None
+
+            print(f"🔍 Searching for post matching: '{search_term}'")
+
+            for article in articles:
+                content_text = article.get('text', '').lower()
                 if search_term in content_text:
-                    is_match = True
-                    match_reason = f"Contains '{search_term}'"
-                
-                # Special handling for author matching
-                if '@' in search_term or any(name in search_term for name in ['akshay', 'langchain', 'openai', 'anthropic']):
-                    # Check for author mentions
-                    if search_term.replace('@', '') in content_text:
-                        is_match = True
-                        match_reason = f"Author match: '{search_term}'"
-                
-                if is_match:
-                    target_post = post_el
-                    print(f"✅ Found target post #{i+1}: {match_reason}")
-                    print(f"📍 Post position: ({post_el.get('x')}, {post_el.get('y')})")
-                    print(f"📝 Post preview: '{content_text[:200]}...'")
-                    
-                    # Find the closest like button to this specific post
-                    post_y = post_el.get('y', 0)
-                    post_x = post_el.get('x', 0)
-                    closest_button = None
-                    min_distance = float('inf')
-                    
-                    print(f"🔍 Looking for like buttons near this post at y={post_y}")
-                    
-                    for like_btn in like_buttons:
-                        btn_y = like_btn.get('y', 0)
-                        btn_x = like_btn.get('x', 0)
-                        
-                        # Like buttons should be close to the post (within ~600px vertically, below the post)
-                        y_distance = btn_y - post_y  # Distance below the post
-                        
-                        print(f"  Like button '{like_btn.get('ariaLabel', '')}' at ({btn_x}, {btn_y}) - distance: {abs(y_distance)}px {'below' if y_distance > 0 else 'above'}")
-                        
-                        # Like buttons are typically BELOW posts, within reasonable range
-                        if 0 < y_distance < 600 and y_distance < min_distance:
-                            min_distance = y_distance
-                            closest_button = like_btn
-                    
-                    if closest_button:
-                        target_like_button = closest_button
-                        print(f"🎯 Selected like button: '{closest_button.get('ariaLabel')}' at ({closest_button.get('x')}, {closest_button.get('y')}) - {min_distance}px away")
-                        
-                        # Ensure the post is visible by scrolling to it if needed
-                        if post_y < 0 or post_y > 1000:
-                            print(f"📜 Post is off-screen (y={post_y}), scrolling to make it visible...")
-                            scroll_result = await _global_client._request("POST", "/scroll", {
-                                "x": 500, "y": 500, "scroll_x": 0, "scroll_y": -3 if post_y < 0 else 3
-                            })
-                            print(f"Scroll result: {scroll_result.get('success', False)}")
-                            
-                            # Wait a moment for scroll to complete
-                            await asyncio.sleep(1)
-                            
-                            # Re-get DOM elements after scrolling
-                            print("🔄 Re-getting elements after scroll...")
-                            new_result = await _global_client._request("GET", "/dom/elements")
-                            if new_result.get("success"):
-                                new_elements = new_result.get("elements", [])
-                                # Find the like button again
-                                for el in new_elements:
-                                    if el.get('ariaLabel') == closest_button.get('ariaLabel'):
-                                        # Update coordinates
-                                        target_like_button = el
-                                        print(f"🔄 Updated like button position: ({el.get('x')}, {el.get('y')})")
-                                        break
-                        
-                        break
-                    else:
-                        print(f"❌ No like button found within 400px of this post")
-                        # Continue searching other posts
-                        target_post = None
-            
-            if not target_post:
-                return f"❌ Could not find a post by '{author_or_content}'. Try being more specific (e.g., 'akshay', 'dots-ocr', '@username')."
-            
-            if not target_like_button:
-                return f"❌ Found the post by '{author_or_content}' but couldn't locate its like button."
-            
-            # Use COORDINATES (CSS selectors are too generic on X/Twitter)
-            x = target_like_button.get('x')
-            y = target_like_button.get('y')
-            aria_label = target_like_button.get('ariaLabel', '')
-            
-            print(f"🎯 Clicking like button: '{aria_label}' at coordinates ({x}, {y})")
-            
-            # Validate coordinates are reasonable for a like button
-            if x is None or y is None:
-                return f"❌ Invalid coordinates for like button"
-            
-            if x < 400 or x > 600 or y < -2000 or y > 3000:
-                print(f"⚠️ WARNING: Coordinates ({x}, {y}) seem unusual for a like button")
-            
-            print(f"🔧 Using precise coordinates: ({x}, {y})")
-            click_result = await _global_client._request("POST", "/click", {"x": x, "y": y})
-            
-            if click_result.get("success"):
-                # Wait a moment for the UI to update
-                await asyncio.sleep(1)
-                
-                # Verify the like actually worked by checking button state
-                dom_check = await _global_client._request("GET", "/dom/elements")
-                if dom_check.get("success"):
-                    elements = dom_check.get("elements", [])
-                    for el in elements:
-                        # Find the same button by proximity
-                        if (abs(el.get('x', 0) - x) < 10 and abs(el.get('y', 0) - y) < 10 and 
-                            'like' in el.get('ariaLabel', '').lower()):
-                            new_aria_label = el.get('ariaLabel', '')
-                            if 'liked' in new_aria_label.lower():
-                                return f"✅ Successfully liked the post by '{author_or_content}'! 👍 (Button: {new_aria_label})"
-                            else:
-                                return f"⚠️ Clicked like button but status unclear. Button shows: {new_aria_label}"
-                            break
-                
-                # Fallback response if verification fails
-                return f"✅ Clicked like button for post by '{author_or_content}' - please check visually! (Button: {aria_label})"
-            else:
+                    target_article = article
+                    print(f"✅ Found matching post!")
+                    print(f"📝 Post preview: '{content_text[:150]}...'")
+                    print(f"📌 Button state: {article['ariaLabel']}")
+                    break
+
+            if not target_article:
+                return f"❌ Could not find a post matching '{author_or_content}'. Try scrolling or being more specific."
+
+            # Step 3: Extract a unique text snippet for the selector
+            # Use first few words from the post to create a unique selector
+            post_lines = target_article['text'].split('\n')
+            # Find a good text snippet (skip empty lines, take something substantial)
+            selector_text = None
+            for line in post_lines:
+                clean_line = line.strip()
+                if len(clean_line) > 5 and not clean_line.startswith('@'):
+                    selector_text = clean_line[:30]  # Use first 30 chars
+                    break
+
+            if not selector_text:
+                # Fallback to search term if we can't find good text
+                selector_text = author_or_content[:30]
+
+            # Escape quotes in selector text
+            selector_text = selector_text.replace('"', '\\"')
+
+            selector = f'article:has-text("{selector_text}") [data-testid="like"]'
+            print(f"🎯 Using selector: {selector}")
+
+            # Step 4: Click using selector-based approach (more reliable)
+            click_result = await _global_client._request("POST", "/click_selector", {
+                "selector": selector,
+                "selector_type": "css"
+            })
+
+            if not click_result.get("success"):
                 return f"❌ Failed to click like button: {click_result.get('error', 'Unknown error')}"
-                
+
+            print("✅ Like button clicked!")
+
+            # Step 5: Wait and verify
+            await asyncio.sleep(1)
+
+            return f"✅ Successfully liked the post matching '{author_or_content}'! ❤️"
+
         except Exception as e:
-            return f"Like post failed: {str(e)}"
+            return f"❌ Like post failed: {str(e)}"
 
     @tool
     async def unlike_post(author_or_content: str) -> str:
         """
-        UNLIKE a specific post on social media by identifying it precisely.
-        
+        UNLIKE a specific post on X (Twitter) using reliable selector-based clicking.
+
         Args:
             author_or_content: Specific identifier for the post:
-                             - Author name: "akshay", "@akshay_pachaar" 
+                             - Author name: "akshay", "@akshay_pachaar"
                              - Specific content: "dots-ocr 1.7B vision-language"
                              - Company: "LangChain", "OpenAI", "Anthropic"
                              - Unique phrases: "100+ languages", "open-source OCR"
-        
+
         Examples:
         - unlike_post("akshay") -> Unlikes Akshay's post about dots-ocr
         - unlike_post("PDF chatbot") -> Unlikes the PDF chatbot post
         - unlike_post("LangChain DeepAgent") -> Unlikes LangChain's DeepAgent post
-        
-        This tool finds posts that are already liked and unlikes them.
+
+        This tool finds posts that are already liked and unlikes them using selector-based clicking.
         """
         try:
-            print(f"🔍 Looking for LIKED post by: '{author_or_content}' to unlike")
-            
-            # Get DOM elements to find like buttons
-            result = await _global_client._request("GET", "/dom/elements")
+            print(f"💔 Looking for LIKED post by: '{author_or_content}' to unlike")
+
+            # Step 1: Find posts that are already liked
+            result = await _global_client._request("POST", "/playwright/evaluate", {
+                "script": """(() => {
+                    const articles = Array.from(document.querySelectorAll('article'));
+                    return articles.map((article, index) => {
+                        const unlikeButton = article.querySelector('[data-testid="unlike"]');
+                        if (!unlikeButton) return null;
+
+                        const text = article.innerText || '';
+
+                        return {
+                            index: index,
+                            text: text,
+                            ariaLabel: unlikeButton.getAttribute('aria-label') || ''
+                        };
+                    }).filter(article => article && article.text.length > 20);
+                })()"""
+            })
+
             if not result.get("success"):
-                return f"Failed to get page elements: {result.get('error', 'Unknown error')}"
-            
-            elements = result.get("elements", [])
-            
-            # Find like buttons and posts more precisely
-            liked_buttons = []  # Only buttons that show "Liked" status
-            individual_posts = []
-            
-            for el in elements:
-                # Look for LIKED buttons (showing "Liked" status)
-                test_id = el.get('testId', '')
-                aria_label = el.get('ariaLabel', '').lower()
-                if (test_id == 'like' and 'liked' in aria_label) or ('liked' in aria_label and 'like' in aria_label):
-                    liked_buttons.append(el)
-                
-                # Look for individual posts (articles or substantial content blocks)
-                tag_name = el.get('tagName', '').lower()
-                text = el.get('text', '')
-                
-                # Focus on article tags or substantial content that looks like individual posts
-                if tag_name == 'article' or (len(text) > 100 and len(text) < 2000):
-                    # Exclude navigation/timeline aggregations
-                    if not ('for you' in text.lower() and 'following' in text.lower() and len(text) > 1000):
-                        individual_posts.append(el)
-            
-            print(f"📊 Found {len(liked_buttons)} already liked buttons and {len(individual_posts)} individual posts")
-            
-            if not liked_buttons:
-                return f"❌ No liked posts found to unlike. All posts might already be unliked."
-            
-            # Find the specific post with better matching
-            target_post = None
-            target_unlike_button = None
-            
+                return f"❌ Failed to find posts: {result.get('error', 'Unknown error')}"
+
+            articles = result.get("result", [])
+
+            if not articles:
+                return "❌ No liked posts found to unlike. All posts might already be unliked."
+
+            print(f"📊 Found {len(articles)} liked posts")
+
+            # Step 2: Find the post matching the search term
             search_term = author_or_content.lower()
-            
-            print(f"🔍 Searching through {len(individual_posts)} posts for: '{search_term}'")
-            
-            for i, post_el in enumerate(individual_posts):
-                content_text = post_el.get('text', '').lower()
-                
-                # Enhanced matching - check for author names, content, or specific phrases
-                is_match = False
-                match_reason = ""
-                
+            target_article = None
+
+            print(f"🔍 Searching for liked post matching: '{search_term}'")
+
+            for article in articles:
+                content_text = article.get('text', '').lower()
                 if search_term in content_text:
-                    is_match = True
-                    match_reason = f"Contains '{search_term}'"
-                
-                # Special handling for author matching
-                if '@' in search_term or any(name in search_term for name in ['akshay', 'langchain', 'openai', 'anthropic']):
-                    # Check for author mentions
-                    if search_term.replace('@', '') in content_text:
-                        is_match = True
-                        match_reason = f"Author match: '{search_term}'"
-                
-                if is_match:
-                    target_post = post_el
-                    print(f"✅ Found target post #{i+1}: {match_reason}")
-                    print(f"📍 Post position: ({post_el.get('x')}, {post_el.get('y')})")
-                    print(f"📝 Post preview: '{content_text[:200]}...'")
-                    
-                    # Find the closest LIKED button to this specific post
-                    post_y = post_el.get('y', 0)
-                    post_x = post_el.get('x', 0)
-                    closest_button = None
-                    min_distance = float('inf')
-                    
-                    print(f"🔍 Looking for LIKED buttons near this post at y={post_y}")
-                    
-                    for like_btn in liked_buttons:
-                        btn_y = like_btn.get('y', 0)
-                        btn_x = like_btn.get('x', 0)
-                        
-                        # Like buttons should be close to the post (within ~600px vertically, below the post)
-                        y_distance = btn_y - post_y  # Distance below the post
-                        
-                        print(f"  Liked button '{like_btn.get('ariaLabel', '')}' at ({btn_x}, {btn_y}) - distance: {abs(y_distance)}px {'below' if y_distance > 0 else 'above'}")
-                        
-                        # Like buttons are typically BELOW posts, within reasonable range
-                        if 0 < y_distance < 600 and y_distance < min_distance:
-                            min_distance = y_distance
-                            closest_button = like_btn
-                    
-                    if closest_button:
-                        target_unlike_button = closest_button
-                        print(f"🎯 Selected liked button to unlike: '{closest_button.get('ariaLabel')}' at ({closest_button.get('x')}, {closest_button.get('y')}) - {min_distance}px away")
-                        
-                        # Ensure the post is visible by scrolling to it if needed
-                        if post_y < 0 or post_y > 1000:
-                            print(f"📜 Post is off-screen (y={post_y}), scrolling to make it visible...")
-                            scroll_result = await _global_client._request("POST", "/scroll", {
-                                "x": 500, "y": 500, "scroll_x": 0, "scroll_y": -3 if post_y < 0 else 3
-                            })
-                            print(f"Scroll result: {scroll_result.get('success', False)}")
-                            
-                            # Wait a moment for scroll to complete
-                            await asyncio.sleep(1)
-                            
-                            # Re-get DOM elements after scrolling
-                            print("🔄 Re-getting elements after scroll...")
-                            new_result = await _global_client._request("GET", "/dom/elements")
-                            if new_result.get("success"):
-                                new_elements = new_result.get("elements", [])
-                                # Find the like button again
-                                for el in new_elements:
-                                    if el.get('ariaLabel') == closest_button.get('ariaLabel'):
-                                        # Update coordinates
-                                        target_unlike_button = el
-                                        print(f"🔄 Updated like button position: ({el.get('x')}, {el.get('y')})")
-                                        break
-                        
-                        break
-                    else:
-                        print(f"❌ No liked button found within 600px of this post")
-                        # Continue searching other posts
-                        target_post = None
-            
-            if not target_post:
-                return f"❌ Could not find a liked post by '{author_or_content}'. Try being more specific or the post might not be liked."
-            
-            if not target_unlike_button:
-                return f"❌ Found the post by '{author_or_content}' but couldn't locate a liked button to unlike."
-            
-            # Use COORDINATES to unlike the post
-            x = target_unlike_button.get('x')
-            y = target_unlike_button.get('y')
-            aria_label = target_unlike_button.get('ariaLabel', '')
-            
-            print(f"🎯 Clicking unlike button: '{aria_label}' at coordinates ({x}, {y})")
-            
-            # Validate coordinates are reasonable for a like button
-            if x is None or y is None:
-                return f"❌ Invalid coordinates for unlike button"
-            
-            if x < 400 or x > 600 or y < -2000 or y > 3000:
-                print(f"⚠️ WARNING: Coordinates ({x}, {y}) seem unusual for a like button")
-            
-            print(f"🔧 Using precise coordinates: ({x}, {y})")
-            click_result = await _global_client._request("POST", "/click", {"x": x, "y": y})
-            
-            if click_result.get("success"):
-                # Wait a moment for the UI to update
-                await asyncio.sleep(1)
-                
-                # Verify the unlike actually worked by checking button state
-                dom_check = await _global_client._request("GET", "/dom/elements")
-                if dom_check.get("success"):
-                    elements = dom_check.get("elements", [])
-                    for el in elements:
-                        # Find the same button by proximity
-                        if (abs(el.get('x', 0) - x) < 10 and abs(el.get('y', 0) - y) < 10 and 
-                            'like' in el.get('ariaLabel', '').lower()):
-                            new_aria_label = el.get('ariaLabel', '')
-                            if 'liked' not in new_aria_label.lower() and 'like' in new_aria_label.lower():
-                                return f"✅ Successfully unliked the post by '{author_or_content}'! 💔 (Button: {new_aria_label})"
-                            else:
-                                return f"⚠️ Clicked unlike button but status unclear. Button shows: {new_aria_label}"
-                            break
-                
-                # Fallback response if verification fails
-                return f"✅ Clicked unlike button for post by '{author_or_content}' - please check visually! (Button: {aria_label})"
-            else:
+                    target_article = article
+                    print(f"✅ Found matching liked post!")
+                    print(f"📝 Post preview: '{content_text[:150]}...'")
+                    print(f"📌 Button state: {article['ariaLabel']}")
+                    break
+
+            if not target_article:
+                return f"❌ Could not find a liked post matching '{author_or_content}'. Try being more specific or the post might not be liked."
+
+            # Step 3: Extract a unique text snippet for the selector
+            post_lines = target_article['text'].split('\n')
+            selector_text = None
+            for line in post_lines:
+                clean_line = line.strip()
+                if len(clean_line) > 5 and not clean_line.startswith('@'):
+                    selector_text = clean_line[:30]
+                    break
+
+            if not selector_text:
+                selector_text = author_or_content[:30]
+
+            # Escape quotes in selector text
+            selector_text = selector_text.replace('"', '\\"')
+
+            selector = f'article:has-text("{selector_text}") [data-testid="unlike"]'
+            print(f"🎯 Using selector: {selector}")
+
+            # Step 4: Click using selector-based approach
+            click_result = await _global_client._request("POST", "/click_selector", {
+                "selector": selector,
+                "selector_type": "css"
+            })
+
+            if not click_result.get("success"):
                 return f"❌ Failed to click unlike button: {click_result.get('error', 'Unknown error')}"
-                
+
+            print("✅ Unlike button clicked!")
+
+            # Step 5: Wait and verify
+            await asyncio.sleep(1)
+
+            return f"✅ Successfully unliked the post matching '{author_or_content}'! 💔"
+
         except Exception as e:
-            return f"Unlike post failed: {str(e)}"
+            return f"❌ Unlike post failed: {str(e)}"
 
     @tool
     async def comment_on_post(author_or_content: str, comment_text: str) -> str:
         """
-        COMMENT on a specific post on social media by identifying it precisely.
-        
+        COMMENT on a specific post on X (Twitter) using reliable selector-based clicking.
+        Finds posts by text content and clicks reply button using CSS selectors.
+
         Args:
             author_or_content: Specific identifier for the post:
-                             - Author name: "akshay", "@akshay_pachaar" 
+                             - Author name: "akshay", "@akshay_pachaar"
                              - Specific content: "dots-ocr 1.7B vision-language"
                              - Company: "LangChain", "OpenAI", "Anthropic"
                              - Unique phrases: "100+ languages", "open-source OCR"
             comment_text: The text to comment/reply with (e.g., "Great work!", "This is amazing!")
-        
+
         Examples:
         - comment_on_post("akshay", "Amazing work on the OCR model!")
         - comment_on_post("PDF chatbot", "Love this idea! How can I try it?")
         - comment_on_post("LangChain DeepAgent", "When will this be available?")
-        
-        This tool finds the exact post, clicks its reply button, and posts a comment.
+
+        This tool uses selector-based clicking which is more reliable than coordinates.
         """
         try:
             print(f"💬 Looking for post by: '{author_or_content}' to comment: '{comment_text}'")
-            
-            # Get DOM elements to find reply buttons and posts
-            result = await _global_client._request("GET", "/dom/elements")
+
+            # Step 1: Find all article elements with reply buttons
+            result = await _global_client._request("POST", "/playwright/evaluate", {
+                "script": """(() => {
+                    const articles = Array.from(document.querySelectorAll('article'));
+                    return articles.map((article, index) => {
+                        const replyButton = article.querySelector('[data-testid="reply"]');
+                        if (!replyButton) return null;
+
+                        const text = article.innerText || '';
+
+                        return {
+                            index: index,
+                            text: text
+                        };
+                    }).filter(article => article && article.text.length > 20);
+                })()"""
+            })
+
             if not result.get("success"):
-                return f"Failed to get page elements: {result.get('error', 'Unknown error')}"
-            
-            elements = result.get("elements", [])
-            
-            # Find reply buttons and posts
-            reply_buttons = []
-            individual_posts = []
-            
-            for el in elements:
-                # Look for reply buttons using data-testid (most reliable)
-                test_id = el.get('testId', '')
-                aria_label = el.get('ariaLabel', '').lower()
-                
-                # Primary method: Use data-testid="reply"
-                if test_id == 'reply' or ('reply' in aria_label and 'replies' in aria_label):
-                    reply_buttons.append(el)
-                
-                # Look for individual posts (articles or substantial content blocks)
-                tag_name = el.get('tagName', '').lower()
-                text = el.get('text', '')
-                
-                # Focus on article tags or substantial content that looks like individual posts
-                if tag_name == 'article' or (len(text) > 100 and len(text) < 2000):
-                    # Exclude navigation/timeline aggregations
-                    if not ('for you' in text.lower() and 'following' in text.lower() and len(text) > 1000):
-                        individual_posts.append(el)
-            
-            print(f"📊 Found {len(reply_buttons)} reply buttons and {len(individual_posts)} individual posts")
-            
-            # Find the specific post with enhanced matching
-            target_post = None
-            target_reply_button = None
-            
+                return f"❌ Failed to find posts: {result.get('error', 'Unknown error')}"
+
+            articles = result.get("result", [])
+
+            if not articles:
+                return "❌ No posts found on the page. Make sure you're on X timeline."
+
+            print(f"📊 Found {len(articles)} posts with reply buttons")
+
+            # Step 2: Find the post matching the search term
             search_term = author_or_content.lower()
-            
-            print(f"🔍 Searching through {len(individual_posts)} posts for: '{search_term}'")
-            
-            for i, post_el in enumerate(individual_posts):
-                content_text = post_el.get('text', '').lower()
-                
-                # Enhanced matching - check for author names, content, or specific phrases
-                is_match = False
-                match_reason = ""
-                
+            target_article = None
+
+            print(f"🔍 Searching for post matching: '{search_term}'")
+
+            for article in articles:
+                content_text = article.get('text', '').lower()
                 if search_term in content_text:
-                    is_match = True
-                    match_reason = f"Contains '{search_term}'"
-                
-                # Special handling for author matching
-                if '@' in search_term or any(name in search_term for name in ['akshay', 'langchain', 'openai', 'anthropic']):
-                    # Check for author mentions
-                    if search_term.replace('@', '') in content_text:
-                        is_match = True
-                        match_reason = f"Author match: '{search_term}'"
-                
-                if is_match:
-                    target_post = post_el
-                    print(f"✅ Found target post #{i+1}: {match_reason}")
-                    print(f"📍 Post position: ({post_el.get('x')}, {post_el.get('y')})")
-                    print(f"📝 Post preview: '{content_text[:200]}...'")
-                    
-                    # Find the closest reply button to this specific post
-                    post_y = post_el.get('y', 0)
-                    post_x = post_el.get('x', 0)
-                    closest_button = None
-                    min_distance = float('inf')
-                    
-                    print(f"🔍 Looking for reply buttons near this post at y={post_y}")
-                    
-                    for reply_btn in reply_buttons:
-                        btn_y = reply_btn.get('y', 0)
-                        btn_x = reply_btn.get('x', 0)
-                        
-                        # Reply buttons should be close to the post (within ~600px vertically, below the post)
-                        y_distance = btn_y - post_y  # Distance below the post
-                        
-                        print(f"  Reply button '{reply_btn.get('ariaLabel', '')}' at ({btn_x}, {btn_y}) - distance: {abs(y_distance)}px {'below' if y_distance > 0 else 'above'}")
-                        
-                        # Reply buttons are typically BELOW posts, within reasonable range
-                        if 0 < y_distance < 600 and y_distance < min_distance:
-                            min_distance = y_distance
-                            closest_button = reply_btn
-                    
-                    if closest_button:
-                        target_reply_button = closest_button
-                        print(f"🎯 Selected reply button: '{closest_button.get('ariaLabel')}' at ({closest_button.get('x')}, {closest_button.get('y')}) - {min_distance}px away")
-                        break
-                    else:
-                        print(f"❌ No reply button found within 600px of this post")
-                        # Continue searching other posts
-                        target_post = None
-            
-            if not target_post:
-                return f"❌ Could not find a post by '{author_or_content}'. Try being more specific."
-            
-            if not target_reply_button:
-                return f"❌ Found the post by '{author_or_content}' but couldn't locate its reply button."
-            
-            # Step 1: Click the reply button to open comment composer
-            x = target_reply_button.get('x')
-            y = target_reply_button.get('y')
-            aria_label = target_reply_button.get('ariaLabel', '')
-            
-            print(f"🎯 Step 1: Clicking reply button: '{aria_label}' at coordinates ({x}, {y})")
-            
-            # Validate coordinates
-            if x is None or y is None:
-                return f"❌ Invalid coordinates for reply button"
-            
-            # Ensure post is visible by scrolling if needed
-            if y < 0 or y > 1000:
-                print(f"📜 Reply button is off-screen (y={y}), scrolling to make it visible...")
-                scroll_result = await _global_client._request("POST", "/scroll", {
-                    "x": 500, "y": 500, "scroll_x": 0, "scroll_y": -3 if y < 0 else 3
-                })
-                print(f"Scroll result: {scroll_result.get('success', False)}")
-                await asyncio.sleep(1)
-            
-            click_result = await _global_client._request("POST", "/click", {"x": x, "y": y})
-            
+                    target_article = article
+                    print(f"✅ Found matching post!")
+                    print(f"📝 Post preview: '{content_text[:150]}...'")
+                    break
+
+            if not target_article:
+                return f"❌ Could not find a post matching '{author_or_content}'. Try scrolling or being more specific."
+
+            # Step 3: Extract a unique text snippet for the selector
+            post_lines = target_article['text'].split('\n')
+            selector_text = None
+            for line in post_lines:
+                clean_line = line.strip()
+                if len(clean_line) > 5 and not clean_line.startswith('@'):
+                    selector_text = clean_line[:30]
+                    break
+
+            if not selector_text:
+                selector_text = author_or_content[:30]
+
+            # Escape quotes in selector text
+            selector_text = selector_text.replace('"', '\\"')
+
+            selector = f'article:has-text("{selector_text}") [data-testid="reply"]'
+            print(f"🎯 Using selector: {selector}")
+
+            # Step 4: Click reply button using selector-based approach
+            print(f"🎯 Step 1: Clicking reply button...")
+
+            click_result = await _global_client._request("POST", "/click_selector", {
+                "selector": selector,
+                "selector_type": "css"
+            })
+
             if not click_result.get("success"):
                 return f"❌ Failed to click reply button: {click_result.get('error', 'Unknown error')}"
-            
-            print("✅ Step 1 complete: Reply button clicked")
-            
-            # Step 2: Wait for comment composer to appear and type the comment
-            await asyncio.sleep(2)  # Wait for reply dialog to open
-            
-            print(f"💬 Step 2: Typing comment: '{comment_text}'")
-            type_result = await _global_client._request("POST", "/type", {"text": comment_text})
-            
-            if not type_result.get("success"):
-                return f"❌ Failed to type comment: {type_result.get('error', 'Unknown error')}"
-            
-            print("✅ Step 2 complete: Comment text typed")
-            
-            # Step 3: Find and click the "Reply" or "Post" button to submit
-            await asyncio.sleep(1)  # Wait for UI to update
-            
-            # Get updated DOM after opening reply dialog
-            updated_result = await _global_client._request("GET", "/dom/elements")
-            if not updated_result.get("success"):
-                return f"❌ Failed to get updated DOM: {updated_result.get('error')}"
-            
-            updated_elements = updated_result.get("elements", [])
-            
-            # Look for submit button (usually "Reply" or "Post")
-            submit_button = None
-            potential_buttons = []
-            
-            for el in updated_elements:
-                if el.get('tagName') == 'button':
-                    text = el.get('text', '').strip()
-                    aria_label = el.get('ariaLabel', '').lower()
-                    
-                    # Look for reply/post submit buttons
-                    if (text.lower() in ['reply', 'post'] or 
-                        'reply' in aria_label or 'post' in aria_label):
-                        # Make sure it's visible on screen
-                        y_pos = el.get('y', 0)
-                        if y_pos > 0:
-                            potential_buttons.append({
-                                'element': el,
-                                'text': text,
-                                'aria_label': aria_label,
-                                'y': y_pos
-                            })
-                            print(f"  Found potential submit button: '{text}' / '{aria_label}' at ({el.get('x')}, {y_pos})")
-            
-            # Prefer buttons with exact "Reply" text, then by position (rightmost/bottommost)
-            if potential_buttons:
-                # Sort by: 1) Exact "Reply" text first, 2) Then by y position (bottom), 3) Then by x position (right)
-                potential_buttons.sort(key=lambda b: (
-                    0 if b['text'].lower() == 'reply' else 1,  # Exact "Reply" first
-                    -b['y'],  # Bottom-most (higher y values)
-                    -b['element'].get('x', 0)  # Right-most (higher x values)
-                ))
-                
-                submit_button = potential_buttons[0]['element']
-                print(f"🎯 Selected submit button: '{potential_buttons[0]['text']}' at ({submit_button.get('x')}, {submit_button.get('y')})")
-            
-            if not submit_button:
-                # Fallback: try Enter key to submit
-                print("⚠️ Submit button not found, trying Enter key...")
-                key_result = await _global_client._request("POST", "/key", {"keys": ["Enter"]})
-                if key_result.get("success"):
-                    return f"✅ Comment posted on '{author_or_content}' post using Enter key! 💬"
+
+            print("✅ Reply button clicked!")
+
+            # Step 5: Wait for reply dialog to open (with retry logic)
+            print("⏳ Waiting for reply dialog to open...")
+            dialog_opened = False
+            for attempt in range(5):  # Try 5 times over 5 seconds
+                await asyncio.sleep(1)
+
+                dialog_check = await _global_client._request("POST", "/playwright/evaluate", {
+                    "script": """(() => {
+                        const dialog = document.querySelector('[role="dialog"]');
+                        const textarea = document.querySelector('[data-testid="tweetTextarea_0"]');
+                        return !!dialog || !!textarea;
+                    })()"""
+                })
+
+                if dialog_check.get("result"):
+                    dialog_opened = True
+                    print(f"✅ Reply dialog opened! (attempt {attempt + 1})")
+                    break
                 else:
-                    return f"⚠️ Comment typed but couldn't submit. Please check manually."
+                    print(f"⏳ Attempt {attempt + 1}/5: Dialog not yet visible...")
+
+            if not dialog_opened:
+                return f"❌ Reply dialog did not open after 5 seconds. The post might not be interactive or rate limited."
             
-            # Click submit button
-            submit_x = submit_button.get('x')
-            submit_y = submit_button.get('y')
-            submit_text = submit_button.get('text', '')
+            # Step 6: Type comment using execCommand('insertText') - ONLY method that works!
+            print(f"💬 Step 2: Typing comment using insertText...")
+
+            # Escape quotes in comment text
+            escaped_comment = comment_text.replace("'", "\\'").replace('"', '\\"')
+
+            type_result = await _global_client._request("POST", "/playwright/evaluate", {
+                "script": f"""
+                    () => {{
+                        const el = document.querySelector('[data-testid="tweetTextarea_0"]');
+                        if (el) {{
+                            el.focus();
+                            document.execCommand('insertText', false, '{escaped_comment}');
+                            return true;
+                        }}
+                        return false;
+                    }}
+                """
+            })
+
+            if not type_result.get("result"):
+                return f"❌ Failed to type comment: Textarea not found"
+
+            print("✅ Comment text typed!")
             
-            print(f"🎯 Step 3: Clicking submit button: '{submit_text}' at ({submit_x}, {submit_y})")
+            # Step 7: Wait a moment for React to update
+            await asyncio.sleep(1)
             
-            submit_click = await _global_client._request("POST", "/click", {"x": submit_x, "y": submit_y})
+            # Step 8: Click the submit button (data-testid="tweetButton")
+            print(f"🎯 Step 3: Clicking submit button...")
+
+            submit_result = await _global_client._request("POST", "/click_selector", {
+                "selector": '[data-testid="tweetButton"]',
+                "selector_type": "css"
+            })
+
+            if not submit_result.get("success"):
+                return f"❌ Failed to click submit button: {submit_result.get('error', 'Unknown error')}"
+
+            print("✅ Submit button clicked!")
             
-            if submit_click.get("success"):
-                print("✅ Step 3 complete: Comment submitted!")
+            # Step 9: Wait for submission and verify dialog closed
+            await asyncio.sleep(2)
+            
+            dialog_closed = await _global_client._request("POST", "/playwright/evaluate", {
+                "script": "return !document.querySelector('[role=\"dialog\"]');"
+            })
+            
+            if dialog_closed.get("result"):
+                print("✅ Dialog closed - comment posted successfully!")
                 return f"✅ Successfully commented on '{author_or_content}' post! 💬\nComment: \"{comment_text}\""
             else:
-                return f"⚠️ Comment typed but submit failed: {submit_click.get('error')}. Try submitting manually."
+                return f"⚠️ Comment typed but submit failed: {submit_result.get('error')}. Try submitting manually."
                 
         except Exception as e:
             return f"Comment failed: {str(e)}"
@@ -1981,6 +1765,38 @@ SCREENSHOT_DATA: {screenshot_b64}
 def get_async_playwright_tools() -> List[Any]:
     """Get all async Playwright CUA tools for LangGraph ASGI deployment"""
     return create_async_playwright_tools()
+
+
+@tool
+async def create_post_on_x(post_text: str) -> str:
+    """
+    Create a post on X (Twitter) using Playwright automation.
+    This uses real keyboard typing to properly interact with React's contenteditable.
+    
+    Args:
+        post_text: The text content to post (max 280 characters)
+    
+    Returns:
+        Success message if posted, error message if failed
+    
+    Example:
+        result = await create_post_on_x("Hello world! 🌍")
+    """
+    try:
+        result = await _global_client._request(
+            "POST",
+            "/create-post-playwright",
+            {"text": post_text},
+            timeout=40  # Posting can take time
+        )
+        
+        if result.get("success"):
+            return f"✅ Post created successfully! Text: '{result.get('post_text', post_text)}'"
+        else:
+            error = result.get("error", "Unknown error")
+            return f"❌ Failed to create post: {error}"
+    except Exception as e:
+        return f"❌ Error creating post: {str(e)}"
 
 
 if __name__ == "__main__":

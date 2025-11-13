@@ -7,11 +7,14 @@
     "activeTab",
     "storage",
     "tabs",
-    "cookies"
+    "cookies",
+    "alarms"
   ],
   "host_permissions": [
     "https://x.com/*",
-    "https://twitter.com/*"
+    "https://twitter.com/*",
+    "http://localhost:8001/*",
+    "ws://localhost:8001/*"
   ],
   "background": {
     "service_worker": "background.js"
@@ -19,7 +22,7 @@
   "content_scripts": [
     {
       "matches": ["https://x.com/*", "https://twitter.com/*"],
-      "js": ["content.js", "extension_agent_bridge.js"],
+      "js": ["content.js"],
       "run_at": "document_idle"
     }
   ],

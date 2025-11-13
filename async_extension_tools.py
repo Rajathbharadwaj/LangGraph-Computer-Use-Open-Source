@@ -9,6 +9,7 @@ import asyncio
 from typing import List, Dict, Any
 import aiohttp
 import json
+import os
 from langchain_core.tools import tool
 from pydantic import BaseModel, Field
 
@@ -16,7 +17,10 @@ from pydantic import BaseModel, Field
 class AsyncExtensionClient:
     """Async HTTP client for Chrome Extension commands - ASGI compatible"""
     
-    def __init__(self, host: str = 'localhost', port: int = 8001):
+    def __init__(self, host: str = None, port: int = 8001):
+        # Use environment variable or default to host.docker.internal for Docker compatibility
+        if host is None:
+            host = os.getenv('EXTENSION_BACKEND_HOST', 'host.docker.internal')
         self.base_url = f"http://{host}:{port}"
         self._session = None
     
@@ -557,8 +561,29 @@ Please shorten your post."""
             if len(post_text.strip()) == 0:
                 return "❌ Post is empty! Please provide text content."
 
+            # Use the Docker VNC extension (the one without cookies) for automation
+            # First, get status to find which extension is connected
+            status = await _global_extension_client._request("GET", "/status", {})
+            
+            # Find the Docker VNC extension (the one without cookies - used for automation)
+            docker_user_id = None
+            if status.get("users_with_info"):
+                for user in status["users_with_info"]:
+                    # Docker VNC extension doesn't have cookies (gets them from host extension)
+                    if not user.get("hasCookies", True):
+                        docker_user_id = user["userId"]
+                        break
+            
+            # Fallback to any connected user if no Docker extension found
+            if not docker_user_id and status.get("connected_users"):
+                docker_user_id = status["connected_users"][0]
+            
+            if not docker_user_id:
+                return "❌ No Docker VNC extension connected! Please ensure the Docker VNC browser is running."
+            
             result = await _global_extension_client._request("POST", "/extension/create-post", {
-                "post_text": post_text
+                "post_text": post_text,
+                "user_id": docker_user_id
             })
 
             if result.get("success"):
