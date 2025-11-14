@@ -1005,29 +1005,38 @@ async def playwright_click(data: dict):
 
 @app.post("/playwright/type")
 async def playwright_type(data: dict):
-    """Type text into an element using Playwright's locator"""
+    """Type text using keyboard.type() - works with X.com React components"""
     global page
-    
+
     if not page:
         return {"success": False, "error": "Browser not initialized"}
-    
+
     try:
         selector = data.get("selector", "")
         text = data.get("text", "")
         delay = data.get("delay", 50)
         timeout = data.get("timeout", 5000)
-        
-        if not selector:
-            return {"success": False, "error": "No selector provided"}
+
         if not text:
             return {"success": False, "error": "No text provided"}
-        
-        print(f"⌨️ Typing into {selector}: {text}")
-        
-        locator = page.locator(selector)
-        await locator.type(text, delay=delay, timeout=timeout)
-        
-        return {"success": True, "message": f"Typed text into {selector}"}
+
+        print(f"⌨️ Typing with keyboard.type(): {text}")
+
+        # If selector provided, click it first to focus
+        if selector:
+            try:
+                locator = page.locator(selector)
+                await locator.click(timeout=timeout)
+                await asyncio.sleep(0.3)
+            except Exception as e:
+                print(f"⚠️  Could not click selector: {e}, typing anyway...")
+
+        # Use keyboard.type() character by character (this works with X.com!)
+        for char in text:
+            await page.keyboard.type(char)
+            await asyncio.sleep(delay / 1000)  # Convert ms to seconds
+
+        return {"success": True, "message": f"Typed text using keyboard"}
     except Exception as e:
         print(f"❌ Error typing text: {e}")
         return {"success": False, "error": str(e)}

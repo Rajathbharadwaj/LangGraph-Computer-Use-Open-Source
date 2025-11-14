@@ -25,6 +25,9 @@ from langgraph.store.postgres import PostgresStore
 # Writing style learner
 from x_writing_style_learner import XWritingStyleManager, WritingSample
 
+# Workflow imports
+from workflow_parser import parse_workflow, load_workflow, list_available_workflows
+
 # UUID for generating IDs
 import uuid
 
@@ -2156,6 +2159,314 @@ async def get_thread_messages(thread_id: str):
             "error": str(e),
             "messages": []
         }
+
+
+# ============================================================================
+# Workflow Endpoints
+# ============================================================================
+
+# In-Memory Execution Tracking (Could be moved to PostgreSQL in future)
+workflow_executions: dict[str, dict[str, any]] = {}
+
+
+@app.get("/api/workflows")
+async def list_workflows_endpoint():
+    """List all available workflow templates"""
+    try:
+        workflows = list_available_workflows()
+        return {
+            "workflows": workflows,
+            "total_count": len(workflows)
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/workflows/{workflow_id}")
+async def get_workflow_endpoint(workflow_id: str):
+    """Get a specific workflow template"""
+    try:
+        workflows = list_available_workflows()
+        workflow = next((w for w in workflows if w["id"] == workflow_id), None)
+
+        if not workflow:
+            raise HTTPException(status_code=404, detail=f"Workflow {workflow_id} not found")
+
+        # Load full workflow JSON
+        workflow_json = load_workflow(workflow["file_path"])
+        return workflow_json
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/workflow/execute")
+async def execute_workflow_endpoint(workflow_json: dict, user_id: Optional[str] = None, thread_id: Optional[str] = None):
+    """
+    Execute a workflow (non-streaming) via LangGraph Platform
+
+    Args:
+        workflow_json: The workflow definition
+        user_id: Optional user ID for personalization
+        thread_id: Optional thread ID for continuing a conversation/workflow
+                   If None, creates a new thread for this execution
+    """
+    # Generate execution ID and thread ID
+    execution_id = str(uuid.uuid4())
+    workflow_thread_id = thread_id or f"workflow_{execution_id}"
+
+    workflow_id = workflow_json.get("workflow_id", "unknown")
+    workflow_name = workflow_json.get("name", "Unnamed Workflow")
+
+    try:
+        # Track execution
+        workflow_executions[execution_id] = {
+            "execution_id": execution_id,
+            "thread_id": workflow_thread_id,
+            "workflow_id": workflow_id,
+            "workflow_name": workflow_name,
+            "status": "running",
+            "started_at": datetime.utcnow().isoformat(),
+            "completed_at": None,
+            "result": None,
+            "error": None
+        }
+
+        # Parse workflow JSON → Agent instructions
+        prompt = parse_workflow(workflow_json)
+
+        print(f"🚀 Executing workflow: {workflow_name}")
+        print(f"🧵 Thread ID: {workflow_thread_id}")
+        print(f"📋 Prompt:\n{prompt}\n")
+
+        # Use LangGraph Client SDK (deployed agent with PostgreSQL persistence!)
+        langgraph_client = get_client(url="http://localhost:8124")
+
+        # Execute via LangGraph Platform - automatic PostgreSQL checkpointing!
+        input_data = {
+            "messages": [{"role": "user", "content": prompt}]
+        }
+
+        config = {
+            "configurable": {
+                "user_id": user_id,
+                "use_longterm_memory": True if user_id else False
+            }
+        }
+
+        # Create run via client - PostgreSQL handles persistence automatically
+        result = await langgraph_client.runs.create(
+            thread_id=workflow_thread_id,  # Thread managed by PostgreSQL
+            assistant_id="x_growth_deep_agent",  # From langgraph.json
+            input=input_data,
+            config=config
+        )
+
+        # Wait for completion
+        await langgraph_client.runs.join(
+            thread_id=workflow_thread_id,
+            run_id=result["run_id"]
+        )
+
+        # Get final state
+        final_state = await langgraph_client.threads.get_state(workflow_thread_id)
+
+        # Update execution record
+        workflow_executions[execution_id].update({
+            "status": "completed",
+            "completed_at": datetime.utcnow().isoformat(),
+            "result": final_state
+        })
+
+        return workflow_executions[execution_id]
+
+    except Exception as e:
+        # Update execution record with error
+        workflow_executions[execution_id].update({
+            "status": "failed",
+            "completed_at": datetime.utcnow().isoformat(),
+            "error": str(e)
+        })
+
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/workflow/execution/{execution_id}")
+async def get_execution_status_endpoint(execution_id: str):
+    """Get status of a workflow execution"""
+    if execution_id not in workflow_executions:
+        raise HTTPException(status_code=404, detail=f"Execution {execution_id} not found")
+
+    return workflow_executions[execution_id]
+
+
+@app.websocket("/api/workflow/execute/stream")
+async def execute_workflow_stream_endpoint(websocket: WebSocket):
+    """
+    Execute workflow with real-time streaming updates via LangGraph Platform
+
+    Supports thread management with PostgreSQL persistence:
+    - If client sends thread_id, continues existing conversation
+    - If no thread_id, creates new thread for this execution
+    - All state automatically persisted to PostgreSQL
+    """
+    await websocket.accept()
+
+    try:
+        # Receive workflow JSON from client
+        data = await websocket.receive_json()
+        workflow_json = data.get("workflow_json")
+        user_id = data.get("user_id")
+        thread_id = data.get("thread_id")  # Optional: continue existing thread
+        human_in_loop = data.get("human_in_loop", False)  # HIL toggle from UI
+
+        if not workflow_json:
+            await websocket.send_json({
+                "type": "error",
+                "error": "No workflow_json provided"
+            })
+            await websocket.close()
+            return
+
+        execution_id = str(uuid.uuid4())
+        workflow_thread_id = thread_id or f"workflow_{execution_id}"
+
+        workflow_id = workflow_json.get("workflow_id", "unknown")
+        workflow_name = workflow_json.get("name", "Unnamed Workflow")
+
+        # Send started message
+        await websocket.send_json({
+            "type": "started",
+            "execution_id": execution_id,
+            "thread_id": workflow_thread_id,
+            "workflow_id": workflow_id,
+            "workflow_name": workflow_name,
+            "started_at": datetime.utcnow().isoformat()
+        })
+
+        # Parse workflow
+        prompt = parse_workflow(workflow_json)
+
+        await websocket.send_json({
+            "type": "parsing_complete",
+            "prompt": prompt
+        })
+
+        # Use LangGraph Client SDK for streaming with PostgreSQL persistence
+        langgraph_client = get_client(url="http://localhost:8124")
+
+        # Create or get thread
+        if not thread_id:
+            # Create new thread for this workflow execution
+            thread = await langgraph_client.threads.create()
+            workflow_thread_id = thread["thread_id"]
+        else:
+            # Reuse existing thread
+            workflow_thread_id = thread_id
+
+        input_data = {
+            "messages": [{"role": "user", "content": prompt}]
+        }
+
+        config = {
+            "configurable": {
+                "user_id": user_id,
+                "use_longterm_memory": True if user_id else False
+            }
+        }
+
+        # Configure interrupts if Human-in-Loop is enabled
+        if human_in_loop:
+            # Pause before these critical actions
+            interrupt_before = [
+                "comment_on_post",  # Subagent that comments
+                "create_post",  # Subagent that posts
+                "follow_account",  # Subagent that follows
+            ]
+            config["interrupt_before"] = interrupt_before
+            await websocket.send_json({
+                "type": "info",
+                "message": f"🛡️ Human-in-Loop enabled. Will pause before: {', '.join(interrupt_before)}"
+            })
+
+        # Stream execution via LangGraph Platform - automatic PostgreSQL checkpointing!
+        # NOTE: thread_id and assistant_id MUST be positional arguments (not keyword args)
+        # stream_mode="messages" returns tuples of (message_chunk, metadata)
+        async for chunk in langgraph_client.runs.stream(
+            workflow_thread_id,  # Positional: thread_id (managed by PostgreSQL)
+            "x_growth_deep_agent",  # Positional: assistant_id (from langgraph.json)
+            input=input_data,
+            config=config,
+            stream_mode="messages"  # Stream LLM tokens + metadata
+        ):
+            # chunk is a tuple: (message_chunk, metadata)
+            if isinstance(chunk, tuple) and len(chunk) == 2:
+                msg, metadata = chunk
+
+                # Only send AI messages (agent responses) to the user
+                # Skip tool calls, tool messages, and system messages
+                if hasattr(msg, 'type'):
+                    msg_type = msg.type if hasattr(msg.type, '__call__') else msg.type
+
+                    # Only stream AI messages (the agent's responses)
+                    if msg_type == 'ai' and hasattr(msg, 'content') and msg.content:
+                        await websocket.send_json({
+                            "type": "chunk",
+                            "data": msg.content
+                        })
+                    # Skip tool messages, tool calls, human messages, etc.
+
+            # Handle interrupts (Human-in-Loop)
+            elif hasattr(chunk, 'event') and chunk.event == 'interrupt':
+                await websocket.send_json({
+                    "type": "interrupt",
+                    "data": {
+                        "action": chunk.data.get('next', ['Unknown action'])[0] if hasattr(chunk, 'data') else "Action pending",
+                        "details": chunk.data if hasattr(chunk, 'data') else None
+                    }
+                })
+
+                # Wait for user approval/rejection
+                approval_msg = await websocket.receive_json()
+                if approval_msg.get('type') == 'approval':
+                    if approval_msg.get('approved'):
+                        # Resume execution
+                        await langgraph_client.runs.create(
+                            thread_id=workflow_thread_id,
+                            assistant_id="x_growth_deep_agent",
+                            input=None,
+                            config=config
+                        )
+                    else:
+                        # Cancel execution
+                        await websocket.send_json({
+                            "type": "error",
+                            "error": "Action rejected by user"
+                        })
+                        break
+
+        # Send completion message
+        await websocket.send_json({
+            "type": "completed",
+            "execution_id": execution_id,
+            "thread_id": workflow_thread_id,
+            "completed_at": datetime.utcnow().isoformat()
+        })
+
+    except WebSocketDisconnect:
+        print("Client disconnected")
+    except Exception as e:
+        print(f"❌ Workflow execution error: {e}")
+        import traceback
+        traceback.print_exc()
+        await websocket.send_json({
+            "type": "error",
+            "error": str(e)
+        })
+        await websocket.close()
+
 
 if __name__ == "__main__":
     import uvicorn

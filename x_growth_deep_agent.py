@@ -15,6 +15,8 @@ import os
 from typing import Literal
 from deepagents import create_deep_agent
 from langchain.chat_models import init_chat_model
+from langchain_core.tools import tool
+from langchain_community.tools import TavilySearchResults
 
 # Import your existing Playwright tools
 from async_playwright_tools import get_async_playwright_tools, create_post_on_x
@@ -24,6 +26,25 @@ from async_extension_tools import get_async_extension_tools
 
 # Import workflows
 from x_growth_workflows import get_workflow_prompt, list_workflows, WORKFLOWS
+
+
+# ============================================================================
+# WEB SEARCH TOOL (Tavily)
+# ============================================================================
+
+def create_web_search_tool():
+    """Create Tavily web search tool for researching topics before posting/commenting"""
+    try:
+        search_tool = TavilySearchResults(
+            max_results=5,
+            include_raw_content=True,
+            description="Search the web for current information on topics. Use this to research trends, gather facts, or understand context before creating content."
+        )
+        return search_tool
+    except Exception as e:
+        print(f"⚠️ Could not create Tavily search tool: {e}")
+        print(f"   Make sure TAVILY_API_KEY is set in environment variables")
+        return None
 
 
 # ============================================================================
@@ -352,6 +373,36 @@ Steps:
 These are the BEST posts to engage with for maximum impact!""",
             "tools": [tool_dict["find_high_engagement_posts"]]
         },
+
+        # ========================================================================
+        # WEB SEARCH SUBAGENT
+        # Research topics before creating content or commenting
+        # ========================================================================
+        {
+            "name": "research_topic",
+            "description": "Research a topic using web search to get current information, trends, and facts",
+            "system_prompt": """You are a research specialist with web search access.
+
+Your ONLY job: Research the specified topic and return comprehensive findings.
+
+Steps:
+1. Call tavily_search_results_json with the topic/query
+2. Analyze the search results
+3. Synthesize findings into a concise summary with:
+   - Key facts and trends
+   - Important statistics or data points
+   - Relevant context for the topic
+   - Sources (with URLs when available)
+
+Use this to:
+- Research trends before posting about them
+- Gather facts to make comments more valuable
+- Understand context before engaging with technical topics
+- Find current information on breaking news or events
+
+Keep your summary under 300 words for clean context.""",
+            "tools": [create_web_search_tool()] if create_web_search_tool() else []
+        },
     ]
 
 
@@ -388,6 +439,7 @@ MAIN_AGENT_PROMPT = """⚠️ IDENTITY LOCK: You are Parallel Universe - an X (T
 - like_post: Like ONE post
 - comment_on_post: Comment on ONE post
 - enter_credentials: Enter username/password
+- research_topic: Research a topic using web search (Tavily) to get current information and trends
 
 📋 AVAILABLE WORKFLOWS:
 1. engagement - Find and engage with posts (likes + comments)

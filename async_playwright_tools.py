@@ -17,10 +17,13 @@ class AsyncPlaywrightClient:
     """Async HTTP client for Playwright CUA server - ASGI compatible"""
     
     def __init__(self, host: str = None, port: int = 8005):
-        # Use environment variable or default to host.docker.internal for Docker compatibility
+        # Use environment variable or detect if we're in Docker
         if host is None:
             import os
-            host = os.getenv('CUA_HOST', 'host.docker.internal')
+            # Check if we're running inside Docker container
+            in_docker = os.path.exists('/.dockerenv') or os.path.exists('/run/.containerenv')
+            default_host = 'host.docker.internal' if in_docker else 'localhost'
+            host = os.getenv('CUA_HOST', default_host)
         self.base_url = f"http://{host}:{port}"
         self._session = None
     
@@ -1203,41 +1206,31 @@ SCREENSHOT_DATA: {screenshot_b64}
 
             if not dialog_opened:
                 return f"❌ Reply dialog did not open after 5 seconds. The post might not be interactive or rate limited."
-            
-            # Step 6: Type comment using execCommand('insertText') - ONLY method that works!
-            print(f"💬 Step 2: Typing comment using insertText...")
 
-            # Escape quotes in comment text
-            escaped_comment = comment_text.replace("'", "\\'").replace('"', '\\"')
+            # Step 6: Type comment using Playwright's .type() method (triggers React properly)
+            print(f"💬 Step 2: Typing comment using Playwright .type()...")
 
-            type_result = await _global_client._request("POST", "/playwright/evaluate", {
-                "script": f"""
-                    () => {{
-                        const el = document.querySelector('[data-testid="tweetTextarea_0"]');
-                        if (el) {{
-                            el.focus();
-                            document.execCommand('insertText', false, '{escaped_comment}');
-                            return true;
-                        }}
-                        return false;
-                    }}
-                """
+            type_result = await _global_client._request("POST", "/playwright/type", {
+                "selector": '[data-testid="tweetTextarea_0"]',
+                "text": comment_text,
+                "delay": 50,  # 50ms delay between keystrokes (human-like)
+                "timeout": 5000
             })
 
-            if not type_result.get("result"):
-                return f"❌ Failed to type comment: Textarea not found"
+            if not type_result.get("success"):
+                return f"❌ Failed to type comment: {type_result.get('error', 'Unknown error')}"
 
             print("✅ Comment text typed!")
-            
+
             # Step 7: Wait a moment for React to update
             await asyncio.sleep(1)
             
             # Step 8: Click the submit button (data-testid="tweetButton")
             print(f"🎯 Step 3: Clicking submit button...")
 
-            submit_result = await _global_client._request("POST", "/click_selector", {
-                "selector": '[data-testid="tweetButton"]',
-                "selector_type": "css"
+            submit_result = await _global_client._request("POST", "/playwright/click", {
+                "selector": '[role="dialog"] [data-testid="tweetButton"]',
+                "timeout": 5000
             })
 
             if not submit_result.get("success"):
@@ -1249,7 +1242,7 @@ SCREENSHOT_DATA: {screenshot_b64}
             await asyncio.sleep(2)
             
             dialog_closed = await _global_client._request("POST", "/playwright/evaluate", {
-                "script": "return !document.querySelector('[role=\"dialog\"]');"
+                "script": "(() => { return !document.querySelector('[role=\"dialog\"]'); })()"
             })
             
             if dialog_closed.get("result"):
