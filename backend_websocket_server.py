@@ -1720,52 +1720,64 @@ async def stream_agent_execution(user_id: str, thread_id: str, task: str, use_ro
                     if run_id and user_id in active_runs:
                         active_runs[user_id]["run_id"] = run_id
                         print(f"📝 Tracking run_id: {run_id}")
-                if user_id in active_connections:
-                    try:
-                        # chunk.data contains the message chunk from LangGraph
-                        # It's usually a list with message objects
-                        if hasattr(chunk, 'data') and isinstance(chunk.data, list) and len(chunk.data) > 0:
-                            message_data = chunk.data[0]  # Get first item
-                            
-                            # Extract content from the message chunk
-                            # LangGraph returns content as a list of content blocks
-                            if isinstance(message_data, dict):
-                                content_blocks = message_data.get('content', [])
-                                
-                                # Extract text from content blocks
-                                current_content = ""
-                                if isinstance(content_blocks, list) and len(content_blocks) > 0:
-                                    for block in content_blocks:
-                                        if isinstance(block, dict) and block.get('type') == 'text':
-                                            current_content += block.get('text', '')
-                                elif isinstance(content_blocks, str):
-                                    current_content = content_blocks
-                                
-                                # Calculate the new token (diff from last content)
-                                if current_content and current_content != last_content:
-                                    if current_content.startswith(last_content):
-                                        # Send only the new part
-                                        new_token = current_content[len(last_content):]
-                                        if new_token:
+                # LangGraph stream_mode="messages" returns (message, metadata) tuples
+                # Filter by langgraph_node to only show messages from the main agent node
+                # and exclude tool execution nodes
+                if hasattr(chunk, 'data') and hasattr(chunk, 'metadata'):
+                    metadata = chunk.metadata if hasattr(chunk, 'metadata') else {}
+                    node_name = metadata.get('langgraph_node', '') if isinstance(metadata, dict) else ''
+
+                    # Only process messages from the main "model" node
+                    # Skip messages from tool nodes (they contain tool execution results)
+                    if node_name != 'model':
+                        continue
+
+                    message_list = chunk.data
+                    if user_id in active_connections:
+                        try:
+                            # chunk.data contains the message chunk from LangGraph
+                            # It's usually a list with message objects
+                            if isinstance(message_list, list) and len(message_list) > 0:
+                                message_data = message_list[0]  # Get first item
+
+                                # Extract content from the message chunk
+                                # LangGraph returns content as a list of content blocks
+                                if isinstance(message_data, dict):
+                                    content_blocks = message_data.get('content', [])
+
+                                    # Extract text from content blocks
+                                    current_content = ""
+                                    if isinstance(content_blocks, list) and len(content_blocks) > 0:
+                                        for block in content_blocks:
+                                            if isinstance(block, dict) and block.get('type') == 'text':
+                                                current_content += block.get('text', '')
+                                    elif isinstance(content_blocks, str):
+                                        current_content = content_blocks
+
+                                    # Calculate the new token (diff from last content)
+                                    if current_content and current_content != last_content:
+                                        if current_content.startswith(last_content):
+                                            # Send only the new part
+                                            new_token = current_content[len(last_content):]
+                                            if new_token:
+                                                await active_connections[user_id].send_json({
+                                                    "type": "AGENT_TOKEN",
+                                                    "token": new_token
+                                                })
+                                                print(f"📤 Sent new token: {repr(new_token[:30])}...")
+                                        else:
+                                            # Content changed completely (new message), send all
                                             await active_connections[user_id].send_json({
                                                 "type": "AGENT_TOKEN",
-                                                "token": new_token
+                                                "token": current_content
                                             })
-                                            print(f"📤 Sent new token: {repr(new_token[:30])}...")
-                                    else:
-                                        # Content changed completely (new message), send all
-                                        await active_connections[user_id].send_json({
-                                            "type": "AGENT_TOKEN",
-                                            "token": current_content
-                                        })
-                                        print(f"📤 Sent full content: {current_content[:50]}...")
-                                    
-                                    last_content = current_content
-                                    
-                    except Exception as e:
-                        print(f"⚠️ Failed to send WebSocket update: {e}")
-                        import traceback
-                        traceback.print_exc()
+                                            print(f"📤 Sent full content: {current_content[:50]}...")
+
+                                        last_content = current_content
+                        except Exception as e:
+                            print(f"⚠️ Failed to send WebSocket update: {e}")
+                            import traceback
+                            traceback.print_exc()
             
             # Update thread metadata with last message
             if thread_id in thread_metadata and last_content:
@@ -2118,10 +2130,24 @@ async def get_thread_messages(thread_id: str):
         # Format messages for frontend
         formatted_messages = []
         for msg in messages_data:
+            msg_type = msg.get("type", "")
+
+            # Filter: Skip tool messages (tool execution results)
+            if msg_type in ["tool", "function"]:
+                continue
+
+            # Filter: Skip AI messages with tool_calls (agent invoking tools)
+            if msg_type == "ai" and msg.get("tool_calls"):
+                continue
+
+            # Only include human and AI messages without tool calls
+            if msg_type not in ["human", "ai"]:
+                continue
+
             # LangGraph stores messages as BaseMessage objects
-            role = "user" if msg.get("type") == "human" else "assistant"
+            role = "user" if msg_type == "human" else "assistant"
             content = msg.get("content", "")
-            
+
             # Handle content that's an array of objects (from LangGraph)
             if isinstance(content, list):
                 # Extract text from content blocks
@@ -2134,7 +2160,7 @@ async def get_thread_messages(thread_id: str):
                 content = "\n".join(text_parts)
             elif not isinstance(content, str):
                 content = str(content)
-            
+
             formatted_messages.append({
                 "role": role,
                 "content": content,
@@ -2410,12 +2436,29 @@ async def execute_workflow_stream_endpoint(websocket: WebSocket):
                 if hasattr(msg, 'type'):
                     msg_type = msg.type if hasattr(msg.type, '__call__') else msg.type
 
+                    # Debug logging
+                    print(f"📨 Message type: {msg_type}")
+                    if hasattr(msg, 'content'):
+                        content_preview = str(msg.content)[:100] if msg.content else "None"
+                        print(f"   Content preview: {content_preview}")
+                    if hasattr(msg, 'tool_calls'):
+                        print(f"   Has tool_calls: {bool(msg.tool_calls)}")
+
                     # Only stream AI messages (the agent's responses)
+                    # BUT filter out messages that contain tool calls
                     if msg_type == 'ai' and hasattr(msg, 'content') and msg.content:
-                        await websocket.send_json({
-                            "type": "chunk",
-                            "data": msg.content
-                        })
+                        # Check if this is a tool call message (AI invoking a tool)
+                        has_tool_calls = hasattr(msg, 'tool_calls') and msg.tool_calls
+
+                        if not has_tool_calls:
+                            # Only send AI messages without tool calls (pure responses)
+                            print(f"   ✅ Sending AI message to frontend")
+                            await websocket.send_json({
+                                "type": "chunk",
+                                "data": msg.content
+                            })
+                        else:
+                            print(f"   ⏭️  Skipping AI message with tool calls")
                     # Skip tool messages, tool calls, human messages, etc.
 
             # Handle interrupts (Human-in-Loop)
