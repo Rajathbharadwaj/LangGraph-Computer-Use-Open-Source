@@ -1,0 +1,137 @@
+{
+  "workflow_id": "reciprocal_engagement",
+  "name": "Reciprocal Engagement",
+  "description": "Engage with people who engaged with you. Reciprocity builds loyal audience and increases retention.",
+  "category": "retention",
+  "difficulty": "beginner",
+  "estimated_time_minutes": 20,
+  "expected_roi": "high",
+  "version": "1.0",
+  "schedule": {
+    "frequency": "3x_daily",
+    "optimal_times": ["10am", "3pm", "8pm"]
+  },
+  "config": {
+    "max_engagements_per_session": 15,
+    "engagement_types": ["liked", "commented", "quoted"],
+    "check_if_following": true
+  },
+  "steps": [
+    {
+      "id": "step_1",
+      "type": "navigate",
+      "action": "navigate_to_url",
+      "params": {
+        "url": "https://x.com/notifications"
+      },
+      "description": "Navigate to notifications",
+      "next": "step_2"
+    },
+    {
+      "id": "step_2",
+      "type": "analyze",
+      "action": "get_comprehensive_context",
+      "params": {},
+      "description": "Load recent notifications",
+      "next": "step_3"
+    },
+    {
+      "id": "step_3",
+      "type": "loop",
+      "loop_count": "{{config.max_engagements_per_session}}",
+      "description": "Reciprocate engagement",
+      "children": [
+        {
+          "id": "step_3a",
+          "type": "filter",
+          "action": "find_engagement_notification",
+          "params": {
+            "types": "{{config.engagement_types}}"
+          },
+          "description": "Find someone who engaged with you",
+          "next": "step_3b"
+        },
+        {
+          "id": "step_3b",
+          "type": "navigate",
+          "action": "navigate_to_url",
+          "params": {
+            "url": "https://x.com/{{engager_username}}"
+          },
+          "description": "Visit their profile",
+          "next": "step_3c"
+        },
+        {
+          "id": "step_3c",
+          "type": "condition",
+          "condition": "{{config.check_if_following}} AND not_following == true",
+          "description": "Check if should follow",
+          "if_true": "step_3d",
+          "if_false": "step_3e"
+        },
+        {
+          "id": "step_3d",
+          "type": "action",
+          "action": "consider_follow",
+          "params": {
+            "username": "{{engager_username}}"
+          },
+          "description": "Consider following them back",
+          "next": "step_3e"
+        },
+        {
+          "id": "step_3e",
+          "type": "action",
+          "action": "like_post",
+          "params": {
+            "author": "{{engager_username}}"
+          },
+          "description": "Like their latest post",
+          "next": "step_3f"
+        },
+        {
+          "id": "step_3f",
+          "type": "condition",
+          "condition": "post_quality > 0.7",
+          "description": "Check if worth commenting",
+          "if_true": "step_3g",
+          "if_false": "step_3h"
+        },
+        {
+          "id": "step_3g",
+          "type": "action",
+          "action": "comment_on_post",
+          "params": {
+            "author": "{{engager_username}}",
+            "comment": "{{thoughtful_comment}}"
+          },
+          "description": "Comment if high quality",
+          "next": "step_3h"
+        },
+        {
+          "id": "step_3h",
+          "type": "memory",
+          "action": "save_to_history",
+          "params": {
+            "action": "reciprocal_engagement",
+            "target": "{{engager_username}}",
+            "original_engagement": "{{engagement_type}}"
+          },
+          "description": "Track reciprocity"
+        }
+      ],
+      "next": "step_4"
+    },
+    {
+      "id": "step_4",
+      "type": "end",
+      "description": "Workflow complete"
+    }
+  ],
+  "success_metrics": {
+    "reciprocations_completed": "count",
+    "new_follows_gained": "count",
+    "engagement_retention_rate": "percentage"
+  },
+  "learning_enabled": true
+}

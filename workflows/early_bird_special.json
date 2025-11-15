@@ -1,0 +1,103 @@
+{
+  "workflow_id": "early_bird_special",
+  "name": "Early Bird Special",
+  "description": "Comment on new posts from accounts you follow within first 5 minutes. Early comments get more engagement and author attention.",
+  "category": "engagement",
+  "difficulty": "beginner",
+  "estimated_time_minutes": 20,
+  "expected_roi": "high",
+  "version": "1.0",
+  "schedule": {
+    "frequency": "every_30_minutes",
+    "optimal_times": ["9am-11am", "2pm-4pm", "7pm-9pm"]
+  },
+  "config": {
+    "max_comments_per_session": 10,
+    "max_post_age_minutes": 5,
+    "min_post_quality_score": 0.6
+  },
+  "steps": [
+    {
+      "id": "step_1",
+      "type": "navigate",
+      "action": "navigate_to_url",
+      "params": {
+        "url": "https://x.com/following"
+      },
+      "description": "Navigate to Following feed",
+      "next": "step_2"
+    },
+    {
+      "id": "step_2",
+      "type": "analyze",
+      "action": "get_comprehensive_context",
+      "params": {},
+      "description": "Load recent posts from following",
+      "next": "step_3"
+    },
+    {
+      "id": "step_3",
+      "type": "loop",
+      "loop_count": "{{config.max_comments_per_session}}",
+      "description": "Find and comment on fresh posts",
+      "children": [
+        {
+          "id": "step_3a",
+          "type": "filter",
+          "action": "find_recent_post",
+          "params": {
+            "max_age_minutes": "{{config.max_post_age_minutes}}",
+            "min_quality_score": "{{config.min_post_quality_score}}"
+          },
+          "description": "Find post from last 5 minutes",
+          "next": "step_3b"
+        },
+        {
+          "id": "step_3b",
+          "type": "research",
+          "action": "research_topic",
+          "params": {
+            "query": "{{post_topic}}"
+          },
+          "description": "Quick research for context",
+          "next": "step_3c"
+        },
+        {
+          "id": "step_3c",
+          "type": "action",
+          "action": "comment_on_post",
+          "params": {
+            "author": "{{post_author}}",
+            "comment": "{{insightful_comment}}"
+          },
+          "description": "Post comment within 5 mins",
+          "next": "step_3d"
+        },
+        {
+          "id": "step_3d",
+          "type": "memory",
+          "action": "save_to_history",
+          "params": {
+            "action": "early_bird_comment",
+            "post_url": "{{post_url}}",
+            "comment_timestamp": "{{timestamp}}",
+            "track_engagement": true
+          },
+          "description": "Track comment performance"
+        }
+      ],
+      "next": "step_4"
+    },
+    {
+      "id": "step_4",
+      "type": "end",
+      "description": "Workflow complete"
+    }
+  ],
+  "success_metrics": {
+    "comments_posted": "count",
+    "avg_likes_per_comment": "metric",
+    "author_responses_received": "count"
+  },
+  "learning_enabled": true
+}
