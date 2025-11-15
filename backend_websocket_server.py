@@ -1721,16 +1721,17 @@ async def stream_agent_execution(user_id: str, thread_id: str, task: str, use_ro
                         active_runs[user_id]["run_id"] = run_id
                         print(f"📝 Tracking run_id: {run_id}")
                 # LangGraph stream_mode="messages" returns (message, metadata) tuples
-                # Filter by langgraph_node to only show messages from the main agent node
-                # and exclude tool execution nodes
-                if hasattr(chunk, 'data') and hasattr(chunk, 'metadata'):
-                    metadata = chunk.metadata if hasattr(chunk, 'metadata') else {}
-                    node_name = metadata.get('langgraph_node', '') if isinstance(metadata, dict) else ''
+                # Filter by langgraph_node to skip tool execution nodes
+                if hasattr(chunk, 'data'):
+                    # Check metadata to skip tool nodes
+                    if hasattr(chunk, 'metadata'):
+                        metadata = chunk.metadata if isinstance(chunk.metadata, dict) else {}
+                        node_name = metadata.get('langgraph_node', '')
 
-                    # Only process messages from the main "model" node
-                    # Skip messages from tool nodes (they contain tool execution results)
-                    if node_name != 'model':
-                        continue
+                        # Skip only messages that are explicitly from tool nodes
+                        # Allow messages with no node_name (they're usually LLM streaming tokens)
+                        if node_name and node_name != 'model':
+                            continue
 
                     message_list = chunk.data
                     if user_id in active_connections:

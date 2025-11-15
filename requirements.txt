@@ -1,13 +1,15 @@
 # LangGraph Agent Requirements
 
-# Core LangChain
-langchain>=0.1.0
-langchain-core>=0.2.19
-langchain-openai>=0.1.0
-langchain-anthropic>=0.1.0
+# Core LangChain - EXACT versions needed for deepagents 0.2.6
+# _PersistentShellTool only exists with langchain 1.0.5 + langchain-core 1.0.4
+langchain==1.0.5
+langchain-core==1.0.4
+langchain-community
+langchain-openai
+langchain-anthropic
 
 # LangGraph for agent workflows
-langgraph>=0.2.0
+langgraph
 
 # HTTP client
 aiohttp>=3.8.0
@@ -26,6 +28,6 @@ pillow>=10.0.0
 playwright>=1.40.0
 playwright-stealth>=1.0.0
 
-# Deep agents
-deepagents>=0.2.4
+# Deep agents - use latest version (works with langchain 1.0.5+)
+deepagents==0.2.6
 

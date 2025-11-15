@@ -52,11 +52,11 @@ def create_web_search_tool():
 # Each subagent executes ONE Playwright action and returns immediately
 # ============================================================================
 
-def get_atomic_subagents():
+def get_atomic_subagents(store=None, user_id=None, model=None):
     """
     Get atomic subagents with BOTH Playwright AND Extension tools.
     This function is called at runtime to get the actual tool instances.
-    
+
     Extension tools provide capabilities Playwright doesn't have:
     - Access to React internals and hidden data
     - Real-time DOM monitoring
@@ -66,19 +66,87 @@ def get_atomic_subagents():
     """
     # Get all Playwright tools
     playwright_tools = get_async_playwright_tools()
-    
+
     # Get all Extension tools (superpowers!)
     extension_tools = get_async_extension_tools()
-    
+
     # Add the Playwright posting tool (uses real keyboard typing!)
     posting_tool = create_post_on_x
-    
+
     # Combine all tool sets
     all_tools = playwright_tools + extension_tools + [posting_tool]
-    
+
     # Create a dict for easy lookup
     tool_dict = {tool.name: tool for tool in all_tools}
-    
+
+    # WRAP comment_on_post and create_post_on_x with AUTOMATIC style transfer
+    if store and user_id and model:
+        from x_writing_style_learner import XWritingStyleManager
+
+        # Get the original tools
+        original_comment_tool = tool_dict["comment_on_post"]
+        original_post_tool = tool_dict["create_post_on_x"]
+
+        # Create wrapper that auto-generates content in user's style
+        @tool
+        async def _styled_comment_on_post(author_or_content: str, post_content_for_style: str = "") -> str:
+            """
+            Comment on a post. AUTOMATICALLY generates the comment in YOUR writing style!
+
+            Args:
+                author_or_content: The author name or unique text to identify the post
+                post_content_for_style: The post content to match style against (optional, uses author_or_content if not provided)
+            """
+            # Step 1: Auto-generate comment in user's style
+            context = post_content_for_style if post_content_for_style else author_or_content
+            print(f"🎨 Auto-generating comment in your style for: {context[:100]}...")
+
+            try:
+                style_manager = XWritingStyleManager(store, user_id)
+                few_shot_prompt = style_manager.generate_few_shot_prompt(context, "comment", num_examples=10)
+                response = model.invoke(few_shot_prompt)
+                generated_comment = response.content.strip()
+                print(f"✍️ Generated comment using 10 examples: {generated_comment}")
+            except Exception as e:
+                print(f"❌ Style generation failed: {e}")
+                generated_comment = "Interesting post!"
+
+            # Step 2: Post using original tool
+            return await original_comment_tool.ainvoke({
+                "author_or_content": author_or_content,
+                "comment_text": generated_comment
+            })
+
+        @tool
+        async def _styled_create_post_on_x(topic_or_context: str) -> str:
+            """
+            Create a post on X. AUTOMATICALLY generates the post in YOUR writing style!
+
+            Args:
+                topic_or_context: What you want to post about
+            """
+            # Step 1: Auto-generate post in user's style
+            print(f"🎨 Auto-generating post in your style about: {topic_or_context[:100]}...")
+
+            try:
+                style_manager = XWritingStyleManager(store, user_id)
+                few_shot_prompt = style_manager.generate_few_shot_prompt(topic_or_context, "post", num_examples=10)
+                response = model.invoke(few_shot_prompt)
+                generated_post = response.content.strip()
+                print(f"✍️ Generated post using 10 examples: {generated_post}")
+            except Exception as e:
+                print(f"❌ Style generation failed: {e}")
+                generated_post = topic_or_context[:280]
+
+            # Step 2: Post using original tool
+            return await original_post_tool.ainvoke({"post_text": generated_post})
+
+        # Replace tools with wrapped versions
+        tool_dict["comment_on_post"] = _styled_comment_on_post
+        tool_dict["create_post_on_x"] = _styled_create_post_on_x
+
+        print(f"✅ Wrapped comment_on_post and create_post_on_x with AUTOMATIC style transfer!")
+
     return [
         {
             "name": "navigate",
@@ -181,7 +249,7 @@ CRITICAL: Do NOT like multiple posts. ONE post only.""",
         
         {
             "name": "comment_on_post",
-            "description": "Comment on a specific post",
+            "description": "Comment on a specific post. CRITICAL: The main agent must generate the comment text in the USER'S writing style before calling this!",
             "system_prompt": """You are a commenting specialist.
 
 Your ONLY job: Post the comment provided on the specified post.
@@ -190,7 +258,9 @@ Steps:
 1. Call comment_on_post with post identifier and comment text
 2. Return success/failure
 
-That's it. Do NOT comment on multiple posts.""",
+That's it. Do NOT comment on multiple posts.
+
+NOTE: The comment text should already be in the user's writing style (generated by the main agent).""",
             "tools": [tool_dict["comment_on_post"]]
         },
         
@@ -425,6 +495,7 @@ MAIN_AGENT_PROMPT = """⚠️ IDENTITY LOCK: You are Parallel Universe - an X (T
 
 🔧 YOUR TOOLS:
 - get_comprehensive_context: SEE the current page (OmniParser visual + DOM + text) - use this to understand what's visible before planning
+- write_in_my_style: 🚨 MANDATORY - Generate comments/posts in the USER'S exact writing style using their imported posts as examples
 - write_todos: Track workflow progress
 - read_file: Check action_history.json to see what you've done
 - write_file: Save actions to action_history.json
@@ -437,9 +508,12 @@ MAIN_AGENT_PROMPT = """⚠️ IDENTITY LOCK: You are Parallel Universe - an X (T
 - click: Click at coordinates
 - scroll: Scroll the page
 - like_post: Like ONE post
-- comment_on_post: Comment on ONE post
+- comment_on_post: Comment on ONE post (AUTOMATICALLY generates comment in your style!)
+- create_post: Create a post (AUTOMATICALLY generates post in your style!)
 - enter_credentials: Enter username/password
 - research_topic: Research a topic using web search (Tavily) to get current information and trends
+
+NOTE: comment_on_post and create_post AUTOMATICALLY use your writing style - no extra steps needed!
 
 📋 AVAILABLE WORKFLOWS:
 1. engagement - Find and engage with posts (likes + comments)
@@ -492,6 +566,32 @@ MAIN_AGENT_PROMPT = """⚠️ IDENTITY LOCK: You are Parallel Universe - an X (T
 - Focus on posts with <1000 likes (higher visibility)
 - Engage with accounts that have 500-50k followers (sweet spot)
 - Reply to posts within 1 hour of posting (higher engagement)
+
+✍️ WRITING STYLE - CRITICAL FOR ALL CONTENT:
+🚨 MANDATORY: ALL comments, posts, and replies MUST be written in the USER'S exact writing style!
+
+BEFORE writing ANY content (comment, post, reply), you MUST:
+1. Think: "What would the USER write for this?" - NOT what a generic AI would write
+2. Mentally retrieve examples from the user's writing history (you have access to their past posts)
+3. Match their EXACT tone, vocabulary, length, and style
+
+The writing style section below tells you HOW the user writes.
+Use this profile for EVERY piece of content you generate!
+
+⚠️ DO NOT write generic AI-sounding comments like:
+- "Great insights!"
+- "Thanks for sharing!"
+- "This is very helpful!"
+
+✅ INSTEAD, write EXACTLY how the USER would comment:
+- Use THEIR specific words and phrases
+- Match THEIR level of formality/casualness
+- Copy THEIR use of emojis, punctuation, and sentence structure
+- Keep similar length to THEIR typical comments (~their avg_comment_length chars)
+
+When generating content, ask yourself:
+"If someone read this comment, would they think the USER wrote it, or would they think an AI wrote it?"
+If the answer is "AI", REWRITE IT to sound exactly like the user!
 
 📊 MEMORY FORMAT (action_history.json):
 {
@@ -587,20 +687,20 @@ def create_x_growth_agent(config: dict = None):
     
     # Initialize the model
     model = init_chat_model(model_name)
-    
-    # Get atomic subagents (with Playwright tools)
-    subagents = get_atomic_subagents()
-    
+
     # Customize prompt with user preferences if user_id provided
     system_prompt = MAIN_AGENT_PROMPT
     user_memory = None
-    
+    store_for_agent = None
+
     if user_id and use_longterm_memory:
         # Initialize store if not provided
         if store is None:
             from langgraph.store.memory import InMemoryStore
             store = InMemoryStore()
-        
+
+        store_for_agent = store  # Save for passing to subagents
+
         # Initialize user memory
         from x_user_memory import XUserMemory
         user_memory = XUserMemory(store, user_id)
@@ -608,12 +708,60 @@ def create_x_growth_agent(config: dict = None):
         # Get user preferences
         preferences = user_memory.get_preferences()
         
-        # Get user's writing style
-        from user_writing_style import get_user_style_prompt
+        # Get user's writing style from LangGraph Store
+        from x_writing_style_learner import XWritingStyleManager
         try:
-            writing_style_prompt = get_user_style_prompt(user_id)
+            style_manager = XWritingStyleManager(store, user_id)
+            # Get style profile and examples count
+            profile = style_manager.get_style_profile()
+            if not profile:
+                print("⚠️ No style profile found, analyzing now...")
+                profile = style_manager.analyze_writing_style()
+
+            # Get sample count
+            namespace = (user_id, "writing_samples")
+            sample_items = list(store.search(namespace, limit=1000))
+            sample_count = len(sample_items)
+
+            if sample_count > 0:
+                # Get a few random examples for the system prompt
+                example_samples = sample_items[:5] if len(sample_items) >= 5 else sample_items
+                examples_text = "\n".join([f"- \"{item.value.get('content', '')[:150]}...\"" for item in example_samples])
+
+                writing_style_prompt = f"""
+🎨 YOUR WRITING STYLE (learned from {sample_count} of your posts):
+
+📊 STYLE PROFILE:
+- Tone: {profile.tone}
+- Avg comment length: ~{profile.avg_comment_length} characters
+- Avg post length: ~{profile.avg_post_length} characters
+- Uses emojis: {'Yes ✅' if profile.uses_emojis else 'No ❌'}
+- Uses questions: {'Yes ❓' if profile.uses_questions else 'No'}
+- Sentence structure: {profile.sentence_structure}
+- Common words: {', '.join(profile.common_phrases[:5])}
+- Technical terms: {', '.join(profile.technical_terms[:5]) if profile.technical_terms else 'None'}
+
+📝 SAMPLE POSTS FROM YOUR HISTORY:
+{examples_text}
+
+🎯 CRITICAL COMMENTING RULES:
+1. **MATCH YOUR EXACT TONE** - Don't be generic, be YOU
+2. **USE YOUR VOCABULARY** - Use words/phrases you naturally use
+3. **MATCH YOUR LENGTH** - Keep comments around {profile.avg_comment_length} chars
+4. **COPY YOUR STYLE** - Emojis, punctuation, sentence structure - make it indistinguishable from your real comments
+5. **NEVER use hashtags** - X penalizes them in comments
+6. **ADD VALUE** - Don't just say "great post!" - engage meaningfully
+
+When you comment, it should be IMPOSSIBLE to tell it wasn't written by you personally.
+The AI will retrieve similar examples from your writing history for few-shot learning.
+"""
+            else:
+                writing_style_prompt = "Write in a professional but friendly tone. (No writing samples available yet - import your posts first!)"
+                print(f"⚠️ No writing samples found for user {user_id}")
         except Exception as e:
             print(f"⚠️ Could not load writing style: {e}")
+            import traceback
+            traceback.print_exc()
             writing_style_prompt = "Write in a professional but friendly tone."
         
         if preferences:
@@ -636,25 +784,41 @@ You have access to persistent memory via /memories/ filesystem:
 - /memories/learnings/ - What works for this user
 - /memories/account_profiles/ - Cached account research
 
-IMPORTANT: 
+IMPORTANT:
 1. ALWAYS check /memories/engagement_history/ before engaging to avoid duplicates
 2. Use /memories/learnings/ to apply what works for this user
 3. Cache account research in /memories/account_profiles/ for efficiency
 4. Update learnings when you discover patterns
-5. When commenting, MATCH THE USER'S WRITING STYLE from the profile above
+
+✍️ AUTOMATIC WRITING STYLE:
+comment_on_post and create_post are MAGIC - they automatically write in your style!
+
+When you call task("comment_on_post", "Comment on @akshay's post about AI agents"):
+  → The tool automatically:
+     1. Retrieves 10 similar examples from your {sample_count} imported posts
+     2. Generates a comment that sounds EXACTLY like you
+     3. Posts it
+  → You don't need to do anything extra!
+
+Same for task("create_post", "Post about the new feature I shipped"):
+  → Automatically generates + posts in YOUR style
+
+Just call the tools normally - the style transfer happens AUTOMATICALLY inside them!
 """
     
+    # Get atomic subagents with AUTOMATIC style transfer if user_id exists
+    subagents = get_atomic_subagents(store_for_agent, user_id, model)
+
     # Get the comprehensive context tool for the main agent
-    # This allows the main agent to SEE the page before planning
     playwright_tools = get_async_playwright_tools()
     comprehensive_context_tool = next(t for t in playwright_tools if t.name == "get_comprehensive_context")
-    
+
     # Create the main agent with vision capability
     agent = create_deep_agent(
         model=model,
-        system_prompt=system_prompt,  # deepagents 0.2.4+ uses 'system_prompt'
-        tools=[comprehensive_context_tool],  # Main agent can see the page via comprehensive context
-        subagents=subagents,
+        system_prompt=system_prompt,
+        tools=[comprehensive_context_tool],  # Main agent can see the page
+        subagents=subagents,  # comment_on_post and create_post auto-use style transfer!
     )
     
     # Store user_memory reference in agent for access if needed

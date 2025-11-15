@@ -13,7 +13,7 @@
   "dockerfile_lines": [
     "# Install system dependencies for GUI interaction",
     "RUN apt-get update && apt-get install -y \\",
-    "    xvfb \\", 
+    "    xvfb \\",
     "    x11vnc \\",
     "    fluxbox \\",
     "    curl \\",
@@ -21,8 +21,12 @@
     "    wget \\",
     "    && rm -rf /var/lib/apt/lists/*",
     "",
-    "# Set display environment variable", 
-    "ENV DISPLAY=:99"
+    "# Set display environment variable",
+    "ENV DISPLAY=:99",
+    "",
+    "# Force exact langchain versions needed for deepagents 0.2.6",
+    "# This must run AFTER normal requirements to override base constraints",
+    "RUN pip install --force-reinstall --no-deps langchain==1.0.5 langchain-core==1.0.4"
   ],
   "store": {
     "ttl": {
