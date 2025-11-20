@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Optional
 from datetime import datetime
+from contextlib import asynccontextmanager
 import asyncio
 import json
 import os
@@ -28,6 +29,9 @@ from x_writing_style_learner import XWritingStyleManager, WritingSample
 # Workflow imports
 from workflow_parser import parse_workflow, load_workflow, list_available_workflows
 
+# Scheduled post executor
+from scheduled_post_executor import get_executor
+
 # UUID for generating IDs
 import uuid
 
@@ -41,7 +45,30 @@ from fastapi import Depends
 from clerk_auth import get_current_user
 from clerk_webhooks import router as webhook_router
 
-app = FastAPI(title="Parallel Universe Backend")
+# Lifespan context manager for startup/shutdown
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Initialize scheduled post executor on startup"""
+    print("🚀 Starting Parallel Universe Backend...")
+    try:
+        executor = await get_executor()
+        print(f"✅ Scheduled post executor initialized with {len(executor.get_scheduled_posts())} pending posts")
+    except Exception as e:
+        print(f"❌ Failed to initialize scheduled post executor: {e}")
+        import traceback
+        traceback.print_exc()
+
+    print("📡 WebSocket: ws://localhost:8001/ws/extension/{user_id}")
+    print("🌐 Dashboard: http://localhost:3000")
+    print("🔌 Extension will connect automatically!")
+    print("🤖 LangGraph Agent: http://localhost:8124")
+
+    yield
+
+    # Shutdown
+    print("🛑 Shutting down...")
+
+app = FastAPI(title="Parallel Universe Backend", lifespan=lifespan)
 
 # Enable CORS for Next.js frontend
 app.add_middleware(
@@ -101,6 +128,7 @@ print(f"✅ Initialized PostgresStore for persistent memory: {DB_URI}")
 # After first setup, comment it out (as shown in docs)
 # store.setup()  # Already initialized via migration
 
+# Initialize scheduled post executor on startup
 @app.get("/")
 async def root():
     return {
@@ -2682,6 +2710,9 @@ async def update_scheduled_post(
         if not post:
             raise HTTPException(status_code=404, detail="Post not found")
 
+        old_status = post.status
+        needs_rescheduling = False
+
         # Update fields if provided
         if request.content is not None:
             post.content = request.content
@@ -2689,13 +2720,58 @@ async def update_scheduled_post(
             post.media_urls = request.media_urls
         if request.scheduled_at is not None:
             post.scheduled_at = datetime.fromisoformat(request.scheduled_at.replace('Z', '+00:00'))
+            needs_rescheduling = True
         if request.status is not None:
             post.status = request.status
+            if request.status == "scheduled" and old_status != "scheduled":
+                needs_rescheduling = True
 
         post.updated_at = datetime.utcnow()
 
         db.commit()
         db.refresh(post)
+
+        # Schedule or reschedule the post if status changed to "scheduled"
+        if needs_rescheduling and post.status == "scheduled":
+            try:
+                executor = await get_executor()
+
+                # Get the X account info
+                x_account = db.query(XAccount).filter(
+                    XAccount.id == post.x_account_id
+                ).first()
+
+                if x_account and post.scheduled_at:
+                    # Cancel existing job if rescheduling
+                    if old_status == "scheduled":
+                        executor.cancel_scheduled_post(post.id)
+
+                    # Check if post should execute immediately (in the past)
+                    if post.scheduled_at <= datetime.now():
+                        print(f"⚠️ Post {post.id} scheduled for past time {post.scheduled_at}, executing immediately")
+                        # Execute immediately
+                        await executor._execute_post_action(
+                            post_id=post.id,
+                            post_content=post.content,
+                            user_id=x_account.user_id,
+                            username=x_account.username,
+                            media_urls=post.media_urls or []
+                        )
+                    else:
+                        # Schedule for future execution
+                        executor.schedule_post(
+                            post_id=post.id,
+                            post_content=post.content,
+                            scheduled_time=post.scheduled_at,
+                            user_id=x_account.user_id,
+                            username=x_account.username,
+                            media_urls=post.media_urls or []
+                        )
+                        print(f"✅ Post {post.id} scheduled for {post.scheduled_at}")
+            except Exception as e:
+                print(f"⚠️ Failed to schedule post {post.id}: {e}")
+                import traceback
+                traceback.print_exc()
 
         return {
             "success": True,
@@ -2727,6 +2803,15 @@ async def delete_scheduled_post(
 
         if not post:
             raise HTTPException(status_code=404, detail="Post not found")
+
+        # Cancel scheduled job if post was scheduled
+        if post.status == "scheduled":
+            try:
+                executor = await get_executor()
+                executor.cancel_scheduled_post(post.id)
+                print(f"🗑️ Cancelled scheduled job for post {post.id}")
+            except Exception as e:
+                print(f"⚠️ Failed to cancel scheduled job for post {post.id}: {e}")
 
         db.delete(post)
         db.commit()
@@ -2780,79 +2865,157 @@ async def upload_media(file: UploadFile = File(...)):
 @app.post("/api/scheduled-posts/generate-ai")
 async def generate_ai_content(
     user_id: str,
-    count: int = 5,
+    count: int = 7,  # Always generate 7 for the week
     db: Session = Depends(get_db)
 ):
     """
-    Generate AI content suggestions for scheduled posts
-    Uses the user's writing style learner
+    Generate weekly AI content using the Weekly Content Generator Agent
+
+    This uses LangGraph to:
+    1. Analyze user's writing style from imported posts
+    2. Analyze high-quality competitor posts
+    3. Conduct web research with Perplexity API
+    4. Strategize content for growth
+    5. Generate 7 posts for next week
     """
     try:
-        # Get user's X account
+        from weekly_content_generator import generate_weekly_content
+        from langgraph.store.postgres import PostgresStore
+
+        # Get user's X account to get username
         x_account = db.query(XAccount).filter(
             XAccount.user_id == user_id,
             XAccount.is_connected == True
         ).first()
 
+        if x_account:
+            user_handle = x_account.username
+        else:
+            # Fallback: Try to get username from social graph data
+            print("⚠️  No X account found, trying to get username from social graph...")
+            conn_string = os.getenv("POSTGRES_CONNECTION_STRING",
+                                   "postgresql://postgres:password@localhost:5433/xgrowth")
+
+            with PostgresStore.from_conn_string(conn_string) as store:
+                graph_namespace = (user_id, "social_graph")
+                graph_item = (store.get(graph_namespace, "graph_data") or
+                            store.get(graph_namespace, "latest") or
+                            store.get(graph_namespace, "current"))
+
+                if graph_item and graph_item.value.get("user_handle"):
+                    user_handle = graph_item.value.get("user_handle")
+                    print(f"✅ Found username from social graph: @{user_handle}")
+                else:
+                    raise HTTPException(status_code=404, detail="Could not determine user's X handle")
+
+        print(f"🚀 Generating weekly content for @{user_handle}...")
+
+        # Run the weekly content generator agent
+        generated_posts = await generate_weekly_content(
+            user_id=user_id,
+            user_handle=user_handle
+        )
+
+        print(f"✅ Generated {len(generated_posts)} posts")
+
+        # Save generated posts to database as drafts for persistence
+        saved_posts = []
+
+        # Get or create x_account
         if not x_account:
-            raise HTTPException(status_code=404, detail="No connected X account found")
+            # Create a temporary x_account entry if it doesn't exist
+            x_account = XAccount(
+                user_id=user_id,
+                username=user_handle,
+                is_connected=True
+            )
+            db.add(x_account)
+            db.flush()  # Get the ID without committing
 
-        # TODO: Integrate with your x_writing_style_learner.py
-        # For now, generate mock AI content
-        # In production, you would:
-        # 1. Load user's writing style from user_posts table
-        # 2. Use AI model to generate posts in their style
-        # 3. Score confidence based on style similarity
+        for post_data in generated_posts:
+            scheduled_post = ScheduledPost(
+                x_account_id=x_account.id,
+                content=post_data["content"],
+                scheduled_at=datetime.fromisoformat(post_data["scheduled_at"].replace("Z", "+00:00")),
+                status="draft",
+                ai_generated=True,
+                ai_confidence=int(post_data.get("confidence", 1.0) * 100),
+                ai_metadata=post_data.get("metadata", {})
+            )
+            db.add(scheduled_post)
+            db.flush()
 
-        import random
-        from datetime import timedelta
+            # Add ID to response
+            saved_post = {
+                "id": scheduled_post.id,
+                **post_data
+            }
+            saved_posts.append(saved_post)
 
-        ai_posts = []
-        templates = [
-            "Just shipped a major update! The response has been incredible. Here's what's next: {}",
-            "Building in public taught me {}. This is the #1 lesson I learned this month.",
-            "Quick reminder: {} Your product doesn't have to be perfect to launch.",
-            "The best investment you can make? {} Everything else becomes easier after that.",
-            "If you're working on {}, you need to see this. Game changer."
-        ]
+        db.commit()
+        print(f"💾 Saved {len(saved_posts)} posts to database as drafts")
 
-        topics = [
-            "learning to build",
-            "solving real problems",
-            "shipping fast",
-            "getting user feedback",
-            "iterating quickly"
-        ]
+        return {
+            "success": True,
+            "posts": saved_posts,
+            "count": len(saved_posts),
+            "message": f"Generated {len(saved_posts)} posts for next week"
+        }
 
-        for i in range(count):
-            template = random.choice(templates)
-            topic = random.choice(topics)
-            content = template.format(topic)
+    except Exception as e:
+        print(f"❌ Error generating AI content: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
 
-            # Generate scheduled time (spread across next 7 days)
-            days_ahead = (i % 7) + 1
-            hours = random.choice([9, 14, 18])  # 9am, 2pm, or 6pm
-            scheduled_time = datetime.utcnow() + timedelta(days=days_ahead, hours=hours-datetime.utcnow().hour)
 
-            ai_posts.append({
-                "content": content,
-                "scheduled_at": scheduled_time.isoformat(),
-                "confidence": random.randint(85, 98),
-                "ai_generated": True
+@app.get("/api/scheduled-posts/ai-drafts")
+async def get_ai_drafts(
+    user_id: str,
+    db: Session = Depends(get_db)
+):
+    """
+    Get all AI-generated draft posts for a user
+    """
+    try:
+        # Get user's X accounts
+        x_accounts = db.query(XAccount).filter(XAccount.user_id == user_id).all()
+        if not x_accounts:
+            return {"success": True, "posts": [], "message": "No X accounts connected"}
+
+        x_account_ids = [acc.id for acc in x_accounts]
+
+        # Query AI-generated draft posts only
+        drafts = db.query(ScheduledPost).filter(
+            ScheduledPost.x_account_id.in_(x_account_ids),
+            ScheduledPost.status == "draft",
+            ScheduledPost.ai_generated == True
+        ).order_by(ScheduledPost.scheduled_at.asc()).all()
+
+        # Format response
+        posts = []
+        for draft in drafts:
+            posts.append({
+                "id": draft.id,
+                "content": draft.content,
+                "scheduled_at": draft.scheduled_at.isoformat(),
+                "confidence": draft.ai_confidence / 100.0 if draft.ai_confidence else 1.0,
+                "ai_generated": True,
+                "metadata": draft.ai_metadata or {}
             })
 
         return {
             "success": True,
-            "posts": ai_posts,
-            "count": len(ai_posts),
-            "message": "AI content generated successfully"
+            "posts": posts,
+            "count": len(posts)
         }
 
     except Exception as e:
-        print(f"Error generating AI content: {e}")
+        print(f"❌ Error fetching AI drafts: {e}")
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
+
 
 # ============================================================================
 # AGENT CONTROL ENDPOINTS

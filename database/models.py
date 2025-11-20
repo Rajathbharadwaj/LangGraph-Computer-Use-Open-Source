@@ -140,6 +140,7 @@ class ScheduledPost(Base):
     # AI metadata
     ai_generated = Column(Boolean, default=False)
     ai_confidence = Column(Integer)  # 0-100
+    ai_metadata = Column(JSON, default={})  # Additional metadata (topics, rationale, etc.)
 
     # Error handling
     error_message = Column(Text)

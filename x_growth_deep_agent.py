@@ -79,9 +79,13 @@ def get_atomic_subagents(store=None, user_id=None, model=None):
     # Create a dict for easy lookup
     tool_dict = {tool.name: tool for tool in all_tools}
 
-    # WRAP comment_on_post and create_post_on_x with AUTOMATIC style transfer
+    # WRAP comment_on_post and create_post_on_x with AUTOMATIC style transfer + activity logging
     if store and user_id and model:
         from x_writing_style_learner import XWritingStyleManager
+        from activity_logger import ActivityLogger
+
+        # Initialize activity logger
+        activity_logger = ActivityLogger(store, user_id)
 
         # Get the original tools
         original_comment_tool = tool_dict["comment_on_post"]
@@ -101,6 +105,7 @@ def get_atomic_subagents(store=None, user_id=None, model=None):
             context = post_content_for_style if post_content_for_style else author_or_content
             print(f"🎨 Auto-generating comment in your style for: {context[:100]}...")
 
+            generated_comment = "Interesting post!"
             try:
                 style_manager = XWritingStyleManager(store, user_id)
                 few_shot_prompt = style_manager.generate_few_shot_prompt(context, "comment", num_examples=10)
@@ -109,13 +114,24 @@ def get_atomic_subagents(store=None, user_id=None, model=None):
                 print(f"✍️ Generated comment using 10 examples: {generated_comment}")
             except Exception as e:
                 print(f"❌ Style generation failed: {e}")
-                generated_comment = "Interesting post!"
 
             # Step 2: Post using original tool
-            return await original_comment_tool.ainvoke({
+            result = await original_comment_tool.ainvoke({
                 "author_or_content": author_or_content,
                 "comment_text": generated_comment
             })
+
+            # Step 3: Log activity
+            status = "success" if ("successfully" in result.lower() or "✅" in result) else "failed"
+            error_msg = result if status == "failed" else None
+            activity_logger.log_comment(
+                target=author_or_content,
+                content=generated_comment,
+                status=status,
+                error=error_msg
+            )
+
+            return result
 
         @tool
         async def _styled_create_post_on_x(topic_or_context: str) -> str:
@@ -128,6 +144,7 @@ def get_atomic_subagents(store=None, user_id=None, model=None):
             # Step 1: Auto-generate post in user's style
             print(f"🎨 Auto-generating post in your style about: {topic_or_context[:100]}...")
 
+            generated_post = topic_or_context[:280]
             try:
                 style_manager = XWritingStyleManager(store, user_id)
                 few_shot_prompt = style_manager.generate_few_shot_prompt(topic_or_context, "post", num_examples=10)
@@ -136,10 +153,29 @@ def get_atomic_subagents(store=None, user_id=None, model=None):
                 print(f"✍️ Generated post using 10 examples: {generated_post}")
             except Exception as e:
                 print(f"❌ Style generation failed: {e}")
-                generated_post = topic_or_context[:280]
 
             # Step 2: Post using original tool
-            return await original_post_tool.ainvoke({"post_text": generated_post})
+            result = await original_post_tool.ainvoke({"post_text": generated_post})
+
+            # Step 3: Log activity
+            status = "success" if ("successfully" in result.lower() or "✅" in result) else "failed"
+            error_msg = result if status == "failed" else None
+            # Extract post URL if present
+            post_url = None
+            if "x.com" in result:
+                import re
+                url_match = re.search(r'https://(?:twitter\.com|x\.com)/\S+', result)
+                if url_match:
+                    post_url = url_match.group(0)
+
+            activity_logger.log_post(
+                content=generated_post,
+                status=status,
+                post_url=post_url,
+                error=error_msg
+            )
+
+            return result
 
         # Replace tools with wrapped versions
         tool_dict["comment_on_post"] = _styled_comment_on_post

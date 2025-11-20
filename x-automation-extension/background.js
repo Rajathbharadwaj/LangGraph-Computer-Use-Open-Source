@@ -30,7 +30,7 @@ function initWebSocket() {
   }
 
   // Backend WebSocket URL
-  const wsUrl = `ws://localhost:8001/ws/extension/${userId}`;
+  const wsUrl = `ws://localhost:8002/ws/extension/${userId}`;
   
   console.log('Connecting to backend:', wsUrl);
   ws = new WebSocket(wsUrl);
