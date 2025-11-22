@@ -15,16 +15,22 @@ from pydantic import BaseModel, Field
 
 class AsyncPlaywrightClient:
     """Async HTTP client for Playwright CUA server - ASGI compatible"""
-    
+
     def __init__(self, host: str = None, port: int = 8005):
-        # Use environment variable or detect if we're in Docker
-        if host is None:
-            import os
-            # Check if we're running inside Docker container
-            in_docker = os.path.exists('/.dockerenv') or os.path.exists('/run/.containerenv')
-            default_host = 'host.docker.internal' if in_docker else 'localhost'
-            host = os.getenv('CUA_HOST', default_host)
-        self.base_url = f"http://{host}:{port}"
+        import os
+        # Check for full URL first (for Cloud Run deployments)
+        cua_url = os.getenv('CUA_URL')
+        if cua_url:
+            # Use full URL directly (e.g., https://stealth-api-service-xxx.run.app)
+            self.base_url = cua_url.rstrip('/')
+        else:
+            # Use environment variable or detect if we're in Docker
+            if host is None:
+                # Check if we're running inside Docker container
+                in_docker = os.path.exists('/.dockerenv') or os.path.exists('/run/.containerenv')
+                default_host = 'host.docker.internal' if in_docker else 'localhost'
+                host = os.getenv('CUA_HOST', default_host)
+            self.base_url = f"http://{host}:{port}"
         self._session = None
     
     async def get_session(self):
@@ -716,9 +722,11 @@ def create_async_playwright_tools():
             # Step 2: Get OmniParser visual analysis
             omni_context = ""
             try:
+                import os
+                omniparser_url = os.getenv('OMNIPARSER_URL', 'http://localhost:8003')
                 async with aiohttp.ClientSession() as session:
                     async with session.post(
-                        "http://localhost:8003/parse/",
+                        f"{omniparser_url.rstrip('/')}/parse/",
                         json={"base64_image": screenshot_b64},
                         timeout=aiohttp.ClientTimeout(total=30)
                     ) as response:

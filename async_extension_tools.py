@@ -16,12 +16,18 @@ from pydantic import BaseModel, Field
 
 class AsyncExtensionClient:
     """Async HTTP client for Chrome Extension commands - ASGI compatible"""
-    
+
     def __init__(self, host: str = None, port: int = 8001):
-        # Use environment variable or default to host.docker.internal for Docker compatibility
-        if host is None:
-            host = os.getenv('EXTENSION_BACKEND_HOST', 'host.docker.internal')
-        self.base_url = f"http://{host}:{port}"
+        # Check for full URL first (for Cloud Run deployments)
+        extension_url = os.getenv('EXTENSION_BACKEND_URL')
+        if extension_url:
+            # Use full URL directly (e.g., https://extension-backend-service-xxx.run.app)
+            self.base_url = extension_url.rstrip('/')
+        else:
+            # Use environment variable or default to host.docker.internal for Docker compatibility
+            if host is None:
+                host = os.getenv('EXTENSION_BACKEND_HOST', 'host.docker.internal')
+            self.base_url = f"http://{host}:{port}"
         self._session = None
     
     async def get_session(self):

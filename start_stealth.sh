@@ -1,5 +1,5 @@
 #!/bin/bash
-set -e
+# Don't use set -e - some commands may fail but container should keep running
 
 echo "🥷 Starting STEALTH CUA Docker Container"
 echo "======================================="
@@ -11,8 +11,25 @@ sleep 3
 
 # Start VNC server (simple, working version with quality settings)
 echo "🔌 Starting VNC server..."
-x11vnc -display :98 -forever -nopw -listen 0.0.0.0 -rfbport 5900 -shared -q -bg
+x11vnc -display :98 -forever -nopw -listen 127.0.0.1 -rfbport 5900 -shared -q -bg
 sleep 3
+
+# Start websockify on internal port 5901 (nginx will proxy to this)
+echo "🌐 Starting websockify for WebSocket VNC access..."
+PORT=${PORT:-6080}  # Cloud Run sets PORT env var
+echo "📡 PORT is set to: $PORT"
+# Websockify on internal port 5901, nginx will proxy external connections
+websockify 127.0.0.1:5901 localhost:5900 --verbose &
+sleep 3
+echo "✅ Websockify started on internal port 5901"
+
+# Start nginx as reverse proxy (routes both VNC WebSocket and API through PORT)
+echo "🔀 Starting nginx reverse proxy on port $PORT..."
+# Update nginx config to listen on the correct port
+sed -i "s/listen 6080;/listen $PORT;/" /etc/nginx/nginx.conf
+nginx
+sleep 2
+echo "✅ Nginx started on port $PORT (proxies to websockify:5901 and API:8005)"
 
 # Start XFCE session
 echo "🖥️ Starting XFCE..."

@@ -1,0 +1,56 @@
+steps:
+  # Build VNC browser Docker image using Dockerfile.stealth.with_extension
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - 'build'
+      - '-f'
+      - 'Dockerfile.stealth.with_extension'
+      - '-t'
+      - 'gcr.io/$PROJECT_ID/vnc-browser:$BUILD_ID'
+      - '-t'
+      - 'gcr.io/$PROJECT_ID/vnc-browser:latest'
+      - '.'
+
+  # Push the images to Container Registry
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push', 'gcr.io/$PROJECT_ID/vnc-browser:$BUILD_ID']
+
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push', 'gcr.io/$PROJECT_ID/vnc-browser:latest']
+
+  # Deploy to Cloud Run with always-on settings for VNC
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: gcloud
+    args:
+      - 'run'
+      - 'deploy'
+      - 'vnc-browser-service'
+      - '--image'
+      - 'gcr.io/$PROJECT_ID/vnc-browser:$BUILD_ID'
+      - '--region'
+      - 'us-central1'
+      - '--platform'
+      - 'managed'
+      - '--allow-unauthenticated'
+      - '--port'
+      - '6080'
+      - '--memory'
+      - '4Gi'
+      - '--cpu'
+      - '2'
+      - '--min-instances'
+      - '1'
+      - '--max-instances'
+      - '5'
+      - '--no-cpu-throttling'
+      - '--timeout'
+      - '3600'
+      - '--session-affinity'
+      - '--cpu-boost'
+      - '--startup-probe=tcpSocket.port=6080,initialDelaySeconds=10,timeoutSeconds=30,periodSeconds=60,failureThreshold=30'
+
+images:
+  - 'gcr.io/$PROJECT_ID/vnc-browser:$BUILD_ID'
+  - 'gcr.io/$PROJECT_ID/vnc-browser:latest'
+
+timeout: 2400s

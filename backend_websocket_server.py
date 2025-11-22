@@ -17,6 +17,12 @@ from dotenv import load_dotenv
 # Load environment variables
 load_dotenv()
 
+# Extension backend URL - use Cloud Run URL in production
+EXTENSION_BACKEND_URL = os.getenv("EXTENSION_BACKEND_URL", "http://localhost:8001")
+
+# VNC Browser URL - Docker stealth browser service (port 8005 locally, Cloud Run in production)
+VNC_BROWSER_URL = os.getenv("VNC_BROWSER_URL", "http://localhost:8005")
+
 # LangGraph SDK for agent control
 from langgraph_sdk import get_client
 
@@ -103,7 +109,9 @@ thread_metadata = {}
 active_runs = {}
 
 # Initialize LangGraph client
-langgraph_client = get_client(url="http://localhost:8124")
+LANGGRAPH_URL = os.getenv("LANGGRAPH_URL", "http://localhost:8124")
+langgraph_client = get_client(url=LANGGRAPH_URL)
+print(f"✅ Initialized LangGraph client: {LANGGRAPH_URL}")
 
 # Initialize PostgreSQL Store for persistent memory (writing samples, preferences, etc.)
 # Using the same database as the main app (port 5433 to avoid conflict with other postgres instances)
@@ -343,6 +351,160 @@ async def agent_create_post(data: dict):
         import traceback
         traceback.print_exc()
         return {"success": False, "error": str(e)}
+
+
+# ============================================================================
+# VNC Session Management Endpoints
+# ============================================================================
+
+# VNC Session Manager - only available in GCP production environment
+try:
+    from vnc_session_manager import get_vnc_manager
+    VNC_MANAGER_AVAILABLE = True
+except ImportError as e:
+    print(f"⚠️ VNC Session Manager not available (GCP-only): {e}")
+    VNC_MANAGER_AVAILABLE = False
+
+    # Provide a mock for local development
+    async def get_vnc_manager():
+        return None
+
+
+@app.post("/api/vnc/create")
+async def create_vnc_session(data: dict, user_data: dict = Depends(get_current_user)):
+    """
+    Create a new VNC browser session for authenticated user
+
+    Request body:
+    {
+        "user_id": "clerk_user_id"  # Optional, will use auth user if not provided
+    }
+
+    Returns:
+    {
+        "success": true,
+        "session": {
+            "session_id": "uuid",
+            "url": "wss://...",
+            "status": "starting|running",
+            "created_at": "timestamp"
+        }
+    }
+    """
+    try:
+        # Get user ID from Clerk auth or request body
+        user_id = data.get("user_id") or user_data.get("user_id")
+
+        if not user_id:
+            raise HTTPException(status_code=401, detail="Authentication required")
+
+        print(f"🖥️ Creating VNC session for user: {user_id}")
+
+        # Get VNC manager
+        vnc_manager = await get_vnc_manager()
+
+        # Create session
+        session_data = await vnc_manager.create_session(user_id)
+
+        return {
+            "success": True,
+            "session": session_data
+        }
+
+    except Exception as e:
+        print(f"❌ Error creating VNC session: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/vnc/session")
+async def get_vnc_session(user_data: dict = Depends(get_current_user)):
+    """
+    Get current user's VNC session or create new one if none exists
+
+    Returns:
+    {
+        "success": true,
+        "session": {
+            "session_id": "uuid",
+            "url": "wss://...",
+            "status": "starting|running|stopped",
+            "created_at": "timestamp"
+        }
+    }
+    """
+    try:
+        user_id = user_data.get("user_id")
+
+        if not user_id:
+            raise HTTPException(status_code=401, detail="Authentication required")
+
+        print(f"🔍 Getting VNC session for user: {user_id}")
+
+        # Get VNC manager
+        vnc_manager = await get_vnc_manager()
+
+        # Get existing session
+        session_data = await vnc_manager.get_session(user_id)
+
+        # If no session or session is stopped, create new one
+        if not session_data or session_data.get("status") == "stopped":
+            print(f"📝 No active session found, creating new one...")
+            session_data = await vnc_manager.create_session(user_id)
+
+        return {
+            "success": True,
+            "session": session_data
+        }
+
+    except Exception as e:
+        print(f"❌ Error getting VNC session: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/api/vnc/{session_id}")
+async def destroy_vnc_session(session_id: str, user_data: dict = Depends(get_current_user)):
+    """
+    Terminate VNC session
+
+    Returns:
+    {
+        "success": true,
+        "message": "Session terminated"
+    }
+    """
+    try:
+        user_id = user_data.get("user_id")
+
+        if not user_id:
+            raise HTTPException(status_code=401, detail="Authentication required")
+
+        print(f"🗑️ Destroying VNC session {session_id} for user: {user_id}")
+
+        # Get VNC manager
+        vnc_manager = await get_vnc_manager()
+
+        # Destroy session
+        success = await vnc_manager.destroy_session(user_id)
+
+        if success:
+            return {
+                "success": True,
+                "message": "VNC session terminated"
+            }
+        else:
+            raise HTTPException(status_code=404, detail="Session not found")
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"❌ Error destroying VNC session: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/api/posts/cleanup-duplicates/{user_id}")
@@ -1828,7 +1990,7 @@ async def inject_cookies_to_docker(request: dict):
         print(f"   Fetching from extension backend...")
         try:
             async with aiohttp.ClientSession() as session:
-                async with session.get(f'http://localhost:8001/cookies/{user_id}', timeout=aiohttp.ClientTimeout(total=2)) as resp:
+                async with session.get(f'{EXTENSION_BACKEND_URL}/cookies/{user_id}', timeout=aiohttp.ClientTimeout(total=5)) as resp:
                     print(f"   Extension backend response status: {resp.status}")
                     if resp.status == 200:
                         ext_data = await resp.json()
@@ -1906,7 +2068,7 @@ async def inject_cookies_to_docker(request: dict):
         # Call Docker stealth_cua_server to inject cookies
         async with aiohttp.ClientSession() as session:
             async with session.post(
-                "http://localhost:8005/session/load",
+                f"{VNC_BROWSER_URL}/session/load",
                 json={"cookies": playwright_cookies}
             ) as response:
                 result = await response.json()
@@ -2122,7 +2284,7 @@ async def scrape_posts_docker(data: dict):
             print(f"🌐 Navigating to {profile_url}...")
             
             async with session.post(
-                "http://localhost:8005/navigate",
+                f"{VNC_BROWSER_URL}/navigate",
                 json={"url": profile_url}
             ) as resp:
                 nav_result = await resp.json()
@@ -2168,7 +2330,7 @@ async def scrape_posts_docker(data: dict):
                     """
                     
                     async with scrape_session.post(
-                        "http://localhost:8005/execute",
+                        f"{VNC_BROWSER_URL}/execute",
                         json={"script": retry_check_script},
                         timeout=aiohttp.ClientTimeout(total=5)
                     ) as resp:
@@ -2198,7 +2360,7 @@ async def scrape_posts_docker(data: dict):
                     """
                     
                     async with scrape_session.post(
-                        "http://localhost:8005/execute",
+                        f"{VNC_BROWSER_URL}/execute",
                         json={"script": scrape_script},
                         timeout=aiohttp.ClientTimeout(total=10)
                     ) as resp:
@@ -2266,7 +2428,7 @@ async def scrape_posts_docker(data: dict):
                         })()
                         """
                         async with scrape_session.post(
-                            "http://localhost:8005/execute",
+                            f"{VNC_BROWSER_URL}/execute",
                             json={"script": smooth_scroll_script},
                             timeout=aiohttp.ClientTimeout(total=5)
                         ) as resp:
@@ -3155,25 +3317,26 @@ async def stream_agent_execution(user_id: str, thread_id: str, task: str, use_ro
                 if user_id in active_runs and active_runs[user_id].get("cancelled"):
                     print(f"🛑 Run cancelled by user {user_id}")
                     break
-                
+
                 # Extract run_id from chunk if available
                 if run_id is None and hasattr(chunk, 'metadata'):
                     run_id = chunk.metadata.get('run_id')
                     if run_id and user_id in active_runs:
                         active_runs[user_id]["run_id"] = run_id
-                        print(f"📝 Tracking run_id: {run_id}")
+
                 # LangGraph stream_mode="messages" returns (message, metadata) tuples
                 # Filter by langgraph_node to skip tool execution nodes
                 if hasattr(chunk, 'data'):
                     # Check metadata to skip tool nodes
-                    if hasattr(chunk, 'metadata'):
+                    metadata = {}
+                    if hasattr(chunk, 'metadata') and chunk.metadata:
                         metadata = chunk.metadata if isinstance(chunk.metadata, dict) else {}
-                        node_name = metadata.get('langgraph_node', '')
+                    node_name = metadata.get('langgraph_node', '')
 
-                        # Skip only messages that are explicitly from tool nodes
-                        # Allow messages with no node_name (they're usually LLM streaming tokens)
-                        if node_name and node_name != 'model':
-                            continue
+                    # Skip only messages that are explicitly from tool nodes
+                    # Allow messages with no node_name (they're usually LLM streaming tokens)
+                    if node_name and node_name != 'model':
+                        continue
 
                     message_list = chunk.data
                     if user_id in active_connections:
@@ -3711,7 +3874,7 @@ async def execute_workflow_endpoint(workflow_json: dict, user_id: Optional[str] 
         print(f"📋 Prompt:\n{prompt}\n")
 
         # Use LangGraph Client SDK (deployed agent with PostgreSQL persistence!)
-        langgraph_client = get_client(url="http://localhost:8124")
+        langgraph_client = get_client(url=LANGGRAPH_URL)
 
         # Execute via LangGraph Platform - automatic PostgreSQL checkpointing!
         input_data = {
@@ -3824,7 +3987,7 @@ async def execute_workflow_stream_endpoint(websocket: WebSocket):
         })
 
         # Use LangGraph Client SDK for streaming with PostgreSQL persistence
-        langgraph_client = get_client(url="http://localhost:8124")
+        langgraph_client = get_client(url=LANGGRAPH_URL)
 
         # Create or get thread
         if not thread_id:

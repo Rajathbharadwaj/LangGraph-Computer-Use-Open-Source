@@ -1,0 +1,19 @@
+steps:
+  # Build OmniParser Docker image
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - 'build'
+      - '-f'
+      - 'Dockerfile.omniparser'
+      - '-t'
+      - 'gcr.io/$PROJECT_ID/omniparser:latest'
+      - '.'
+
+  # Push the image to Container Registry
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push', 'gcr.io/$PROJECT_ID/omniparser:latest']
+
+images:
+  - 'gcr.io/$PROJECT_ID/omniparser:latest'
+
+timeout: 1800s

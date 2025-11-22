@@ -23,11 +23,7 @@ RUN apt-get update && apt-get install -y \
     nodejs \
     npm \
     git \
-    nginx \
     && rm -rf /var/lib/apt/lists/*
-
-# Install websockify for VNC over WebSocket (required for Cloud Run/noVNC)
-RUN pip3 install websockify
 
 # Install Python packages including Patchright (drop-in Playwright replacement with stealth)
 RUN pip3 install fastapi uvicorn pydantic \
@@ -47,14 +43,6 @@ RUN python3 -m patchright install chromium --with-deps
 # Ensure we have the full browser, not just headless shell
 ENV PLAYWRIGHT_BROWSERS_PATH=/root/.cache/ms-playwright
 
-# Download and install Firefox (keep for compatibility)
-RUN cd /tmp && \
-    wget -q -O firefox.tar.xz "https://download.mozilla.org/?product=firefox-latest-ssl&os=linux64&lang=en-US" && \
-    tar -xJf firefox.tar.xz && \
-    mv firefox /opt/firefox && \
-    ln -sf /opt/firefox/firefox /usr/local/bin/firefox && \
-    rm firefox.tar.xz
-
 # Create app directory
 RUN mkdir -p /app
 
@@ -62,21 +50,14 @@ RUN mkdir -p /app
 COPY x-automation-extension-docker /app/x-automation-extension
 
 # Copy all necessary files
-COPY cua_server.py /app/
 COPY stealth_cua_server.py /app/
-COPY start_stealth.sh /
 
-# Copy nginx config
-COPY nginx-vnc.conf /etc/nginx/nginx.conf
+# Copy and make startup script executable
+COPY start_stealth_api.sh /
+RUN chmod +x /start_stealth_api.sh
 
-# Make startup script executable
-RUN chmod +x /start_stealth.sh
-
-# Expose ports (websockify serves on PORT env var, default 6080)
-# 8005 for stealth API server (internal)
-# 5900 for VNC (internal - accessed via websockify)
-EXPOSE 6080 8005
+# Cloud Run uses PORT env var (default 8080)
+EXPOSE 8080
 
 # Set the startup command
-CMD ["/start_stealth.sh"]
-
+CMD ["/start_stealth_api.sh"]

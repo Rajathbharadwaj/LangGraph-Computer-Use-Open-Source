@@ -14,11 +14,17 @@ import json
 
 class OmniParserClient:
     """Client for communicating with OmniParser server for GUI element detection"""
-    
+
     def __init__(self, host: str = 'localhost', port: int = 8003):
-        self.host = host
-        self.port = port
-        self.base_url = f"http://{host}:{port}"
+        import os
+        # Check for full URL first (for Cloud Run deployments)
+        omniparser_url = os.getenv('OMNIPARSER_URL')
+        if omniparser_url:
+            self.base_url = omniparser_url.rstrip('/')
+        else:
+            self.host = host
+            self.port = port
+            self.base_url = f"http://{host}:{port}"
     
     def parse_screenshot(self, base64_image: str) -> Dict[str, Any]:
         """
