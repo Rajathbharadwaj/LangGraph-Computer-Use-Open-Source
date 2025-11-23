@@ -371,9 +371,12 @@ except ImportError as e:
 
 
 @app.post("/api/vnc/create")
-async def create_vnc_session(data: dict, user_data: dict = Depends(get_current_user)):
+async def create_vnc_session(data: dict, user_data: dict = Depends(get_current_user), db: Session = Depends(get_db)):
     """
-    Create a new VNC browser session for authenticated user
+    Create a new VNC browser session for authenticated user.
+
+    This creates a dedicated Cloud Run Service for the user with their
+    X.com cookies pre-loaded. Each user gets their own isolated browser.
 
     Request body:
     {
@@ -403,14 +406,29 @@ async def create_vnc_session(data: dict, user_data: dict = Depends(get_current_u
         # Get VNC manager
         vnc_manager = await get_vnc_manager()
 
-        # Create session
-        session_data = await vnc_manager.create_session(user_id)
+        if not vnc_manager:
+            raise HTTPException(status_code=503, detail="VNC session manager not available in this environment")
+
+        # Get user's X cookies from database for injection
+        user_cookies_data = None
+        try:
+            x_account = db.query(XAccount).filter(XAccount.user_id == user_id).first()
+            if x_account and x_account.cookies:
+                user_cookies_data = x_account.cookies
+                print(f"✅ Found X cookies for user {user_id}")
+        except Exception as e:
+            print(f"⚠️ Could not load user cookies: {e}")
+
+        # Create session with user's cookies
+        session_data = await vnc_manager.create_session(user_id, cookies=user_cookies_data)
 
         return {
             "success": True,
             "session": session_data
         }
 
+    except HTTPException:
+        raise
     except Exception as e:
         print(f"❌ Error creating VNC session: {e}")
         import traceback
@@ -419,9 +437,12 @@ async def create_vnc_session(data: dict, user_data: dict = Depends(get_current_u
 
 
 @app.get("/api/vnc/session")
-async def get_vnc_session(user_data: dict = Depends(get_current_user)):
+async def get_vnc_session(user_data: dict = Depends(get_current_user), db: Session = Depends(get_db)):
     """
-    Get current user's VNC session or create new one if none exists
+    Get current user's VNC session or create new one if none exists.
+
+    This endpoint creates a dedicated Cloud Run Service for the user with
+    their X.com cookies pre-loaded for session isolation.
 
     Returns:
     {
@@ -445,13 +466,31 @@ async def get_vnc_session(user_data: dict = Depends(get_current_user)):
         # Get VNC manager
         vnc_manager = await get_vnc_manager()
 
-        # Get existing session
-        session_data = await vnc_manager.get_session(user_id)
+        if not vnc_manager:
+            # Development fallback - return shared VNC URL
+            return {
+                "success": True,
+                "session": {
+                    "session_id": "dev-shared",
+                    "url": os.getenv("VNC_BROWSER_URL", "wss://vnc-browser-service-644185288504.us-central1.run.app"),
+                    "status": "running",
+                    "created_at": datetime.utcnow().isoformat(),
+                    "user_id": user_id
+                }
+            }
 
-        # If no session or session is stopped, create new one
-        if not session_data or session_data.get("status") == "stopped":
-            print(f"📝 No active session found, creating new one...")
-            session_data = await vnc_manager.create_session(user_id)
+        # Get user's X cookies from database for injection
+        user_cookies_data = None
+        try:
+            x_account = db.query(XAccount).filter(XAccount.user_id == user_id).first()
+            if x_account and x_account.cookies:
+                user_cookies_data = x_account.cookies
+                print(f"✅ Found X cookies for user {user_id}")
+        except Exception as e:
+            print(f"⚠️ Could not load user cookies: {e}")
+
+        # Get or create session with user's cookies
+        session_data = await vnc_manager.get_or_create_session(user_id, cookies=user_cookies_data)
 
         return {
             "success": True,
