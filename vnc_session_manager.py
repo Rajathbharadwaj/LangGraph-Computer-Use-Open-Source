@@ -50,7 +50,7 @@ class VNCSessionManager:
         # VPC Connector for Redis access
         self.vpc_connector = os.getenv(
             "VPC_CONNECTOR",
-            f"projects/{self.project_id}/locations/{self.region}/connectors/redis-connector"
+            f"projects/{self.project_id}/locations/{self.region}/connectors/paralleluniverse-vpc"
         )
 
         # Cloud Run Services client
