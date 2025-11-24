@@ -33,6 +33,45 @@ class CUAContext:
 _client_cache: Dict[str, "AsyncPlaywrightClient"] = {}
 
 
+def _get_default_cua_url() -> str:
+    """Get the default CUA URL from environment variables (for backend scraping)."""
+    # Check for full URL first (for Cloud Run deployments)
+    cua_url = os.getenv('CUA_URL')
+    if cua_url:
+        return cua_url.rstrip('/')
+
+    # Check if we're running inside Docker container
+    in_docker = os.path.exists('/.dockerenv') or os.path.exists('/run/.containerenv')
+    default_host = 'host.docker.internal' if in_docker else 'localhost'
+    host = os.getenv('CUA_HOST', default_host)
+    port = os.getenv('CUA_PORT', '8005')
+    return f"http://{host}:{port}"
+
+
+# Global client for backward compatibility with competitor discovery system
+# This is used by backend_websocket_server.py for scraping with the shared browser
+# NOT used for Deep Agent (which uses per-user VNC sessions)
+_global_client = None
+
+def _get_global_client() -> "AsyncPlaywrightClient":
+    """Get or create the global client (lazy initialization)."""
+    global _global_client
+    if _global_client is None:
+        default_url = _get_default_cua_url()
+        _global_client = AsyncPlaywrightClient(base_url=default_url)
+    return _global_client
+
+# For backward compatibility - expose _global_client as a property that initializes lazily
+class _GlobalClientProxy:
+    """Proxy class to lazily initialize _global_client on first access."""
+    def __getattr__(self, name):
+        return getattr(_get_global_client(), name)
+
+# Replace module-level _global_client with proxy for lazy initialization
+# This allows `from async_playwright_tools import _global_client` to work
+_global_client = _GlobalClientProxy()
+
+
 def get_client_for_url(url: str) -> "AsyncPlaywrightClient":
     """Get or create a client for a specific URL. URL is required."""
     if not url:

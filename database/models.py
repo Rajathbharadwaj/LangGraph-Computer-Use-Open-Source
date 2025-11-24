@@ -31,23 +31,26 @@ class XAccount(Base):
     Connected X (Twitter) accounts
     """
     __tablename__ = "x_accounts"
-    
+
     id = Column(Integer, primary_key=True, autoincrement=True)
     user_id = Column(String, ForeignKey("users.id"), nullable=False)
-    
+
     # X account info
     username = Column(String, nullable=False)
     display_name = Column(String)
     profile_image_url = Column(String)
-    
+
     # Status
     is_connected = Column(Boolean, default=True)
     last_synced_at = Column(DateTime)
     created_at = Column(DateTime, default=datetime.utcnow)
-    
+
+    # Cookies stored directly as JSON for simpler access
+    cookies = Column(JSON)
+
     # Relationships
     user = relationship("User", back_populates="x_accounts")
-    cookies = relationship("UserCookies", back_populates="x_account", cascade="all, delete-orphan")
+    encrypted_cookies = relationship("UserCookies", back_populates="x_account", cascade="all, delete-orphan")
     posts = relationship("UserPost", back_populates="x_account", cascade="all, delete-orphan")
 
 
@@ -68,7 +71,7 @@ class UserCookies(Base):
     expires_at = Column(DateTime)
     
     # Relationships
-    x_account = relationship("XAccount", back_populates="cookies")
+    x_account = relationship("XAccount", back_populates="encrypted_cookies")
 
 
 class UserPost(Base):

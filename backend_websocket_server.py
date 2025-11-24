@@ -151,6 +151,83 @@ except Exception as e:
     conn_pool = None
     store = None
 
+
+# ============================================================================
+# Per-User VNC Client Helper
+# ============================================================================
+# This enables competitor discovery to use per-user VNC sessions instead of
+# a shared global browser. Each user gets their own isolated browser.
+
+import redis.asyncio as aioredis
+
+async def get_user_vnc_client(user_id: str):
+    """
+    Get an AsyncPlaywrightClient for the user's VNC session.
+
+    Looks up the user's VNC URL from Redis and creates a client for it.
+    This enables per-user browser isolation for competitor discovery.
+
+    Args:
+        user_id: The Clerk user ID (e.g., user_35sAy5DRwouHPOUOk3okhywCGXN)
+
+    Returns:
+        AsyncPlaywrightClient configured for the user's VNC session
+
+    Raises:
+        HTTPException if no VNC session found for user
+    """
+    from async_playwright_tools import AsyncPlaywrightClient, get_client_for_url
+
+    redis_host = os.environ.get('REDIS_HOST', '10.110.183.147')
+    redis_port = int(os.environ.get('REDIS_PORT', 6379))
+    redis_key = f"vnc:session:{user_id}"
+
+    try:
+        r = aioredis.Redis(host=redis_host, port=redis_port, decode_responses=True)
+        session_json = await r.get(redis_key)
+        await r.aclose()
+
+        if session_json:
+            session_data = json.loads(session_json)
+            vnc_url = session_data.get("https_url") or session_data.get("service_url")
+            if vnc_url:
+                print(f"✅ Found VNC session for user {user_id}: {vnc_url}")
+                return get_client_for_url(vnc_url)
+
+        # No session in Redis - check if service exists and cache it
+        print(f"⚠️ No VNC session in Redis for user {user_id}, checking Cloud Run...")
+
+        # Try to get session from VNC manager (which will cache it in Redis)
+        from vnc_session_manager import VNCSessionManager
+        vnc_manager = VNCSessionManager()
+        await vnc_manager.connect()
+
+        session = await vnc_manager.get_session(user_id)
+        if session:
+            vnc_url = session.get("https_url") or session.get("service_url")
+            if vnc_url:
+                print(f"✅ Recovered VNC session from Cloud Run for user {user_id}: {vnc_url}")
+                return get_client_for_url(vnc_url)
+
+        await vnc_manager.close()
+
+        raise HTTPException(
+            status_code=400,
+            detail=f"No active VNC session for user. Please start a browser session first."
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"❌ Failed to get VNC client for user {user_id}: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to connect to user's browser session: {str(e)}"
+        )
+
+
 # Initialize scheduled post executor on startup
 @app.get("/")
 async def root():
@@ -854,17 +931,18 @@ async def smart_discover_competitors(user_id: str):
 
         # STEP 0: Check if discovery is already running (prevent duplicates)
         lock_namespace = (user_id, "discovery_lock")
-        lock_items = list(store.search(lock_namespace, limit=1))
+        if store:
+            lock_items = list(store.search(lock_namespace, limit=1))
 
-        if lock_items and lock_items[0].value.get("running"):
-            return {
-                "success": False,
-                "error": "Discovery already in progress. Please wait for it to complete.",
-                "action": "wait"
-            }
+            if lock_items and lock_items[0].value.get("running"):
+                return {
+                    "success": False,
+                    "error": "Discovery already in progress. Please wait for it to complete.",
+                    "action": "wait"
+                }
 
-        # Set lock
-        store.put(lock_namespace, "lock", {"running": True, "started_at": datetime.utcnow().isoformat()})
+            # Set lock
+            store.put(lock_namespace, "lock", {"running": True, "started_at": datetime.utcnow().isoformat()})
 
     
         # STEP 1: Validate authentication
@@ -1106,30 +1184,34 @@ async def discover_competitors_from_followers(user_id: str, user_handle: str):
     """
     try:
         from follower_based_discovery import FollowerBasedDiscovery
-        from async_playwright_tools import _global_client
 
         print(f"🎯 Starting FOLLOWER-BASED discovery for @{user_handle}")
 
-        # Check if discovery is already running
-        lock_namespace = (user_id, "discovery_lock")
-        lock_items = list(store.search(lock_namespace, limit=1))
-        if lock_items and lock_items[0].value.get("running"):
-            return {
-                "success": False,
-                "error": "Discovery already in progress. Please wait for it to complete.",
-                "action": "wait"
-            }
+        # Get per-user VNC client (enables multi-user scaling)
+        user_client = await get_user_vnc_client(user_id)
+        print(f"✅ Using per-user VNC session for competitor discovery")
 
-        # Set lock
-        store.put(lock_namespace, "lock", {"running": True, "started_at": datetime.utcnow().isoformat()})
+        # Check if discovery is already running (only if store is available)
+        lock_namespace = (user_id, "discovery_lock")
+        if store:
+            lock_items = list(store.search(lock_namespace, limit=1))
+            if lock_items and lock_items[0].value.get("running"):
+                return {
+                    "success": False,
+                    "error": "Discovery already in progress. Please wait for it to complete.",
+                    "action": "wait"
+                }
+            # Set lock
+            store.put(lock_namespace, "lock", {"running": True, "started_at": datetime.utcnow().isoformat()})
 
         try:
-            # Clear cancel flag
-            cancel_namespace = (user_id, "discovery_control")
-            store.put(cancel_namespace, "cancel_flag", {"cancelled": False})
+            # Clear cancel flag (only if store is available)
+            if store:
+                cancel_namespace = (user_id, "discovery_control")
+                store.put(cancel_namespace, "cancel_flag", {"cancelled": False})
 
-            # Initialize follower-based discovery
-            discovery = FollowerBasedDiscovery(_global_client, store, user_id)
+            # Initialize follower-based discovery with per-user client
+            discovery = FollowerBasedDiscovery(user_client, store, user_id)
 
             # Run discovery with increased limits to get all 912 following
             graph_data = await discovery.discover_competitors(
@@ -1148,8 +1230,9 @@ async def discover_competitors_from_followers(user_id: str, user_handle: str):
             }
 
         finally:
-            # Release lock
-            store.put(lock_namespace, "lock", {"running": False})
+            # Release lock (only if store is available)
+            if store:
+                store.put(lock_namespace, "lock", {"running": False})
 
     except Exception as e:
         print(f"❌ Follower-based discovery failed: {e}")
@@ -1177,30 +1260,34 @@ async def discover_competitors_native(user_id: str, user_handle: str):
     """
     try:
         from x_native_common_followers import XNativeCommonFollowersDiscovery
-        from async_playwright_tools import _global_client
 
         print(f"⚡ Starting X NATIVE discovery for @{user_handle}")
 
-        # Check if discovery is already running
-        lock_namespace = (user_id, "discovery_lock")
-        lock_items = list(store.search(lock_namespace, limit=1))
-        if lock_items and lock_items[0].value.get("running"):
-            return {
-                "success": False,
-                "error": "Discovery already in progress. Please wait for it to complete.",
-                "action": "wait"
-            }
+        # Get per-user VNC client (enables multi-user scaling)
+        user_client = await get_user_vnc_client(user_id)
+        print(f"✅ Using per-user VNC session for X Native discovery")
 
-        # Set lock
-        store.put(lock_namespace, "lock", {"running": True, "started_at": datetime.utcnow().isoformat()})
+        # Check if discovery is already running (only if store is available)
+        lock_namespace = (user_id, "discovery_lock")
+        if store:
+            lock_items = list(store.search(lock_namespace, limit=1))
+            if lock_items and lock_items[0].value.get("running"):
+                return {
+                    "success": False,
+                    "error": "Discovery already in progress. Please wait for it to complete.",
+                    "action": "wait"
+                }
+            # Set lock
+            store.put(lock_namespace, "lock", {"running": True, "started_at": datetime.utcnow().isoformat()})
 
         try:
-            # Clear cancel flag
-            cancel_namespace = (user_id, "discovery_control")
-            store.put(cancel_namespace, "cancel_flag", {"cancelled": False})
+            # Clear cancel flag (only if store is available)
+            if store:
+                cancel_namespace = (user_id, "discovery_control")
+                store.put(cancel_namespace, "cancel_flag", {"cancelled": False})
 
-            # Initialize X native discovery
-            discovery = XNativeCommonFollowersDiscovery(_global_client, store, user_id)
+            # Initialize X native discovery with per-user client
+            discovery = XNativeCommonFollowersDiscovery(user_client, store, user_id)
 
             # Run ultra-fast discovery
             graph_data = await discovery.discover_competitors_fast(
@@ -1216,8 +1303,9 @@ async def discover_competitors_native(user_id: str, user_handle: str):
             }
 
         finally:
-            # Release lock
-            store.put(lock_namespace, "lock", {"running": False})
+            # Release lock (only if store is available)
+            if store:
+                store.put(lock_namespace, "lock", {"running": False})
 
     except Exception as e:
         print(f"❌ X Native discovery failed: {e}")
@@ -1318,13 +1406,15 @@ async def analyze_competitor_content(user_id: str):
     """
     try:
         from competitor_content_analyzer import analyze_all_competitors
-        from async_playwright_tools import _global_client
 
-        # Run content analysis
+        # Get per-user VNC client
+        user_client = await get_user_vnc_client(user_id)
+
+        # Run content analysis with per-user client
         result = await analyze_all_competitors(
             user_id,
             store,
-            _global_client
+            user_client
         )
 
         return result
@@ -1376,7 +1466,9 @@ async def scrape_competitor_posts(
                 pass  # No body or invalid JSON, continue normally
 
         from social_graph_scraper import SocialGraphBuilder, SocialGraphScraper
-        from async_playwright_tools import _global_client
+
+        # Get per-user VNC client (enables multi-user scaling)
+        user_client = await get_user_vnc_client(user_id)
 
         # Check if scraping is already in progress (prevent concurrent scraping)
         progress_namespace = (user_id, "discovery_progress")
@@ -1418,8 +1510,8 @@ async def scrape_competitor_posts(
                 reverse=True
             )[:20]
 
-        # Initialize scraper
-        scraper = SocialGraphScraper(_global_client)
+        # Initialize scraper with per-user client
+        scraper = SocialGraphScraper(user_client)
 
         # Scrape posts for competitors that don't have them
         scraped_count = 0
@@ -1709,10 +1801,12 @@ async def calculate_relevancy_scores(
     """
     try:
         from competitor_relevancy_scorer import add_relevancy_scores
-        from async_playwright_tools import _global_client
         from social_graph_scraper import SocialGraphBuilder
 
         print(f"\n🎯 Calculating relevancy scores for @{user_handle} (batch size: {batch_size})...")
+
+        # Get per-user VNC client (enables multi-user scaling)
+        user_client = await get_user_vnc_client(user_id)
 
         # Get existing graph data
         builder = SocialGraphBuilder(store, user_id)
@@ -1725,9 +1819,9 @@ async def calculate_relevancy_scores(
                 "message": "Please discover competitors before calculating relevancy."
             }
 
-        # Calculate relevancy scores with batching
+        # Calculate relevancy scores with batching using per-user client
         updated_graph = await add_relevancy_scores(
-            _global_client,
+            user_client,
             user_handle,
             graph_data,
             user_id=user_id,
@@ -1963,6 +2057,18 @@ async def activity_websocket(websocket: WebSocket, user_id: str):
                     if not task:
                         continue
 
+                    # Get user's VNC session URL for the agent to use
+                    vnc_url = None
+                    try:
+                        vnc_manager = await get_vnc_manager()
+                        if vnc_manager:
+                            vnc_session = await vnc_manager.get_session(user_id)
+                            if vnc_session:
+                                vnc_url = vnc_session.get("https_url") or vnc_session.get("service_url")
+                                print(f"🖥️ Activity WS: Using VNC URL for agent: {vnc_url}")
+                    except Exception as e:
+                        print(f"⚠️ Activity WS: Could not get VNC session for agent: {e}")
+
                     # Create thread
                     client = get_client(url=LANGGRAPH_URL)
                     thread = await client.threads.create()
@@ -1973,7 +2079,7 @@ async def activity_websocket(websocket: WebSocket, user_id: str):
                         thread_id,
                         "x_growth_deep_agent",
                         input={"messages": [{"role": "user", "content": task}]},
-                        config={"configurable": {"user_id": user_id}},
+                        config={"configurable": {"user_id": user_id, "cua_url": vnc_url}},
                         stream_mode=["messages", "custom"]  # Enable custom events!
                     ):
                         # Capture and forward activity events
@@ -3343,7 +3449,7 @@ async def run_agent(data: dict):
 async def stream_agent_execution(user_id: str, thread_id: str, task: str, use_rollback: bool = False):
     """
     Stream agent execution to WebSocket with token-by-token streaming
-    
+
     Args:
         user_id: User identifier
         thread_id: LangGraph thread ID
@@ -3356,10 +3462,22 @@ async def stream_agent_execution(user_id: str, thread_id: str, task: str, use_ro
         print(f"🔄 Starting agent stream for user {user_id}, thread {thread_id}")
         if use_rollback:
             print(f"   Using rollback strategy (double-texting - will delete previous run)")
-        
+
+        # Get user's VNC session URL for the agent to use
+        vnc_url = None
+        try:
+            vnc_manager = await get_vnc_manager()
+            if vnc_manager:
+                vnc_session = await vnc_manager.get_session(user_id)
+                if vnc_session:
+                    vnc_url = vnc_session.get("https_url") or vnc_session.get("service_url")
+                    print(f"🖥️ Using VNC URL for agent: {vnc_url}")
+        except Exception as e:
+            print(f"⚠️ Could not get VNC session for agent: {e}")
+
         # Track the last sent content to calculate diffs
         last_content = ""
-        
+
         # Mark this run as active (will be populated with run_id once we get it)
         active_runs[user_id] = {
             "thread_id": thread_id,
@@ -3367,7 +3485,7 @@ async def stream_agent_execution(user_id: str, thread_id: str, task: str, use_ro
             "cancelled": False,
             "task": asyncio.current_task()
         }
-        
+
         # Use "messages" stream mode for token-by-token streaming
         # If double-texting, use rollback strategy to delete the previous run
         stream_kwargs = {
@@ -3379,7 +3497,13 @@ async def stream_agent_execution(user_id: str, thread_id: str, task: str, use_ro
                     "content": task
                 }]
             },
-            "stream_mode": "messages"
+            "stream_mode": "messages",
+            "config": {
+                "configurable": {
+                    "user_id": user_id,
+                    "cua_url": vnc_url,  # Per-user VNC URL
+                }
+            }
         }
         
         # Add multitask_strategy if double-texting
@@ -3948,6 +4072,19 @@ async def execute_workflow_endpoint(workflow_json: dict, user_id: Optional[str] 
         print(f"🧵 Thread ID: {workflow_thread_id}")
         print(f"📋 Prompt:\n{prompt}\n")
 
+        # Get user's VNC session URL for the agent to use
+        vnc_url = None
+        if user_id:
+            try:
+                vnc_manager = await get_vnc_manager()
+                if vnc_manager:
+                    vnc_session = await vnc_manager.get_session(user_id)
+                    if vnc_session:
+                        vnc_url = vnc_session.get("https_url") or vnc_session.get("service_url")
+                        print(f"🖥️ Workflow: Using VNC URL for agent: {vnc_url}")
+            except Exception as e:
+                print(f"⚠️ Workflow: Could not get VNC session for agent: {e}")
+
         # Use LangGraph Client SDK (deployed agent with PostgreSQL persistence!)
         langgraph_client = get_client(url=LANGGRAPH_URL)
 
@@ -3959,6 +4096,7 @@ async def execute_workflow_endpoint(workflow_json: dict, user_id: Optional[str] 
         config = {
             "configurable": {
                 "user_id": user_id,
+                "cua_url": vnc_url,
                 "use_longterm_memory": True if user_id else False
             }
         }
@@ -4061,6 +4199,19 @@ async def execute_workflow_stream_endpoint(websocket: WebSocket):
             "prompt": prompt
         })
 
+        # Get user's VNC session URL for the agent to use
+        vnc_url = None
+        if user_id:
+            try:
+                vnc_manager = await get_vnc_manager()
+                if vnc_manager:
+                    vnc_session = await vnc_manager.get_session(user_id)
+                    if vnc_session:
+                        vnc_url = vnc_session.get("https_url") or vnc_session.get("service_url")
+                        print(f"🖥️ Workflow WS: Using VNC URL for agent: {vnc_url}")
+            except Exception as e:
+                print(f"⚠️ Workflow WS: Could not get VNC session for agent: {e}")
+
         # Use LangGraph Client SDK for streaming with PostgreSQL persistence
         langgraph_client = get_client(url=LANGGRAPH_URL)
 
@@ -4080,6 +4231,7 @@ async def execute_workflow_stream_endpoint(websocket: WebSocket):
         config = {
             "configurable": {
                 "user_id": user_id,
+                "cua_url": vnc_url,
                 "use_longterm_memory": True if user_id else False
             }
         }

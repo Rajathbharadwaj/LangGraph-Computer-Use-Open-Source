@@ -13,6 +13,11 @@ Architecture:
 
 import os
 from typing import Literal
+
+# IMPORTANT: Apply deepagents patch BEFORE importing create_deep_agent
+# This patches subagent invocation to forward runtime config (e.g., cua_url)
+import deepagents_patch  # noqa: F401 - imported for side effects
+
 from deepagents import create_deep_agent
 from langchain.chat_models import init_chat_model
 from langchain_core.tools import tool

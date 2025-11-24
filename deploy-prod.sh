@@ -28,6 +28,10 @@ if [ -z "$DATABASE_URL" ]; then
     echo "Error: DATABASE_URL not set. Export it or add to .env.prod"
     exit 1
 fi
+if [ -z "$NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY" ]; then
+    echo "Error: NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY not set. Export it or add to .env.prod"
+    exit 1
+fi
 
 # Defaults
 REDIS_HOST="${REDIS_HOST:-10.110.183.147}"
@@ -56,7 +60,7 @@ deploy_backend() {
         --vpc-connector paralleluniverse-vpc \
         --vpc-egress private-ranges-only \
         --service-account parallel-universe-app@$PROJECT_ID.iam.gserviceaccount.com \
-        --set-env-vars "DATABASE_URL=$DATABASE_URL,REDIS_HOST=$REDIS_HOST,REDIS_PORT=$REDIS_PORT,EXTENSION_BACKEND_URL=$EXTENSION_BACKEND_URL,GOOGLE_CLOUD_PROJECT=$PROJECT_ID,GCP_REGION=$REGION,CLERK_SECRET_KEY=$CLERK_SECRET_KEY" \
+        --set-env-vars "DATABASE_URL=$DATABASE_URL,REDIS_HOST=$REDIS_HOST,REDIS_PORT=$REDIS_PORT,EXTENSION_BACKEND_URL=$EXTENSION_BACKEND_URL,GOOGLE_CLOUD_PROJECT=$PROJECT_ID,GCP_REGION=$REGION,CLERK_SECRET_KEY=$CLERK_SECRET_KEY,NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=$NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY" \
         --min-instances 1 \
         --cpu-boost \
         --timeout 60s \

@@ -49,16 +49,13 @@ class XNativeCommonFollowersDiscovery:
         """
         print(f"   📊 Getting followers for @{username}...")
 
-        url = f"https://x.com/{username}/verified_followers"
+        # Use regular followers page (not verified_followers which has limited results)
+        url = f"https://x.com/{username}/followers"
         result = await self.client._request("POST", "/navigate", {"url": url})
 
         if not result.get("success"):
-            print(f"      ⚠️ Failed to navigate to verified followers, trying all followers...")
-            url = f"https://x.com/{username}/followers"
-            result = await self.client._request("POST", "/navigate", {"url": url})
-            if not result.get("success"):
-                print(f"      ❌ Failed: {result.get('error')}")
-                return []
+            print(f"      ❌ Failed to navigate to followers: {result.get('error')}")
+            return []
 
         await asyncio.sleep(3)
 
@@ -221,22 +218,23 @@ class XNativeCommonFollowersDiscovery:
         candidates = your_followers[:max_followers_to_check]
 
         for i, username in enumerate(candidates, 1):
-            # Update progress
-            self.store.put(progress_namespace, "current", {
-                "current": i,
-                "total": len(candidates),
-                "current_account": username,
-                "status": "analyzing",
-                "stage": "checking_profiles"
-            })
+            # Update progress (only if store is available)
+            if self.store:
+                self.store.put(progress_namespace, "current", {
+                    "current": i,
+                    "total": len(candidates),
+                    "current_account": username,
+                    "status": "analyzing",
+                    "stage": "checking_profiles"
+                })
 
-            # Check for cancellation
-            cancel_items = list(self.store.search(cancel_namespace, limit=1))
-            if cancel_items and cancel_items[0].value.get("cancelled"):
-                print(f"\n⚠️ DISCOVERY CANCELLED by user!")
-                print(f"   Processed {i-1}/{len(candidates)} accounts")
-                print(f"   Saving {len(competitors)} partial results...\n")
-                break
+                # Check for cancellation
+                cancel_items = list(self.store.search(cancel_namespace, limit=1))
+                if cancel_items and cancel_items[0].value.get("cancelled"):
+                    print(f"\n⚠️ DISCOVERY CANCELLED by user!")
+                    print(f"   Processed {i-1}/{len(candidates)} accounts")
+                    print(f"   Saving {len(competitors)} partial results...\n")
+                    break
 
             print(f"[{i}/{len(candidates)}] Checking @{username}...")
 
@@ -303,15 +301,17 @@ class XNativeCommonFollowersDiscovery:
             }
         }
 
-        self.store.put(self.namespace_graph, "latest", graph_data)
+        # Store results (only if store is available)
+        if self.store:
+            self.store.put(self.namespace_graph, "latest", graph_data)
 
-        # Store individual competitors
-        for comp in competitors_sorted:
-            self.store.put(
-                self.namespace_competitors,
-                comp["username"],
-                {**comp, "status": "discovered"}
-            )
+            # Store individual competitors
+            for comp in competitors_sorted:
+                self.store.put(
+                    self.namespace_competitors,
+                    comp["username"],
+                    {**comp, "status": "discovered"}
+                )
 
         print(f"{'='*80}")
         print(f"✅ X NATIVE DISCOVERY COMPLETE!")
