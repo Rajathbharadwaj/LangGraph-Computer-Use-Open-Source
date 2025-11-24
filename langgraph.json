@@ -49,7 +49,7 @@
       "allow_headers": ["*"]
     },
     "configurable_headers": {
-      "include": ["x-cua-host", "x-cua-port", "x-omniparser-url"],
+      "include": ["x-cua-host", "x-cua-port", "x-omniparser-url", "x-user-id", "x-clerk-user-id"],
       "exclude": []
     }
   }

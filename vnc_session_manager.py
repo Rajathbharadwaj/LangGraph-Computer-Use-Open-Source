@@ -423,7 +423,7 @@ class VNCSessionManager:
 
         vnc_url = service_url.replace("https://", "wss://")
 
-        return {
+        session_data = {
             "session_id": "recovered",
             "user_id": user_id,
             "service_name": service_name,
@@ -431,6 +431,20 @@ class VNCSessionManager:
             "https_url": service_url,
             "status": "running"
         }
+
+        # Cache the recovered session in Redis so LangGraph tools can find it
+        if self.redis:
+            try:
+                await self.redis.setex(
+                    self._get_session_key(user_id),
+                    self.session_ttl,
+                    json.dumps(session_data)
+                )
+                print(f"✅ Cached recovered VNC session in Redis for user {user_id}")
+            except Exception as e:
+                print(f"⚠️ Failed to cache session in Redis: {e}")
+
+        return session_data
 
     async def destroy_session(self, user_id: str) -> bool:
         """

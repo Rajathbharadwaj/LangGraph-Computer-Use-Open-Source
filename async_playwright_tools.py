@@ -3,34 +3,54 @@
 Async Playwright CUA Tools for LangGraph ASGI Servers
 Non-blocking computer use tools powered by Playwright stealth browser.
 Designed specifically for LangGraph deployment without blocking the event loop.
+
+IMPORTANT: Tools require per-user VNC URLs via ToolRuntime context.
+Each user has their own VNC session - there is NO fallback to a global client.
 """
 
 import asyncio
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional, Annotated
+from dataclasses import dataclass
 import aiohttp
 import json
-from langchain_core.tools import StructuredTool, tool
+import os
+from langchain_core.tools import StructuredTool, tool, InjectedToolArg
+from langchain_core.runnables import RunnableConfig
 from pydantic import BaseModel, Field
+
+# Import ToolRuntime for per-user context injection
+from langchain.tools import ToolRuntime
+
+
+@dataclass
+class CUAContext:
+    """Context for CUA tools - passed per-request via ToolRuntime"""
+    cua_url: str  # Per-user VNC URL (REQUIRED)
+    user_id: str  # User ID (REQUIRED)
+
+
+# Cache clients per URL to avoid creating new sessions each call
+_client_cache: Dict[str, "AsyncPlaywrightClient"] = {}
+
+
+def get_client_for_url(url: str) -> "AsyncPlaywrightClient":
+    """Get or create a client for a specific URL. URL is required."""
+    if not url:
+        raise ValueError("CUA URL is required - each user must have their own VNC session")
+
+    if url not in _client_cache:
+        _client_cache[url] = AsyncPlaywrightClient(base_url=url)
+    return _client_cache[url]
 
 
 class AsyncPlaywrightClient:
     """Async HTTP client for Playwright CUA server - ASGI compatible"""
 
-    def __init__(self, host: str = None, port: int = 8005):
-        import os
-        # Check for full URL first (for Cloud Run deployments)
-        cua_url = os.getenv('CUA_URL')
-        if cua_url:
-            # Use full URL directly (e.g., https://stealth-api-service-xxx.run.app)
-            self.base_url = cua_url.rstrip('/')
-        else:
-            # Use environment variable or detect if we're in Docker
-            if host is None:
-                # Check if we're running inside Docker container
-                in_docker = os.path.exists('/.dockerenv') or os.path.exists('/run/.containerenv')
-                default_host = 'host.docker.internal' if in_docker else 'localhost'
-                host = os.getenv('CUA_HOST', default_host)
-            self.base_url = f"http://{host}:{port}"
+    def __init__(self, base_url: str):
+        """Initialize client with a specific base URL. URL is required."""
+        if not base_url:
+            raise ValueError("base_url is required for AsyncPlaywrightClient")
+        self.base_url = base_url.rstrip('/')
         self._session = None
     
     async def get_session(self):
@@ -65,79 +85,212 @@ class AsyncPlaywrightClient:
             await self._session.close()
 
 
-# Global client instance
-_global_client = AsyncPlaywrightClient()
+async def _lookup_vnc_url_from_redis(user_id: str) -> str:
+    """Look up VNC URL from Redis using user_id. Returns None if not found."""
+    try:
+        import redis.asyncio as redis
+        import json
+        redis_host = os.environ.get('REDIS_HOST', '10.110.183.147')
+        redis_port = int(os.environ.get('REDIS_PORT', 6379))
+
+        redis_key = f"vnc:session:{user_id}"
+        print(f"🔍 Redis lookup: connecting to {redis_host}:{redis_port}, key={redis_key}")
+
+        r = redis.Redis(host=redis_host, port=redis_port, decode_responses=True)
+
+        # Look up session in Redis (same pattern as VNCSessionManager)
+        # VNCSessionManager uses key format: vnc:session:{user_id} (with colons)
+        # and stores data as JSON string via setex, not as a hash
+        session_json = await r.get(redis_key)
+        print(f"🔍 Redis GET {redis_key} returned: {session_json[:200] if session_json else None}")
+
+        # Also try listing all vnc:session:* keys to debug
+        all_keys = await r.keys("vnc:session:*")
+        print(f"🔍 All vnc:session:* keys in Redis: {all_keys}")
+
+        await r.aclose()
+
+        if session_json:
+            session_data = json.loads(session_json)
+            vnc_url = session_data.get("https_url") or session_data.get("service_url")
+            if vnc_url:
+                print(f"🔍 Looked up VNC URL from Redis for user {user_id}: {vnc_url}")
+                return vnc_url
+    except Exception as e:
+        print(f"⚠️ Could not lookup VNC URL from Redis: {e}")
+        import traceback
+        traceback.print_exc()
+    return None
+
+
+def _get_cua_url_from_runtime(runtime: ToolRuntime) -> str:
+    """Extract CUA URL from ToolRuntime context. Falls back to Redis lookup if user_id available."""
+    cua_url = None
+    user_id = None
+
+    # Debug: Log what we received in runtime
+    print(f"🔍 DEBUG: runtime type = {type(runtime)}")
+    if runtime:
+        print(f"🔍 DEBUG: runtime attributes = {dir(runtime)}")
+        if hasattr(runtime, 'config'):
+            print(f"🔍 DEBUG: runtime.config = {runtime.config}")
+        if hasattr(runtime, 'context'):
+            print(f"🔍 DEBUG: runtime.context = {runtime.context}")
+        if hasattr(runtime, 'state'):
+            print(f"🔍 DEBUG: runtime.state keys = {runtime.state.keys() if hasattr(runtime.state, 'keys') else runtime.state}")
+
+    # Try to get from context (recommended pattern)
+    if runtime and hasattr(runtime, 'context') and runtime.context:
+        if hasattr(runtime.context, 'cua_url'):
+            cua_url = runtime.context.cua_url
+        elif isinstance(runtime.context, dict):
+            cua_url = runtime.context.get('cua_url')
+            user_id = runtime.context.get('user_id')
+
+    # Try to get from config.configurable (alternate pattern)
+    if runtime and hasattr(runtime, 'config') and runtime.config:
+        configurable = runtime.config.get('configurable', {})
+        print(f"🔍 DEBUG: configurable = {configurable}")
+        if not cua_url:
+            cua_url = configurable.get('cua_url')
+        if not user_id:
+            user_id = configurable.get('user_id')
+        # Check for x-user-id header (passed via configurable_headers)
+        if not user_id:
+            user_id = configurable.get('x-user-id')
+            if user_id:
+                print(f"🔍 Got user_id from x-user-id header: {user_id}")
+        # Check for x-clerk-user-id header (passed via configurable_headers)
+        if not user_id:
+            user_id = configurable.get('x-clerk-user-id')
+            if user_id:
+                print(f"🔍 Got user_id from x-clerk-user-id header: {user_id}")
+        # Also check thread_id as a fallback for user identification
+        if not user_id:
+            user_id = configurable.get('thread_id')
+            if user_id:
+                print(f"🔍 Using thread_id as user_id fallback: {user_id}")
+
+    print(f"🔍 DEBUG: cua_url = {cua_url}, user_id = {user_id}")
+
+    # Fallback: Look up VNC URL from Redis using user_id
+    if not cua_url and user_id:
+        import asyncio
+        print(f"🔍 Attempting Redis lookup for user_id: {user_id}")
+        try:
+            # Run the async lookup synchronously since this function is sync
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                # If event loop is running, create a new task
+                import concurrent.futures
+                with concurrent.futures.ThreadPoolExecutor() as executor:
+                    future = executor.submit(asyncio.run, _lookup_vnc_url_from_redis(user_id))
+                    cua_url = future.result(timeout=5)
+            else:
+                cua_url = loop.run_until_complete(_lookup_vnc_url_from_redis(user_id))
+            print(f"🔍 Redis lookup result: {cua_url}")
+        except Exception as e:
+            print(f"⚠️ Failed to lookup VNC URL from Redis: {e}")
+            import traceback
+            traceback.print_exc()
+
+    if not cua_url:
+        raise ValueError(
+            "CUA URL not found in runtime context. "
+            "Each user must have their own VNC session. "
+            "Pass cua_url via context or config.configurable when invoking the agent, "
+            "or ensure user has an active VNC session in Redis."
+        )
+
+    return cua_url
+
+
+def _get_client(runtime: ToolRuntime) -> AsyncPlaywrightClient:
+    """Get client for user's VNC session from runtime context. No fallback."""
+    cua_url = _get_cua_url_from_runtime(runtime)
+    return get_client_for_url(cua_url)
 
 
 def create_async_playwright_tools():
-    """Create async-compatible Playwright tools for LangGraph ASGI servers"""
-    
+    """Create async-compatible Playwright tools for LangGraph ASGI servers.
+
+    IMPORTANT: All tools require per-user VNC URLs via ToolRuntime context.
+    Pass cua_url in context when invoking the agent. There is NO fallback.
+    """
+
     # Use @tool decorator for proper async handling
+    # ToolRuntime is automatically injected by LangGraph - not visible to the LLM
     @tool
-    async def take_browser_screenshot() -> str:
+    async def take_browser_screenshot(runtime: ToolRuntime) -> str:
         """Take a screenshot of the Playwright stealth browser"""
         try:
-            result = await _global_client._request("GET", "/screenshot")
+            client = _get_client(runtime)
+            result = await client._request("GET", "/screenshot")
             if result.get("success") and "image" in result:
                 return "Screenshot captured successfully"
             else:
                 return f"Screenshot failed: {result.get('error', 'Unknown error')}"
         except Exception as e:
             return f"Screenshot failed: {str(e)}"
-    
+
     @tool
-    async def navigate_to_url(url: str) -> str:
+    async def navigate_to_url(url: str, runtime: ToolRuntime) -> str:
         """Navigate to a URL using the Playwright stealth browser"""
         try:
-            result = await _global_client._request("POST", "/navigate", {"url": url})
+            client = _get_client(runtime)
+            result = await client._request("POST", "/navigate", {"url": url})
             if result.get("success"):
                 return f"Successfully navigated to {url}"
             else:
                 return f"Navigation failed: {result.get('error', 'Unknown error')}"
         except Exception as e:
             return f"Navigation failed: {str(e)}"
-    
+
     @tool
-    async def click_at_coordinates(x: int, y: int) -> str:
+    async def click_at_coordinates(x: int, y: int, runtime: ToolRuntime) -> str:
         """CLICK anywhere on screen - buttons, links, like buttons, posts, menus. Use coordinates from DOM analysis."""
         try:
-            result = await _global_client._request("POST", "/click", {"x": x, "y": y})
+            client = _get_client(runtime)
+            result = await client._request("POST", "/click", {"x": x, "y": y})
             if result.get("success"):
                 return f"Successfully clicked at ({x}, {y})"
             else:
                 return f"Click failed: {result.get('error', 'Unknown error')}"
         except Exception as e:
             return f"Click failed: {str(e)}"
-    
+
     @tool
-    async def type_text(text: str) -> str:
+    async def type_text(text: str, runtime: ToolRuntime) -> str:
         """TYPE any text - usernames, passwords, comments, search terms. Works in any input field."""
         try:
-            result = await _global_client._request("POST", "/type", {"text": text})
+            client = _get_client(runtime)
+            result = await client._request("POST", "/type", {"text": text})
             if result.get("success"):
                 return f"Successfully typed: {text}"
             else:
                 return f"Type failed: {result.get('error', 'Unknown error')}"
         except Exception as e:
             return f"Type failed: {str(e)}"
-    
+
     @tool
-    async def press_key_combination(keys: List[str]) -> str:
+    async def press_key_combination(keys: List[str], runtime: ToolRuntime) -> str:
         """Press key combinations using Playwright"""
         try:
-            result = await _global_client._request("POST", "/key", {"keys": keys})
+            client = _get_client(runtime)
+            result = await client._request("POST", "/key", {"keys": keys})
             if result.get("success"):
                 return f"Successfully pressed keys: {'+'.join(keys)}"
             else:
                 return f"Key press failed: {result.get('error', 'Unknown error')}"
         except Exception as e:
             return f"Key press failed: {str(e)}"
-    
+
     @tool
-    async def scroll_page(x: int, y: int, scroll_x: int = 0, scroll_y: int = 3) -> str:
+    async def scroll_page(x: int, y: int, scroll_x: int = 0, scroll_y: int = 3, runtime: ToolRuntime = None) -> str:
         """Scroll page content using Playwright mouse wheel simulation"""
         try:
-            result = await _global_client._request("POST", "/scroll", {
+            client = _get_client(runtime)
+            result = await client._request("POST", "/scroll", {
                 "x": x, "y": y, "scroll_x": scroll_x, "scroll_y": scroll_y
             })
             if result.get("success"):
@@ -146,12 +299,13 @@ def create_async_playwright_tools():
                 return f"Scroll failed: {result.get('error', 'Unknown error')}"
         except Exception as e:
             return f"Scroll failed: {str(e)}"
-    
+
     @tool
-    async def get_dom_elements() -> str:
+    async def get_dom_elements(runtime: ToolRuntime) -> str:
         """Extract interactive DOM elements using Playwright"""
         try:
-            result = await _global_client._request("GET", "/dom/elements")
+            client = _get_client(runtime)
+            result = await client._request("GET", "/dom/elements")
             if result.get("success"):
                 elements = result.get("elements", [])
                 count = result.get("count", 0)
@@ -178,10 +332,11 @@ def create_async_playwright_tools():
             return f"DOM extraction failed: {str(e)}"
     
     @tool
-    async def get_page_info() -> str:
+    async def get_page_info(runtime: ToolRuntime) -> str:
         """Get page information using Playwright with smart login status detection"""
         try:
-            result = await _global_client._request("GET", "/dom/page_info")
+            client = _get_client(runtime)
+            result = await client._request("GET", "/dom/page_info")
             if result.get("success"):
                 info = result.get("page_info", {})
                 url = info.get('url', 'N/A')
@@ -203,10 +358,11 @@ def create_async_playwright_tools():
             return f"Page info failed: {str(e)}"
     
     @tool
-    async def get_enhanced_context() -> str:
+    async def get_enhanced_context(runtime: ToolRuntime) -> str:
         """Get enhanced context for agent analysis"""
         try:
-            result = await _global_client._request("GET", "/dom/enhanced_context")
+            client = _get_client(runtime)
+            result = await client._request("GET", "/dom/enhanced_context")
             if result.get("success"):
                 page_info = result.get("page_info", {})
                 element_count = result.get("element_count", 0)
@@ -222,10 +378,11 @@ def create_async_playwright_tools():
             return f"Enhanced context failed: {str(e)}"
 
     @tool
-    async def find_form_fields() -> str:
+    async def find_form_fields(runtime: ToolRuntime) -> str:
         """Find and categorize form fields (username, password, email, etc.) using semantic analysis"""
         try:
-            result = await _global_client._request("GET", "/dom/elements")
+            client = _get_client(runtime)
+            result = await client._request("GET", "/dom/elements")
             if result.get("success"):
                 elements = result.get("elements", [])
                 
@@ -288,11 +445,12 @@ def create_async_playwright_tools():
             return f"Form field analysis failed: {str(e)}"
 
     @tool
-    async def click_element_by_selector(css_selector: str) -> str:
+    async def click_element_by_selector(css_selector: str, runtime: ToolRuntime) -> str:
         """CLICK any element using CSS selector - like buttons, posts, links, forms. More reliable than coordinates!"""
         try:
+            client = _get_client(runtime)
             # Use the enhanced click_selector endpoint
-            result = await _global_client._request("POST", "/click_selector", {
+            result = await client._request("POST", "/click_selector", {
                 "selector": css_selector,
                 "selector_type": "css"
             })
@@ -304,25 +462,26 @@ def create_async_playwright_tools():
             return f"Click by selector failed: {str(e)}"
 
     @tool
-    async def click_button_by_text(button_text: str) -> str:
+    async def click_button_by_text(button_text: str, runtime: ToolRuntime) -> str:
         """CLICK a button by its visible text content. Much more reliable than CSS selectors!
-        
+
         Args:
             button_text: The exact text on the button (e.g., "Next", "Sign in", "Close", "Submit")
-        
+
         Examples:
         - click_button_by_text("Next") -> Clicks the Next button
         - click_button_by_text("Sign in") -> Clicks the Sign in button
         - click_button_by_text("Close") -> Clicks the Close button
         """
         try:
+            client = _get_client(runtime)
             # Use XPath to find button by exact text (using . which works better than text())
             xpath_selector = f"//button[.='{button_text}']"
-            
+
             print(f"🎯 Looking for button with text: '{button_text}'")
             print(f"🔍 Using XPath: {xpath_selector}")
-            
-            result = await _global_client._request("POST", "/click_selector", {
+
+            result = await client._request("POST", "/click_selector", {
                 "selector": xpath_selector,
                 "selector_type": "xpath"
             })
@@ -333,8 +492,8 @@ def create_async_playwright_tools():
                 # Fallback: Try case-insensitive partial match
                 partial_xpath = f"//button[contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '{button_text.lower()}')]"
                 print(f"⚠️ Exact match failed, trying case-insensitive partial match...")
-                
-                fallback_result = await _global_client._request("POST", "/click_selector", {
+
+                fallback_result = await client._request("POST", "/click_selector", {
                     "selector": partial_xpath,
                     "selector_type": "xpath"
                 })
@@ -347,12 +506,13 @@ def create_async_playwright_tools():
             return f"Click button by text failed: {str(e)}"
 
     @tool
-    async def fill_input_field(css_selector: str, text: str) -> str:
+    async def fill_input_field(css_selector: str, text: str, runtime: ToolRuntime) -> str:
         """Fill an input field using its CSS selector and text. Falls back to coordinates if CSS fails."""
         try:
+            client = _get_client(runtime)
             # First try CSS selector approach
             selector_and_text = f"{css_selector}|||{text}"
-            result = await _global_client._request("POST", "/fill_selector", {
+            result = await client._request("POST", "/fill_selector", {
                 "selector": selector_and_text,
                 "selector_type": "css"
             })
@@ -363,7 +523,7 @@ def create_async_playwright_tools():
                 print(f"⚠️ CSS selector failed, trying coordinate fallback...")
                 
                 # Fallback: Find the input field by CSS and use coordinates
-                dom_result = await _global_client._request("GET", "/dom/elements")
+                dom_result = await client._request("GET", "/dom/elements")
                 if dom_result.get("success"):
                     elements = dom_result.get("elements", [])
                     
@@ -380,11 +540,11 @@ def create_async_playwright_tools():
                     if target_input:
                         # Click on the input field first
                         x, y = target_input.get("x"), target_input.get("y")
-                        click_result = await _global_client._request("POST", "/click", {"x": x, "y": y})
+                        click_result = await client._request("POST", "/click", {"x": x, "y": y})
                         
                         if click_result.get("success"):
                             # Then type the text
-                            type_result = await _global_client._request("POST", "/type", {"text": text})
+                            type_result = await client._request("POST", "/type", {"text": text})
                             if type_result.get("success"):
                                 return f"✅ Successfully filled field using coordinates ({x}, {y}) with text: {text}"
                             else:
@@ -400,38 +560,34 @@ def create_async_playwright_tools():
             return f"Fill field failed: {str(e)}"
     
     @tool
-    async def enter_username(username: str) -> str:
+    async def enter_username(username: str, runtime: ToolRuntime) -> str:
         """
         ENTER USERNAME into login forms intelligently.
-        
+
         This tool combines smart form detection with robust input methods:
         1. Automatically finds username/email input fields
         2. Uses CSS selector filling (preferred)
         3. Falls back to coordinate-based clicking + typing
         4. Handles various input field types (text, email, tel)
-        
+
         Args:
             username: The username/email to enter (e.g., "rajath_db", "user@example.com")
-        
+
         Examples:
         - enter_username("rajath_db") -> Enters username into login form
         - enter_username("user@domain.com") -> Enters email into email field
-        
+
         More reliable than using type_text alone as it intelligently locates the correct input field.
         """
         try:
+            client = _get_client(runtime)
             print(f"🔐 ENTER USERNAME: '{username}'")
-            
+
             # Step 1: Find form fields to identify username/email inputs
             print("🔍 Step 1: Analyzing form fields...")
-            form_result = await find_form_fields.arun({})
-            
-            # Parse the form analysis to get username field info
-            username_field = None
-            email_field = None
-            
+
             # Get DOM elements for detailed analysis
-            dom_result = await _global_client._request("GET", "/dom/elements")
+            dom_result = await client._request("GET", "/dom/elements")
             if not dom_result.get("success"):
                 return f"❌ Failed to get page elements: {dom_result.get('error')}"
             
@@ -541,7 +697,7 @@ def create_async_playwright_tools():
             
             if x is not None and y is not None:
                 # Click on the input field first
-                click_result = await _global_client._request("POST", "/click", {"x": x, "y": y})
+                click_result = await client._request("POST", "/click", {"x": x, "y": y})
                 if click_result.get("success"):
                     print(f"✅ Clicked on input field at ({x}, {y})")
                     
@@ -549,11 +705,11 @@ def create_async_playwright_tools():
                     await asyncio.sleep(0.5)
                     
                     # Clear any existing content (Ctrl+A, Delete)
-                    await _global_client._request("POST", "/key", {"keys": ["ctrl", "a"]})
+                    await client._request("POST", "/key", {"keys": ["ctrl", "a"]})
                     await asyncio.sleep(0.2)
                     
                     # Type the username
-                    type_result = await _global_client._request("POST", "/type", {"text": username})
+                    type_result = await client._request("POST", "/type", {"text": username})
                     if type_result.get("success"):
                         return f"✅ Successfully entered username '{username}' using coordinates! 🔐"
                     else:
@@ -567,30 +723,31 @@ def create_async_playwright_tools():
             return f"Enter username failed: {str(e)}"
 
     @tool
-    async def enter_password(password: str) -> str:
+    async def enter_password(password: str, runtime: ToolRuntime) -> str:
         """
         ENTER PASSWORD into login forms intelligently.
-        
+
         This tool specifically targets password input fields:
         1. Automatically finds password input fields (type="password")
         2. Uses CSS selector filling (preferred)
         3. Falls back to coordinate-based clicking + typing
         4. Handles password field security properly
-        
+
         Args:
             password: The password to enter
-        
+
         Examples:
         - enter_password("mySecretPass123") -> Enters password into password field
-        
+
         More reliable than type_text as it specifically targets password fields.
         """
         try:
+            client = _get_client(runtime)
             print(f"🔐 ENTER PASSWORD: {'*' * len(password)}")
-            
+
             # Get DOM elements to find password fields
             print("🔍 Looking for password input fields...")
-            dom_result = await _global_client._request("GET", "/dom/elements")
+            dom_result = await client._request("GET", "/dom/elements")
             if not dom_result.get("success"):
                 return f"❌ Failed to get page elements: {dom_result.get('error')}"
             
@@ -634,7 +791,7 @@ def create_async_playwright_tools():
             
             if x is not None and y is not None:
                 # Click on the password field
-                click_result = await _global_client._request("POST", "/click", {"x": x, "y": y})
+                click_result = await client._request("POST", "/click", {"x": x, "y": y})
                 if click_result.get("success"):
                     print(f"✅ Clicked on password field at ({x}, {y})")
                     
@@ -642,11 +799,11 @@ def create_async_playwright_tools():
                     await asyncio.sleep(0.5)
                     
                     # Clear any existing content
-                    await _global_client._request("POST", "/key", {"keys": ["ctrl", "a"]})
+                    await client._request("POST", "/key", {"keys": ["ctrl", "a"]})
                     await asyncio.sleep(0.2)
                     
                     # Type the password
-                    type_result = await _global_client._request("POST", "/type", {"text": password})
+                    type_result = await client._request("POST", "/type", {"text": password})
                     if type_result.get("success"):
                         return f"✅ Successfully entered password using coordinates! 🔐"
                     else:
@@ -660,10 +817,11 @@ def create_async_playwright_tools():
             return f"Enter password failed: {str(e)}"
 
     @tool
-    async def check_login_success() -> str:
+    async def check_login_success(runtime: ToolRuntime) -> str:
         """Check if login was successful by analyzing URL and page content"""
         try:
-            result = await _global_client._request("GET", "/dom/page_info")
+            client = _get_client(runtime)
+            result = await client._request("GET", "/dom/page_info")
             if result.get("success"):
                 info = result.get("page_info", {})
                 url = info.get('url', '')
@@ -679,7 +837,7 @@ def create_async_playwright_tools():
                     success_indicators.append("✅ Page title indicates home")
                 
                 # Check for typical logged-in elements
-                dom_result = await _global_client._request("GET", "/dom/elements")
+                dom_result = await client._request("GET", "/dom/elements")
                 if dom_result.get("success"):
                     elements = dom_result.get("elements", [])
                     for el in elements:
@@ -699,16 +857,17 @@ def create_async_playwright_tools():
             return f"Login check failed: {str(e)}"
 
     @tool
-    async def get_comprehensive_context() -> str:
+    async def get_comprehensive_context(runtime: ToolRuntime) -> str:
         """
         Enhanced workflow: Take screenshot -> OmniParser analysis -> Playwright DOM -> Combined context
         This is the main tool for getting complete visual and semantic understanding of the page.
         """
         try:
+            client = _get_client(runtime)
             print("🔍 Starting comprehensive context analysis...")
-            
+
             # Step 1: Take screenshot using Playwright
-            screenshot_result = await _global_client._request("GET", "/screenshot")
+            screenshot_result = await client._request("GET", "/screenshot")
             if not screenshot_result.get("success"):
                 return f"Failed to take screenshot: {screenshot_result.get('error', 'Unknown error')}"
             
@@ -759,11 +918,11 @@ def create_async_playwright_tools():
                 omni_context = f"⚠️ OmniParser error: {str(e)}\\n"
             
             # Step 3: Get Playwright DOM analysis  
-            page_info_result = await _global_client._request("GET", "/dom/page_info")
-            dom_result = await _global_client._request("GET", "/dom/elements")
+            page_info_result = await client._request("GET", "/dom/page_info")
+            dom_result = await client._request("GET", "/dom/elements")
             
             # Step 3.5: Get actual page text content directly from Playwright
-            page_text_result = await _global_client._request("GET", "/page_text")
+            page_text_result = await client._request("GET", "/page_text")
             
             page_context = ""
             if page_info_result.get("success"):
@@ -849,11 +1008,12 @@ Use this information to understand what's visible, interactable, and readable on
             return f"Comprehensive context failed: {str(e)}"
 
     @tool
-    async def get_screenshot_with_analysis() -> str:
+    async def get_screenshot_with_analysis(runtime: ToolRuntime) -> str:
         """Get screenshot with visual analysis for multimodal LLMs that can see images"""
         try:
+            client = _get_client(runtime)
             # Take screenshot
-            screenshot_result = await _global_client._request("GET", "/screenshot")
+            screenshot_result = await client._request("GET", "/screenshot")
             if not screenshot_result.get("success"):
                 return f"Failed to take screenshot: {screenshot_result.get('error', 'Unknown error')}"
             
@@ -876,7 +1036,7 @@ SCREENSHOT_DATA: {screenshot_b64}
             return f"Screenshot with analysis failed: {str(e)}"
 
     @tool
-    async def like_post(author_or_content: str) -> str:
+    async def like_post(author_or_content: str, runtime: ToolRuntime) -> str:
         """
         LIKE a specific post on X (Twitter) using reliable selector-based clicking.
         Finds posts by text content and clicks like button using CSS selectors.
@@ -896,10 +1056,11 @@ SCREENSHOT_DATA: {screenshot_b64}
         This tool uses selector-based clicking which is more reliable than coordinates.
         """
         try:
+            client = _get_client(runtime)
             print(f"❤️ Looking for post by: '{author_or_content}' to like")
 
             # Step 1: Find posts that match the search term
-            result = await _global_client._request("POST", "/playwright/evaluate", {
+            result = await client._request("POST", "/playwright/evaluate", {
                 "script": """(() => {
                     const articles = Array.from(document.querySelectorAll('article'));
                     return articles.map((article, index) => {
@@ -967,7 +1128,7 @@ SCREENSHOT_DATA: {screenshot_b64}
             print(f"🎯 Using selector: {selector}")
 
             # Step 4: Click using selector-based approach (more reliable)
-            click_result = await _global_client._request("POST", "/click_selector", {
+            click_result = await client._request("POST", "/click_selector", {
                 "selector": selector,
                 "selector_type": "css"
             })
@@ -986,7 +1147,7 @@ SCREENSHOT_DATA: {screenshot_b64}
             return f"❌ Like post failed: {str(e)}"
 
     @tool
-    async def unlike_post(author_or_content: str) -> str:
+    async def unlike_post(author_or_content: str, runtime: ToolRuntime) -> str:
         """
         UNLIKE a specific post on X (Twitter) using reliable selector-based clicking.
 
@@ -1005,10 +1166,11 @@ SCREENSHOT_DATA: {screenshot_b64}
         This tool finds posts that are already liked and unlikes them using selector-based clicking.
         """
         try:
+            client = _get_client(runtime)
             print(f"💔 Looking for LIKED post by: '{author_or_content}' to unlike")
 
             # Step 1: Find posts that are already liked
-            result = await _global_client._request("POST", "/playwright/evaluate", {
+            result = await client._request("POST", "/playwright/evaluate", {
                 "script": """(() => {
                     const articles = Array.from(document.querySelectorAll('article'));
                     return articles.map((article, index) => {
@@ -1073,7 +1235,7 @@ SCREENSHOT_DATA: {screenshot_b64}
             print(f"🎯 Using selector: {selector}")
 
             # Step 4: Click using selector-based approach
-            click_result = await _global_client._request("POST", "/click_selector", {
+            click_result = await client._request("POST", "/click_selector", {
                 "selector": selector,
                 "selector_type": "css"
             })
@@ -1092,7 +1254,7 @@ SCREENSHOT_DATA: {screenshot_b64}
             return f"❌ Unlike post failed: {str(e)}"
 
     @tool
-    async def comment_on_post(author_or_content: str, comment_text: str) -> str:
+    async def comment_on_post(author_or_content: str, comment_text: str, runtime: ToolRuntime) -> str:
         """
         COMMENT on a specific post on X (Twitter) using reliable selector-based clicking.
         Finds posts by text content and clicks reply button using CSS selectors.
@@ -1113,10 +1275,11 @@ SCREENSHOT_DATA: {screenshot_b64}
         This tool uses selector-based clicking which is more reliable than coordinates.
         """
         try:
+            client = _get_client(runtime)
             print(f"💬 Looking for post by: '{author_or_content}' to comment: '{comment_text}'")
 
             # Step 1: Find all article elements with reply buttons
-            result = await _global_client._request("POST", "/playwright/evaluate", {
+            result = await client._request("POST", "/playwright/evaluate", {
                 "script": """(() => {
                     const articles = Array.from(document.querySelectorAll('article'));
                     return articles.map((article, index) => {
@@ -1181,7 +1344,7 @@ SCREENSHOT_DATA: {screenshot_b64}
             # Step 4: Click reply button using selector-based approach
             print(f"🎯 Step 1: Clicking reply button...")
 
-            click_result = await _global_client._request("POST", "/click_selector", {
+            click_result = await client._request("POST", "/click_selector", {
                 "selector": selector,
                 "selector_type": "css"
             })
@@ -1197,7 +1360,7 @@ SCREENSHOT_DATA: {screenshot_b64}
             for attempt in range(5):  # Try 5 times over 5 seconds
                 await asyncio.sleep(1)
 
-                dialog_check = await _global_client._request("POST", "/playwright/evaluate", {
+                dialog_check = await client._request("POST", "/playwright/evaluate", {
                     "script": """(() => {
                         const dialog = document.querySelector('[role="dialog"]');
                         const textarea = document.querySelector('[data-testid="tweetTextarea_0"]');
@@ -1218,7 +1381,7 @@ SCREENSHOT_DATA: {screenshot_b64}
             # Step 6: Type comment using Playwright's .type() method (triggers React properly)
             print(f"💬 Step 2: Typing comment using Playwright .type()...")
 
-            type_result = await _global_client._request("POST", "/playwright/type", {
+            type_result = await client._request("POST", "/playwright/type", {
                 "selector": '[data-testid="tweetTextarea_0"]',
                 "text": comment_text,
                 "delay": 50,  # 50ms delay between keystrokes (human-like)
@@ -1236,7 +1399,7 @@ SCREENSHOT_DATA: {screenshot_b64}
             # Step 8: Click the submit button (data-testid="tweetButton")
             print(f"🎯 Step 3: Clicking submit button...")
 
-            submit_result = await _global_client._request("POST", "/playwright/click", {
+            submit_result = await client._request("POST", "/playwright/click", {
                 "selector": '[role="dialog"] [data-testid="tweetButton"]',
                 "timeout": 5000
             })
@@ -1249,7 +1412,7 @@ SCREENSHOT_DATA: {screenshot_b64}
             # Step 9: Wait for submission and verify dialog closed
             await asyncio.sleep(2)
             
-            dialog_closed = await _global_client._request("POST", "/playwright/evaluate", {
+            dialog_closed = await client._request("POST", "/playwright/evaluate", {
                 "script": "(() => { return !document.querySelector('[role=\"dialog\"]'); })()"
             })
             
@@ -1263,17 +1426,18 @@ SCREENSHOT_DATA: {screenshot_b64}
             return f"Comment failed: {str(e)}"
 
     @tool
-    async def get_current_username() -> str:
+    async def get_current_username(runtime: ToolRuntime) -> str:
         """
         Get the current logged-in user's username by finding the Profile link.
-        
+
         Returns the username (e.g., 'Rajath_DB') which can be used to navigate to the user's profile.
         """
         try:
+            client = _get_client(runtime)
             print("🔍 Looking for Profile link to extract username...")
-            
+
             # Get DOM elements to find Profile link
-            result = await _global_client._request("GET", "/dom/elements")
+            result = await client._request("GET", "/dom/elements")
             if not result.get("success"):
                 return f"Failed to get page elements: {result.get('error', 'Unknown error')}"
             
@@ -1304,29 +1468,30 @@ SCREENSHOT_DATA: {screenshot_b64}
             return f"Get username failed: {str(e)}"
 
     @tool
-    async def navigate_to_user_replies(username: str = None) -> str:
+    async def navigate_to_user_replies(runtime: ToolRuntime, username: str = None) -> str:
         """
         Navigate to the user's replies page to view/manage their comments.
-        
+
         Args:
             username: Optional username. If not provided, will auto-detect current user.
-        
+
         This navigates to https://x.com/{username}/with_replies where you can see and manage your own comments.
         """
         try:
+            client = _get_client(runtime)
             if not username:
                 # Auto-detect current username
-                username_result = await get_current_username.arun({})
+                username_result = await get_current_username.ainvoke({"runtime": runtime})
                 if "Current username:" in username_result:
                     username = username_result.split("Current username: ")[1].strip()
                 else:
                     return f"❌ Could not auto-detect username: {username_result}"
-            
+
             replies_url = f"https://x.com/{username}/with_replies"
             print(f"🔗 Navigating to user replies: {replies_url}")
-            
+
             # Navigate to the replies page
-            navigate_result = await _global_client._request("POST", "/navigate", {"url": replies_url})
+            navigate_result = await client._request("POST", "/navigate", {"url": replies_url})
             
             if navigate_result.get("success"):
                 # Wait for page to load
@@ -1339,38 +1504,39 @@ SCREENSHOT_DATA: {screenshot_b64}
             return f"Navigate to replies failed: {str(e)}"
 
     @tool
-    async def delete_own_comment(target_post_author_or_content: str, comment_text_to_delete: str) -> str:
+    async def delete_own_comment(target_post_author_or_content: str, comment_text_to_delete: str, runtime: ToolRuntime) -> str:
         """
         Delete your own comment from a specific post.
-        
+
         Args:
             target_post_author_or_content: Identifier for the original post you commented on
             comment_text_to_delete: The exact text of your comment to delete
-        
+
         This function:
         1. Navigates to your replies page
         2. Finds your comment on the specified post
         3. Deletes the comment using the more options menu
-        
+
         Examples:
         - delete_own_comment("John Rush", "Great comprehensive list! Thanks for sharing this.")
         - delete_own_comment("Alex", "Interesting perspective! 🤔")
         """
         try:
+            client = _get_client(runtime)
             print(f"🗑️ STARTING DELETION: Looking to delete comment '{comment_text_to_delete}' on post by '{target_post_author_or_content}'")
-            
+
             # Step 1: Navigate to user's replies page
-            replies_result = await navigate_to_user_replies.arun({})
+            replies_result = await navigate_to_user_replies.ainvoke({"runtime": runtime})
             if not replies_result.startswith("✅"):
                 return f"❌ Failed to navigate to replies page: {replies_result}"
-            
+
             print("✅ Step 1: Successfully navigated to replies page")
-            
+
             # Step 2: Find the specific comment to delete
             await asyncio.sleep(2)  # Wait for page to load
-            
+
             # Get page elements to find the comment
-            result = await _global_client._request("GET", "/dom/elements")
+            result = await client._request("GET", "/dom/elements")
             if not result.get("success"):
                 return f"Failed to get page elements: {result.get('error', 'Unknown error')}"
             
@@ -1413,7 +1579,7 @@ SCREENSHOT_DATA: {screenshot_b64}
             # Look for the comment that belongs to our user
             # First get our username dynamically
             print("👤 Getting current username...")
-            username_result = await get_current_username.arun({})
+            username_result = await get_current_username.ainvoke({"runtime": runtime})
             current_username = None
             if "Current username:" in username_result:
                 current_username = username_result.split("Current username: ")[1].strip()
@@ -1520,7 +1686,7 @@ SCREENSHOT_DATA: {screenshot_b64}
             
             # Step 4: Click more options menu
             print(f"👆 Step 4: Clicking More options button at ({more_x}, {more_y})")
-            click_result = await _global_client._request("POST", "/click", {
+            click_result = await client._request("POST", "/click", {
                 "x": more_x, 
                 "y": more_y
             })
@@ -1536,7 +1702,7 @@ SCREENSHOT_DATA: {screenshot_b64}
             
             # Get updated DOM to find delete option
             print("🔍 Step 5: Getting updated DOM to find Delete option...")
-            updated_result = await _global_client._request("GET", "/dom/elements")
+            updated_result = await client._request("GET", "/dom/elements")
             if not updated_result.get("success"):
                 return f"❌ Failed to get updated DOM: {updated_result.get('error')}"
             
@@ -1621,7 +1787,7 @@ SCREENSHOT_DATA: {screenshot_b64}
             print(f"   Text: '{delete_button.get('text')}', Position: ({delete_x}, {delete_y}), Index: {delete_index}")
             
             # Step 6: Click delete button
-            delete_click = await _global_client._request("POST", "/click", {
+            delete_click = await client._request("POST", "/click", {
                 "x": delete_button.get('x'),
                 "y": delete_button.get('y')
             })
@@ -1633,7 +1799,7 @@ SCREENSHOT_DATA: {screenshot_b64}
                 await asyncio.sleep(1)
                 
                 # Check if there's a confirmation dialog and handle it
-                confirm_result = await _global_client._request("GET", "/dom/elements")
+                confirm_result = await client._request("GET", "/dom/elements")
                 if confirm_result.get("success"):
                     confirm_elements = confirm_result.get("elements", [])
                     
@@ -1648,7 +1814,7 @@ SCREENSHOT_DATA: {screenshot_b64}
                     if confirm_button:
                         print(f"✅ Found confirmation Delete button at ({confirm_button.get('x')}, {confirm_button.get('y')})")
                         # Click confirmation
-                        final_click = await _global_client._request("POST", "/click", {
+                        final_click = await client._request("POST", "/click", {
                             "x": confirm_button.get('x'),
                             "y": confirm_button.get('y')
                         })
@@ -1662,7 +1828,7 @@ SCREENSHOT_DATA: {screenshot_b64}
                 
                 # Step 8: Navigate back to home page
                 print("🏠 Navigating back to home page...")
-                home_result = await _global_client._request("POST", "/navigate", {"url": "https://x.com/home"})
+                home_result = await client._request("POST", "/navigate", {"url": "https://x.com/home"})
                 if home_result.get("success"):
                     await asyncio.sleep(2)  # Wait for home page to load
                     print("✅ Step 8: Returned to home page")
@@ -1675,21 +1841,22 @@ SCREENSHOT_DATA: {screenshot_b64}
             return f"Delete comment failed: {str(e)}"
 
     @tool 
-    async def like_specific_post_by_keywords(keywords: str) -> str:
+    async def like_specific_post_by_keywords(keywords: str, runtime: ToolRuntime) -> str:
         """
         LIKE a post by searching for specific keywords in the post content.
-        
+
         Args:
             keywords: Key phrases to identify the post (e.g., "OCR model", "AI research", "open source")
-        
+
         More flexible version of like_post that searches through visible posts.
         """
         try:
+            client = _get_client(runtime)
             # Get comprehensive context to see all posts
-            comprehensive_result = await get_comprehensive_context.arun({})
-            
+            comprehensive_result = await get_comprehensive_context.ainvoke({"runtime": runtime})
+
             # Also get DOM elements for precise clicking
-            dom_result = await _global_client._request("GET", "/dom/elements")
+            dom_result = await client._request("GET", "/dom/elements")
             if not dom_result.get("success"):
                 return f"Failed to get DOM elements: {dom_result.get('error')}"
             
@@ -1718,7 +1885,7 @@ SCREENSHOT_DATA: {screenshot_b64}
                     
                     print(f"🎯 Clicking like button: {aria_label} at ({x}, {y})")
                     
-                    click_result = await _global_client._request("POST", "/click", {"x": x, "y": y})
+                    click_result = await client._request("POST", "/click", {"x": x, "y": y})
                     
                     if click_result.get("success"):
                         return f"✅ Successfully liked the post containing '{keywords}'! 👍"
@@ -1769,28 +1936,29 @@ def get_async_playwright_tools() -> List[Any]:
 
 
 @tool
-async def create_post_on_x(post_text: str) -> str:
+async def create_post_on_x(post_text: str, runtime: ToolRuntime) -> str:
     """
     Create a post on X (Twitter) using Playwright automation.
     This uses real keyboard typing to properly interact with React's contenteditable.
-    
+
     Args:
         post_text: The text content to post (max 280 characters)
-    
+
     Returns:
         Success message if posted, error message if failed
-    
+
     Example:
         result = await create_post_on_x("Hello world! 🌍")
     """
     try:
-        result = await _global_client._request(
+        client = _get_client(runtime)
+        result = await client._request(
             "POST",
             "/create-post-playwright",
             {"text": post_text},
             timeout=40  # Posting can take time
         )
-        
+
         if result.get("success"):
             return f"✅ Post created successfully! Text: '{result.get('post_text', post_text)}'"
         else:
@@ -1801,20 +1969,21 @@ async def create_post_on_x(post_text: str) -> str:
 
 
 if __name__ == "__main__":
-    # Test the async tools
+    # Test the async tools - requires a test CUA URL
+    import os
+
     async def test_async_tools():
         """Test the async Playwright tools"""
         print("🧪 Testing Async Playwright Tools...")
-        
+
+        # For testing, set a test URL
+        test_url = os.getenv('CUA_URL', 'http://localhost:8005')
+        print(f"Using test CUA URL: {test_url}")
+
         tools = get_async_playwright_tools()
         print(f"✅ Created {len(tools)} async tools")
-        
-        # Test one tool
-        screenshot_tool = next(t for t in tools if t.name == "take_browser_screenshot")
-        result = await screenshot_tool.arun({})
-        print(f"📸 Screenshot test: {result}")
-        
-        # Cleanup
-        await _global_client.close()
-    
+
+        # Note: Can't test tools without runtime context
+        print("ℹ️ Tools require ToolRuntime context - run via LangGraph agent for full test")
+
     asyncio.run(test_async_tools())
