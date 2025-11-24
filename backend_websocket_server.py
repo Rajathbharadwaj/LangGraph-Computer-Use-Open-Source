@@ -56,6 +56,14 @@ from clerk_webhooks import router as webhook_router
 async def lifespan(app: FastAPI):
     """Initialize scheduled post executor on startup"""
     print("🚀 Starting Parallel Universe Backend...")
+
+    # Initialize database tables
+    try:
+        from database.database import init_db
+        init_db()
+    except Exception as e:
+        print(f"⚠️ Database initialization warning: {e}")
+
     try:
         executor = await get_executor()
         print(f"✅ Scheduled post executor initialized with {len(executor.get_scheduled_posts())} pending posts")
@@ -79,7 +87,11 @@ app = FastAPI(title="Parallel Universe Backend", lifespan=lifespan)
 # Enable CORS for Next.js frontend
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
+    allow_origins=[
+        "http://localhost:3000",
+        "https://app.paralleluniverse.ai",
+        "https://frontend-644185288504.us-central1.run.app",
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -120,21 +132,24 @@ DB_URI = os.environ.get("DATABASE_URL", "postgresql://postgres:password@localhos
 # Create store instance (not using context manager since we need it globally)
 from psycopg_pool import ConnectionPool
 
-# Create a connection pool for the store
-conn_pool = ConnectionPool(
-    conninfo=DB_URI,
-    min_size=1,
-    max_size=10
-)
-
-# Initialize store with the pool
-store = PostgresStore(conn=conn_pool)
-print(f"✅ Initialized PostgresStore for persistent memory: {DB_URI}")
-
-# Note: store.setup() should be run ONCE manually or via migration script
-# See: https://docs.langchain.com/oss/python/langgraph/add-memory
-# After first setup, comment it out (as shown in docs)
-# store.setup()  # Already initialized via migration
+# Create a connection pool for the store with timeout
+# Use connection timeout to prevent blocking during startup
+try:
+    conn_pool = ConnectionPool(
+        conninfo=DB_URI + ("?" if "?" not in DB_URI else "&") + "connect_timeout=10",
+        min_size=0,  # Don't require connections at startup
+        max_size=10,
+        timeout=10,  # seconds to wait for a connection
+    )
+    # Initialize store with the pool
+    store = PostgresStore(conn=conn_pool)
+    # Setup store table - required on first run, uses CREATE TABLE IF NOT EXISTS
+    store.setup()
+    print(f"✅ Initialized PostgresStore for persistent memory: {DB_URI}")
+except Exception as e:
+    print(f"⚠️ Failed to initialize PostgresStore (will retry on demand): {e}")
+    conn_pool = None
+    store = None
 
 # Initialize scheduled post executor on startup
 @app.get("/")
@@ -371,7 +386,7 @@ except ImportError as e:
 
 
 @app.post("/api/vnc/create")
-async def create_vnc_session(data: dict, user_data: dict = Depends(get_current_user), db: Session = Depends(get_db)):
+async def create_vnc_session(data: dict, auth_user_id: str = Depends(get_current_user), db: Session = Depends(get_db)):
     """
     Create a new VNC browser session for authenticated user.
 
@@ -396,7 +411,7 @@ async def create_vnc_session(data: dict, user_data: dict = Depends(get_current_u
     """
     try:
         # Get user ID from Clerk auth or request body
-        user_id = data.get("user_id") or user_data.get("user_id")
+        user_id = data.get("user_id") or auth_user_id
 
         if not user_id:
             raise HTTPException(status_code=401, detail="Authentication required")
@@ -437,7 +452,7 @@ async def create_vnc_session(data: dict, user_data: dict = Depends(get_current_u
 
 
 @app.get("/api/vnc/session")
-async def get_vnc_session(user_data: dict = Depends(get_current_user), db: Session = Depends(get_db)):
+async def get_vnc_session(user_id: str = Depends(get_current_user), db: Session = Depends(get_db)):
     """
     Get current user's VNC session or create new one if none exists.
 
@@ -456,8 +471,6 @@ async def get_vnc_session(user_data: dict = Depends(get_current_user), db: Sessi
     }
     """
     try:
-        user_id = user_data.get("user_id")
-
         if not user_id:
             raise HTTPException(status_code=401, detail="Authentication required")
 
@@ -505,7 +518,7 @@ async def get_vnc_session(user_data: dict = Depends(get_current_user), db: Sessi
 
 
 @app.delete("/api/vnc/{session_id}")
-async def destroy_vnc_session(session_id: str, user_data: dict = Depends(get_current_user)):
+async def destroy_vnc_session(session_id: str, user_id: str = Depends(get_current_user)):
     """
     Terminate VNC session
 
@@ -516,8 +529,6 @@ async def destroy_vnc_session(session_id: str, user_data: dict = Depends(get_cur
     }
     """
     try:
-        user_id = user_data.get("user_id")
-
         if not user_id:
             raise HTTPException(status_code=401, detail="Authentication required")
 
@@ -2008,28 +2019,50 @@ async def activity_websocket(websocket: WebSocket, user_id: str):
             pass
 
 @app.post("/api/inject-cookies-to-docker")
-async def inject_cookies_to_docker(request: dict):
+async def inject_cookies_to_docker(
+    request: dict,
+    clerk_user_id: str = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
     """
-    Inject user's X cookies into Docker browser
-    Request: {"user_id": "user_xxx"}
+    Inject user's X cookies into their per-user VNC browser session.
+
+    Request: {"user_id": "extension_user_xxx"}  - Extension user ID (has the cookies)
+
+    This endpoint:
+    1. Gets the Clerk user's VNC session from Redis
+    2. Fetches cookies using the extension user ID
+    3. Injects cookies into the user's VNC session
     """
     import aiohttp
-    
-    user_id = request.get("user_id")
-    if not user_id:
+
+    extension_user_id = request.get("user_id")
+    if not extension_user_id:
         return {"success": False, "error": "user_id required"}
-    
-    # First, try to get cookies from extension backend (port 8001)
+
+    print(f"🔐 Clerk user: {clerk_user_id}, Extension user: {extension_user_id}")
+
+    # Get the user's VNC session from Redis
+    vnc_manager = await get_vnc_manager()
+    vnc_session = await vnc_manager.get_session(clerk_user_id)
+
+    if not vnc_session or not vnc_session.get("https_url"):
+        print(f"❌ No VNC session found for Clerk user {clerk_user_id}")
+        return {"success": False, "error": "No VNC session found. Please load the VNC viewer first."}
+
+    vnc_service_url = vnc_session.get("https_url")
+    print(f"✅ Found VNC session at: {vnc_service_url}")
+
+    # Fetch cookies from extension backend
     cookie_data = None
-    print(f"🔍 Looking for cookies for user: {user_id}")
-    print(f"   In local cache: {user_id in user_cookies}")
-    
-    if user_id not in user_cookies:
+    print(f"🔍 Looking for cookies for extension user: {extension_user_id}")
+
+    if extension_user_id not in user_cookies:
         # Fetch from extension backend
         print(f"   Fetching from extension backend...")
         try:
             async with aiohttp.ClientSession() as session:
-                async with session.get(f'{EXTENSION_BACKEND_URL}/cookies/{user_id}', timeout=aiohttp.ClientTimeout(total=5)) as resp:
+                async with session.get(f'{EXTENSION_BACKEND_URL}/cookies/{extension_user_id}', timeout=aiohttp.ClientTimeout(total=5)) as resp:
                     print(f"   Extension backend response status: {resp.status}")
                     if resp.status == 200:
                         ext_data = await resp.json()
@@ -2048,19 +2081,19 @@ async def inject_cookies_to_docker(request: dict):
             print(f"❌ Failed to fetch from extension backend: {e}")
             import traceback
             traceback.print_exc()
-        
+
         if not cookie_data:
-            print(f"❌ No cookie data found for {user_id}")
+            print(f"❌ No cookie data found for {extension_user_id}")
             return {"success": False, "error": "No cookies found for this user"}
     else:
-        cookie_data = user_cookies[user_id]
-    
+        cookie_data = user_cookies[extension_user_id]
+
     if not cookie_data:
         return {"success": False, "error": "No cookies found for this user"}
-    
+
     cookies = cookie_data["cookies"]
     username = cookie_data["username"]
-    
+
     try:
         # Convert Chrome cookies to Playwright format
         playwright_cookies = []
@@ -2072,7 +2105,7 @@ async def inject_cookies_to_docker(request: dict):
                 expires_value = int(expires_value)
             else:
                 expires_value = -1
-            
+
             # Handle sameSite - must be exactly "Strict", "Lax", or "None"
             same_site = cookie.get("sameSite", "lax")
             if same_site:
@@ -2089,7 +2122,7 @@ async def inject_cookies_to_docker(request: dict):
                     same_site = "Lax"  # Default fallback
             else:
                 same_site = "Lax"
-            
+
             pw_cookie = {
                 "name": cookie["name"],
                 "value": cookie["value"],
@@ -2101,19 +2134,20 @@ async def inject_cookies_to_docker(request: dict):
                 "sameSite": same_site
             }
             playwright_cookies.append(pw_cookie)
-        
+
         print(f"🔄 Converted {len(playwright_cookies)} cookies to Playwright format")
-        
-        # Call Docker stealth_cua_server to inject cookies
+
+        # Call the user's VNC service to inject cookies
         async with aiohttp.ClientSession() as session:
             async with session.post(
-                f"{VNC_BROWSER_URL}/session/load",
-                json={"cookies": playwright_cookies}
+                f"{vnc_service_url}/session/load",
+                json={"cookies": playwright_cookies},
+                timeout=aiohttp.ClientTimeout(total=30)
             ) as response:
                 result = await response.json()
-                
+
                 if result.get("success"):
-                    print(f"✅ Injected cookies into Docker for @{username}")
+                    print(f"✅ Injected cookies into VNC session for @{username}")
                     return {
                         "success": True,
                         "message": f"Session loaded for @{username}",
@@ -2127,6 +2161,8 @@ async def inject_cookies_to_docker(request: dict):
                     }
     except Exception as e:
         print(f"❌ Error injecting cookies: {e}")
+        import traceback
+        traceback.print_exc()
         return {"success": False, "error": str(e)}
 
 @app.websocket("/ws/extension/{user_id}")

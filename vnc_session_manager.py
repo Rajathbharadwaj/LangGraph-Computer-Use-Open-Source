@@ -47,12 +47,6 @@ class VNCSessionManager:
             f"gcr.io/{self.project_id}/vnc-browser:latest"
         )
 
-        # VPC Connector for Redis access
-        self.vpc_connector = os.getenv(
-            "VPC_CONNECTOR",
-            f"projects/{self.project_id}/locations/{self.region}/connectors/paralleluniverse-vpc"
-        )
-
         # Cloud Run Services client
         self.services_client = run_v2.ServicesAsyncClient()
 
@@ -272,12 +266,8 @@ class VNCSessionManager:
                     max_instance_count=1
                 ),
                 # Timeout settings
-                timeout="3600s",  # 1 hour max request duration
-                # VPC connector for Redis access
-                vpc_access=run_v2.VpcAccess(
-                    connector=self.vpc_connector,
-                    egress=run_v2.VpcAccess.VpcEgress.ALL_TRAFFIC
-                )
+                timeout="3600s"  # 1 hour max request duration
+                # NOTE: No VPC connector - VNC services need direct internet access for X.com
             ),
             # Allow unauthenticated access (authentication handled at app level)
             ingress=run_v2.IngressTraffic.INGRESS_TRAFFIC_ALL

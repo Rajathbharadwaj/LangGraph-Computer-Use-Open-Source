@@ -89,7 +89,31 @@ def verify_clerk_token(authorization: str = Header(None)) -> dict:
         )
 
         # Extract user ID from payload
-        user_id = payload.get("sub")  # Subject claim contains user ID
+        # Clerk JWTs can have different structures:
+        # - sub: Can be external OAuth ID (Google: 110553...) or Clerk user ID (user_xxx)
+        # - metadata.userId or user_id: Usually the Clerk internal user ID
+        # We prefer the Clerk user ID if available
+
+        user_id = payload.get("sub")
+
+        # Check if sub looks like a Clerk user ID (starts with user_)
+        # If not, try to find it in other claims
+        if user_id and not user_id.startswith("user_"):
+            # sub might be external OAuth ID, look for Clerk user ID elsewhere
+            # Try common Clerk JWT claim locations
+            clerk_user_id = (
+                payload.get("userId") or
+                payload.get("user_id") or
+                payload.get("metadata", {}).get("userId") or
+                payload.get("public_metadata", {}).get("userId")
+            )
+            if clerk_user_id and clerk_user_id.startswith("user_"):
+                print(f"🔄 Using Clerk user ID from metadata: {clerk_user_id} (sub was: {user_id})")
+                user_id = clerk_user_id
+            else:
+                # Log the full payload to debug
+                print(f"⚠️ JWT sub is external ID: {user_id}")
+                print(f"   Full payload keys: {list(payload.keys())}")
 
         if not user_id:
             raise HTTPException(

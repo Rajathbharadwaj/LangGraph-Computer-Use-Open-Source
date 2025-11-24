@@ -10,11 +10,14 @@ from sqlalchemy.pool import NullPool
 # Get database URL from environment (port 5433 to avoid conflict with other postgres instances)
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://postgres:password@localhost:5433/xgrowth")
 
-# Create engine
+# Create engine with connection timeout for Cloud Run startup
 engine = create_engine(
     DATABASE_URL,
     poolclass=NullPool,  # For async compatibility
     echo=False,  # Set to True for SQL logging
+    connect_args={
+        "connect_timeout": 10,  # 10 second connection timeout
+    },
 )
 
 # Create session factory
