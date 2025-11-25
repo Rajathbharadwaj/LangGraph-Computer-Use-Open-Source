@@ -129,11 +129,13 @@ print(f"✅ Initialized LangGraph client: {LANGGRAPH_URL}")
 # Using the same database as the main app
 DB_URI = os.environ.get("DATABASE_URL", "postgresql://postgres:password@localhost:5433/xgrowth")
 
-# Create store instance using the recommended from_conn_string method
-# This handles connection pooling internally
+# Create store instance using direct initialization (not context manager)
+# This is appropriate for long-running FastAPI servers
+store = None
 try:
-    # Use from_conn_string as recommended by LangGraph docs
-    store = PostgresStore.from_conn_string(DB_URI)
+    # Direct initialization - appropriate for servers
+    # The from_conn_string() returns a context manager which doesn't work for persistent servers
+    store = PostgresStore(conn_string=DB_URI)
     # Setup store table - required on first run, uses CREATE TABLE IF NOT EXISTS
     store.setup()
     print(f"✅ Initialized PostgresStore for persistent memory: {DB_URI}")
