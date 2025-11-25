@@ -126,29 +126,21 @@ langgraph_client = get_client(url=LANGGRAPH_URL)
 print(f"✅ Initialized LangGraph client: {LANGGRAPH_URL}")
 
 # Initialize PostgreSQL Store for persistent memory (writing samples, preferences, etc.)
-# Using the same database as the main app (port 5433 to avoid conflict with other postgres instances)
+# Using the same database as the main app
 DB_URI = os.environ.get("DATABASE_URL", "postgresql://postgres:password@localhost:5433/xgrowth")
 
-# Create store instance (not using context manager since we need it globally)
-from psycopg_pool import ConnectionPool
-
-# Create a connection pool for the store with timeout
-# Use connection timeout to prevent blocking during startup
+# Create store instance using the recommended from_conn_string method
+# This handles connection pooling internally
 try:
-    conn_pool = ConnectionPool(
-        conninfo=DB_URI + ("?" if "?" not in DB_URI else "&") + "connect_timeout=10",
-        min_size=0,  # Don't require connections at startup
-        max_size=10,
-        timeout=10,  # seconds to wait for a connection
-    )
-    # Initialize store with the pool
-    store = PostgresStore(conn=conn_pool)
+    # Use from_conn_string as recommended by LangGraph docs
+    store = PostgresStore.from_conn_string(DB_URI)
     # Setup store table - required on first run, uses CREATE TABLE IF NOT EXISTS
     store.setup()
     print(f"✅ Initialized PostgresStore for persistent memory: {DB_URI}")
 except Exception as e:
     print(f"⚠️ Failed to initialize PostgresStore (will retry on demand): {e}")
-    conn_pool = None
+    import traceback
+    traceback.print_exc()
     store = None
 
 
@@ -917,6 +909,8 @@ async def get_recent_activity(user_id: str, limit: int = 50):
         List of activity objects sorted by timestamp (newest first)
     """
     try:
+        if not store:
+            return {"success": False, "error": "Store not initialized", "activities": [], "count": 0}
         from activity_logger import ActivityLogger
 
         # Use the global store instance (already initialized at startup)
@@ -1180,6 +1174,8 @@ async def cancel_discovery(user_id: str):
 async def get_discovery_progress(user_id: str):
     """Get current discovery progress"""
     try:
+        if not store:
+            return {"success": False, "error": "Store not initialized", "progress": None}
         progress_namespace = (user_id, "discovery_progress")
         items = list(store.search(progress_namespace, limit=1))
 
@@ -1856,6 +1852,8 @@ async def get_content_insights(user_id: str):
         Cached content insights or null
     """
     try:
+        if not store:
+            return {"success": False, "insights": None, "error": "Store not initialized"}
         insights_namespace = (user_id, "content_insights")
         items = list(store.search(insights_namespace, limit=1))
 
@@ -2018,6 +2016,8 @@ async def get_social_graph(user_id: str):
         Latest social graph data from PostgreSQL
     """
     try:
+        if not store:
+            return {"success": False, "error": "Store not initialized", "graph": None, "has_data": False}
         from social_graph_scraper import SocialGraphBuilder
 
         # Initialize builder
