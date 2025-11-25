@@ -53,13 +53,13 @@ from clerk_webhooks import router as webhook_router
 
 # Global store variable (initialized in lifespan)
 store = None
-_store_context = None
+_pg_pool = None  # Connection pool for PostgresStore
 
 # Lifespan context manager for startup/shutdown
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Initialize scheduled post executor and PostgresStore on startup"""
-    global store, _store_context
+    global store, _pg_pool
     print("🚀 Starting Parallel Universe Backend...")
 
     # Initialize database tables
@@ -69,20 +69,42 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"⚠️ Database initialization warning: {e}")
 
-    # Initialize PostgresStore using context manager
+    # Initialize PostgresStore with a connection pool
+    # This is the proper way to use PostgresStore in a long-running server
     DB_URI = os.environ.get("DATABASE_URL", "postgresql://postgres:password@localhost:5433/xgrowth")
     try:
-        # Use the context manager to get a properly initialized store
-        _store_context = PostgresStore.from_conn_string(DB_URI)
-        store = _store_context.__enter__()
-        store.setup()
-        print(f"✅ Initialized PostgresStore for persistent memory")
+        from psycopg_pool import ConnectionPool
+
+        # Create a connection pool (will be shared across requests)
+        # min_size=1 to avoid holding too many connections, max_size for concurrency
+        _pg_pool = ConnectionPool(
+            conninfo=DB_URI,
+            min_size=1,
+            max_size=10,
+            open=True  # Open the pool immediately
+        )
+
+        # Create PostgresStore with the pool
+        store = PostgresStore(conn=_pg_pool)
+
+        # Setup tables (idempotent - safe to call multiple times)
+        # Wrap in try/except for concurrent worker startup race condition
+        try:
+            store.setup()
+        except Exception as setup_err:
+            if "duplicate key" in str(setup_err).lower() or "already exists" in str(setup_err).lower():
+                print(f"ℹ️ PostgresStore tables already exist (concurrent setup)")
+            else:
+                raise
+        print(f"✅ Initialized PostgresStore with connection pool")
     except Exception as e:
         print(f"⚠️ Failed to initialize PostgresStore: {e}")
         import traceback
         traceback.print_exc()
         store = None
-        _store_context = None
+        if _pg_pool:
+            _pg_pool.close()
+            _pg_pool = None
 
     try:
         executor = await get_executor()
@@ -102,13 +124,13 @@ async def lifespan(app: FastAPI):
     # Shutdown
     print("🛑 Shutting down...")
 
-    # Clean up PostgresStore context
-    if _store_context is not None:
+    # Clean up connection pool
+    if _pg_pool is not None:
         try:
-            _store_context.__exit__(None, None, None)
-            print("✅ PostgresStore cleaned up")
+            _pg_pool.close()
+            print("✅ PostgresStore connection pool closed")
         except Exception as e:
-            print(f"⚠️ Error cleaning up PostgresStore: {e}")
+            print(f"⚠️ Error closing connection pool: {e}")
 
 app = FastAPI(title="Parallel Universe Backend", lifespan=lifespan)
 
