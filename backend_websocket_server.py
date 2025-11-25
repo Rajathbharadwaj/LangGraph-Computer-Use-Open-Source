@@ -409,10 +409,10 @@ async def agent_create_post(data: dict):
         
         # Call extension backend to create post
         print(f"📤 Sending post to extension backend...")
-        
+
         import requests
         response = requests.post(
-            "http://localhost:8001/extension/create-post",
+            f"{EXTENSION_BACKEND_URL}/extension/create-post",
             json={
                 "post_text": post_text,
                 "user_id": user_id
@@ -716,33 +716,72 @@ async def get_posts_count(username: str):
 
 @app.get("/api/posts/{user_id}")
 async def get_user_posts(user_id: str):
-    """Get stored posts for a user (from persistent store)"""
+    """Get stored posts for a user (from PostgreSQL database)"""
     try:
-        # Try to get from persistent store first
-        namespace = (user_id, "writing_samples")
-        
-        # Search for all writing samples for this user (no query = get all)
-        items = store.search(namespace)
-        posts = []
-        
-        for item in items:
-            sample_data = item.value
-            posts.append({
-                "content": sample_data.get("content", ""),
-                "engagement": sample_data.get("engagement", {}),
-                "timestamp": sample_data.get("timestamp", ""),
-                "content_type": sample_data.get("content_type", "post")
-            })
-        
-        if posts:
-            return {
-                "success": True,
-                "user_id": user_id,
-                "posts": posts,
-                "count": len(posts),
-                "source": "persistent_store"
-            }
-        
+        # First try PostgreSQL database (most reliable source)
+        from database.models import UserPost, XAccount
+        from database.database import SessionLocal
+
+        db = SessionLocal()
+        try:
+            # Get the user's X account by clerk_user_id
+            x_account = db.query(XAccount).filter(XAccount.clerk_user_id == user_id).first()
+
+            if x_account:
+                # Get all posts for this X account
+                db_posts = db.query(UserPost).filter(UserPost.x_account_id == x_account.id).order_by(UserPost.scraped_at.desc()).all()
+
+                if db_posts:
+                    posts = []
+                    for post in db_posts:
+                        posts.append({
+                            "content": post.content,
+                            "engagement": {
+                                "likes": post.likes or 0,
+                                "retweets": post.retweets or 0,
+                                "replies": post.replies or 0,
+                                "views": post.views or 0
+                            },
+                            "timestamp": post.posted_at.isoformat() if post.posted_at else "",
+                            "content_type": post.content_type or "post",
+                            "scraped_at": post.scraped_at.isoformat() if post.scraped_at else ""
+                        })
+
+                    print(f"✅ Retrieved {len(posts)} posts from PostgreSQL for user {user_id}")
+                    return {
+                        "success": True,
+                        "user_id": user_id,
+                        "posts": posts,
+                        "count": len(posts),
+                        "source": "postgresql"
+                    }
+        finally:
+            db.close()
+
+        # Try LangGraph store if PostgreSQL had no results
+        if store:
+            namespace = (user_id, "writing_samples")
+            items = store.search(namespace)
+            posts = []
+
+            for item in items:
+                sample_data = item.value
+                posts.append({
+                    "content": sample_data.get("content", ""),
+                    "engagement": sample_data.get("engagement", {}),
+                    "timestamp": sample_data.get("timestamp", ""),
+                    "content_type": sample_data.get("content_type", "post")
+                })
+
+            if posts:
+                return {
+                    "success": True,
+                    "user_id": user_id,
+                    "posts": posts,
+                    "count": len(posts),
+                    "source": "persistent_store"
+                }
+
         # Fallback to in-memory if nothing in store
         if user_id in user_posts:
             return {
@@ -752,18 +791,18 @@ async def get_user_posts(user_id: str):
                 "count": len(user_posts[user_id]),
                 "source": "memory"
             }
-        
+
         return {
             "success": False,
             "error": "No posts found for this user",
             "user_id": user_id
         }
-        
+
     except Exception as e:
         print(f"❌ Error retrieving posts: {e}")
         import traceback
         traceback.print_exc()
-        
+
         # Fallback to in-memory
         if user_id in user_posts:
             return {
@@ -781,18 +820,28 @@ async def get_user_posts(user_id: str):
         }
 
 @app.get("/api/extension/status")
-async def extension_status():
-    """Check if any extensions are connected"""
+async def extension_status(user_id: Optional[str] = None):
+    """
+    Check if any extensions are connected
+
+    Args:
+        user_id: Optional Clerk user ID to filter results to a specific user
+    """
     import aiohttp
-    
-    # Check extension backend (port 8001) for connected extensions
+
+    # Check extension backend for connected extensions
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.get('http://localhost:8001/status', timeout=aiohttp.ClientTimeout(total=2)) as resp:
+            # Pass user_id parameter to extension backend for security filtering
+            url = f'{EXTENSION_BACKEND_URL}/status'
+            if user_id:
+                url = f'{url}?user_id={user_id}'
+
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=5)) as resp:
                 if resp.status == 200:
                     ext_data = await resp.json()
                     users_with_info = ext_data.get('users_with_info', [])
-                    
+
                     return {
                         "connected": len(users_with_info) > 0,
                         "count": len(users_with_info),
@@ -800,21 +849,57 @@ async def extension_status():
                     }
     except Exception as e:
         print(f"Failed to check extension backend: {e}")
-    
-    # Fallback to local connections
+
+    # Fallback to local connections (also filter by user_id)
     users_with_cookies = []
-    for user_id in active_connections.keys():
-        user_info = {"userId": user_id}
-        if user_id in user_cookies:
-            user_info["username"] = user_cookies[user_id].get("username")
+    for uid in active_connections.keys():
+        # Skip if filtering by user_id and this isn't the user
+        if user_id and uid != user_id:
+            continue
+
+        user_info = {"userId": uid}
+        if uid in user_cookies:
+            user_info["username"] = user_cookies[uid].get("username")
             user_info["hasCookies"] = True
         users_with_cookies.append(user_info)
-    
+
     return {
         "connected": len(active_connections) > 0,
         "count": len(active_connections),
         "users": users_with_cookies
     }
+
+
+@app.delete("/api/extension/disconnect/{user_id}")
+async def extension_disconnect(user_id: str):
+    """
+    Disconnect a user's X account by clearing their cookies from the extension backend.
+    This proxies the request to the extension backend service.
+
+    Args:
+        user_id: Clerk user ID to disconnect
+    """
+    import aiohttp
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            url = f'{EXTENSION_BACKEND_URL}/disconnect/{user_id}'
+            async with session.delete(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    return data
+                else:
+                    return {
+                        "success": False,
+                        "error": f"Extension backend returned status {resp.status}"
+                    }
+    except Exception as e:
+        print(f"❌ Error calling extension disconnect: {e}")
+        return {
+            "success": False,
+            "error": str(e)
+        }
+
 
 @app.get("/api/activity/recent/{user_id}")
 async def get_recent_activity(user_id: str, limit: int = 50):
@@ -873,7 +958,7 @@ async def validate_discovery_ready(user_id: str):
 
         # Check Extension Backend for cookies
         async with aiohttp.ClientSession() as session:
-            async with session.get("http://localhost:8001/status") as resp:
+            async with session.get(f"{EXTENSION_BACKEND_URL}/status") as resp:
                 if resp.status != 200:
                     return {
                         "success": False,
@@ -953,7 +1038,7 @@ async def smart_discover_competitors(user_id: str):
         print("STEP 1: Validating authentication...")
 
         async with aiohttp.ClientSession() as session:
-            async with session.get("http://localhost:8001/status") as resp:
+            async with session.get(f"{EXTENSION_BACKEND_URL}/status") as resp:
                 if resp.status != 200:
                     return {
                         "success": False,
@@ -1267,6 +1352,22 @@ async def discover_competitors_native(user_id: str, user_handle: str):
         user_client = await get_user_vnc_client(user_id)
         print(f"✅ Using per-user VNC session for X Native discovery")
 
+        # Warm up the VNC service (handles cold start - can take 30+ seconds)
+        print(f"🔥 Warming up VNC service (cold start may take 30+ seconds)...")
+        warmup_result = await user_client._request("GET", "/status", timeout=60)
+        if warmup_result.get("error"):
+            print(f"⚠️ VNC warmup failed: {warmup_result.get('error')}")
+            # Try one more time with longer timeout
+            print(f"🔄 Retrying VNC warmup...")
+            warmup_result = await user_client._request("GET", "/status", timeout=90)
+            if warmup_result.get("error"):
+                return {
+                    "success": False,
+                    "error": f"VNC service not responding. Please try again in a minute. Error: {warmup_result.get('error')}",
+                    "action": "retry"
+                }
+        print(f"✅ VNC service is warm and ready")
+
         # Check if discovery is already running (only if store is available)
         lock_namespace = (user_id, "discovery_lock")
         if store:
@@ -1346,7 +1447,7 @@ async def discover_competitors(user_id: str, user_handle: str):
         # Check if user has cookies injected (check extension backend)
         import aiohttp
         async with aiohttp.ClientSession() as session:
-            async with session.get("http://localhost:8001/status") as resp:
+            async with session.get(f"{EXTENSION_BACKEND_URL}/status") as resp:
                 status_data = await resp.json()
                 user_with_cookies = None
                 for user_info in status_data.get("users_with_info", []):
@@ -2124,27 +2225,12 @@ async def activity_websocket(websocket: WebSocket, user_id: str):
         except:
             pass
 
-@app.post("/api/inject-cookies-to-docker")
-async def inject_cookies_to_docker(
-    request: dict,
-    clerk_user_id: str = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
+async def _inject_cookies_internal(extension_user_id: str, clerk_user_id: str) -> dict:
     """
-    Inject user's X cookies into their per-user VNC browser session.
-
-    Request: {"user_id": "extension_user_xxx"}  - Extension user ID (has the cookies)
-
-    This endpoint:
-    1. Gets the Clerk user's VNC session from Redis
-    2. Fetches cookies using the extension user ID
-    3. Injects cookies into the user's VNC session
+    Internal helper to inject cookies into a user's VNC session.
+    This can be called both from HTTP endpoints and internal functions.
     """
     import aiohttp
-
-    extension_user_id = request.get("user_id")
-    if not extension_user_id:
-        return {"success": False, "error": "user_id required"}
 
     print(f"🔐 Clerk user: {clerk_user_id}, Extension user: {extension_user_id}")
 
@@ -2258,7 +2344,8 @@ async def inject_cookies_to_docker(
                         "success": True,
                         "message": f"Session loaded for @{username}",
                         "logged_in": result.get("logged_in"),
-                        "username": result.get("username")
+                        "username": result.get("username"),
+                        "vnc_url": vnc_service_url  # Return the user's VNC URL for subsequent operations
                     }
                 else:
                     return {
@@ -2270,6 +2357,30 @@ async def inject_cookies_to_docker(
         import traceback
         traceback.print_exc()
         return {"success": False, "error": str(e)}
+
+
+@app.post("/api/inject-cookies-to-docker")
+async def inject_cookies_to_docker(
+    request: dict,
+    clerk_user_id: str = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Inject user's X cookies into their per-user VNC browser session.
+
+    Request: {"user_id": "extension_user_xxx"}  - Extension user ID (has the cookies)
+
+    This endpoint:
+    1. Gets the Clerk user's VNC session from Redis
+    2. Fetches cookies using the extension user ID
+    3. Injects cookies into the user's VNC session
+    """
+    extension_user_id = request.get("user_id")
+    if not extension_user_id:
+        return {"success": False, "error": "user_id required"}
+
+    return await _inject_cookies_internal(extension_user_id, clerk_user_id)
+
 
 @app.websocket("/ws/extension/{user_id}")
 async def extension_websocket(websocket: WebSocket, user_id: str):
@@ -2419,6 +2530,7 @@ async def scrape_posts_docker(data: dict):
     except Exception as e:
         print(f"⚠️ Error checking existing posts: {e}")
         existing_count = 0
+        existing_posts = []  # Initialize to empty list to avoid UnboundLocalError
     
     try:
         # Get username AND user_id with cookies from extension backend
@@ -2426,7 +2538,7 @@ async def scrape_posts_docker(data: dict):
         extension_user_id = None
         async with aiohttp.ClientSession() as session:
             try:
-                async with session.get("http://localhost:8001/status") as resp:
+                async with session.get(f"{EXTENSION_BACKEND_URL}/status") as resp:
                     status_data = await resp.json()
                     if status_data.get("users_with_info"):
                         for user_info in status_data["users_with_info"]:
@@ -2448,7 +2560,7 @@ async def scrape_posts_docker(data: dict):
         
         # Inject cookies into Docker browser using the CORRECT user_id (the one with cookies)
         print(f"🍪 Injecting cookies into Docker browser for user {extension_user_id}...")
-        inject_result = await inject_cookies_to_docker({"user_id": extension_user_id})
+        inject_result = await _inject_cookies_internal(extension_user_id, clerk_user_id)
         if not inject_result.get("success"):
             print(f"⚠️ Cookie injection failed: {inject_result.get('error')}")
             return {
@@ -2457,15 +2569,21 @@ async def scrape_posts_docker(data: dict):
             }
         
         print(f"✅ Docker browser is now logged in as @{username}")
-        
+
+        # Get the user's VNC URL from the inject result (per-user, not hardcoded!)
+        vnc_url = inject_result.get("vnc_url")
+        if not vnc_url:
+            return {"success": False, "error": "No VNC URL returned from cookie injection"}
+        print(f"🔗 Using per-user VNC URL: {vnc_url}")
+
         # Navigate to user's profile
         # Create new session for each request to avoid connection reuse issues
         async with aiohttp.ClientSession() as session:
             profile_url = f"https://x.com/{username}"
             print(f"🌐 Navigating to {profile_url}...")
-            
+
             async with session.post(
-                f"{VNC_BROWSER_URL}/navigate",
+                f"{vnc_url}/navigate",
                 json={"url": profile_url}
             ) as resp:
                 nav_result = await resp.json()
@@ -2511,7 +2629,7 @@ async def scrape_posts_docker(data: dict):
                     """
                     
                     async with scrape_session.post(
-                        f"{VNC_BROWSER_URL}/execute",
+                        f"{vnc_url}/execute",
                         json={"script": retry_check_script},
                         timeout=aiohttp.ClientTimeout(total=5)
                     ) as resp:
@@ -2541,7 +2659,7 @@ async def scrape_posts_docker(data: dict):
                     """
                     
                     async with scrape_session.post(
-                        f"{VNC_BROWSER_URL}/execute",
+                        f"{vnc_url}/execute",
                         json={"script": scrape_script},
                         timeout=aiohttp.ClientTimeout(total=10)
                     ) as resp:
@@ -2609,7 +2727,7 @@ async def scrape_posts_docker(data: dict):
                         })()
                         """
                         async with scrape_session.post(
-                            f"{VNC_BROWSER_URL}/execute",
+                            f"{vnc_url}/execute",
                             json={"script": smooth_scroll_script},
                             timeout=aiohttp.ClientTimeout(total=5)
                         ) as resp:

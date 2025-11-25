@@ -559,15 +559,26 @@ async def root():
 
 
 @app.get("/status")
-async def status():
-    """Server status"""
+async def status(user_id: Optional[str] = None):
+    """
+    Server status - returns user connection info
+
+    Args:
+        user_id: Optional Clerk user ID to filter results to a specific user
+                 If not provided, returns all users (for extension compatibility)
+    """
     users_with_info = []
 
     # Query database for all users with cookies (if database enabled)
     if DATABASE_ENABLED and SessionLocal:
         db = SessionLocal()
         try:
-            users_with_info = get_all_users_with_cookies(db)
+            all_users = get_all_users_with_cookies(db)
+            # If user_id specified, filter to only that user
+            if user_id:
+                users_with_info = [u for u in all_users if u.get("userId") == user_id]
+            else:
+                users_with_info = all_users
         except Exception as e:
             print(f"⚠️ Failed to get users from database: {e}")
         finally:
@@ -577,21 +588,29 @@ async def status():
     db_user_ids = {u["userId"] for u in users_with_info}
 
     # Add users from in-memory cookie cache
-    for user_id, cookie_data in user_cookies.items():
-        if user_id not in db_user_ids:
+    for uid, cookie_data in user_cookies.items():
+        # Skip if filtering by user_id and this isn't the user
+        if user_id and uid != user_id:
+            continue
+
+        if uid not in db_user_ids:
             users_with_info.append({
-                "userId": user_id,
+                "userId": uid,
                 "username": cookie_data.get("username"),
                 "hasCookies": True,
-                "connected": user_id in active_connections
+                "connected": uid in active_connections
             })
-            db_user_ids.add(user_id)
+            db_user_ids.add(uid)
 
     # Add connected users without cookies
-    for user_id in active_connections.keys():
-        if user_id not in db_user_ids:
+    for uid in active_connections.keys():
+        # Skip if filtering by user_id and this isn't the user
+        if user_id and uid != user_id:
+            continue
+
+        if uid not in db_user_ids:
             users_with_info.append({
-                "userId": user_id,
+                "userId": uid,
                 "hasCookies": False,
                 "connected": True
             })
@@ -710,7 +729,7 @@ async def get_user_cookies(user_id: str):
             "success": False,
             "error": "No cookies found for this user"
         }
-    
+
     return {
         "success": True,
         "user_id": user_id,
@@ -718,6 +737,70 @@ async def get_user_cookies(user_id: str):
         "cookies": user_cookies[user_id].get("cookies", []),
         "timestamp": user_cookies[user_id].get("timestamp")
     }
+
+
+@app.delete("/disconnect/{user_id}")
+async def disconnect_user(user_id: str):
+    """
+    Disconnect a user by clearing their cookies from memory and database.
+    This is called when the user clicks "Disconnect" in the frontend.
+    """
+    cleared_memory = False
+    cleared_database = False
+    username = None
+
+    # Clear from in-memory cache
+    if user_id in user_cookies:
+        username = user_cookies[user_id].get("username")
+        del user_cookies[user_id]
+        cleared_memory = True
+        print(f"🗑️ Cleared in-memory cookies for user {user_id}")
+
+    # Clear from database if enabled
+    if DATABASE_ENABLED:
+        try:
+            db = SessionLocal()
+            try:
+                # Find and delete the user's cookies from database
+                x_account = db.query(XAccount).filter(XAccount.user_id == user_id).first()
+                if x_account:
+                    username = username or x_account.username
+                    # Delete associated cookies
+                    db.query(UserCookies).filter(UserCookies.x_account_id == x_account.id).delete()
+                    # Delete the X account record
+                    db.delete(x_account)
+                    db.commit()
+                    cleared_database = True
+                    print(f"🗑️ Cleared database cookies for user {user_id}")
+            finally:
+                db.close()
+        except Exception as e:
+            print(f"⚠️ Error clearing database cookies: {e}")
+
+    # Close WebSocket connection if active
+    if user_id in active_connections:
+        try:
+            ws = active_connections[user_id]
+            await ws.close(code=1000, reason="User disconnected")
+            del active_connections[user_id]
+            print(f"🔌 Closed WebSocket for user {user_id}")
+        except Exception as e:
+            print(f"⚠️ Error closing WebSocket: {e}")
+
+    if cleared_memory or cleared_database:
+        return {
+            "success": True,
+            "message": f"Disconnected user {user_id}",
+            "username": username,
+            "cleared_memory": cleared_memory,
+            "cleared_database": cleared_database
+        }
+    else:
+        return {
+            "success": False,
+            "error": "No data found for this user",
+            "user_id": user_id
+        }
 
 
 # ============================================================================
