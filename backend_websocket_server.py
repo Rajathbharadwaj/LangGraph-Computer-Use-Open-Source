@@ -134,8 +134,8 @@ DB_URI = os.environ.get("DATABASE_URL", "postgresql://postgres:password@localhos
 store = None
 try:
     # Direct initialization - appropriate for servers
-    # The from_conn_string() returns a context manager which doesn't work for persistent servers
-    store = PostgresStore(conn_string=DB_URI)
+    # Use connection_string parameter as per LangGraph docs
+    store = PostgresStore(connection_string=DB_URI)
     # Setup store table - required on first run, uses CREATE TABLE IF NOT EXISTS
     store.setup()
     print(f"✅ Initialized PostgresStore for persistent memory: {DB_URI}")
