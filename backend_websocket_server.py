@@ -51,10 +51,15 @@ from fastapi import Depends
 from clerk_auth import get_current_user
 from clerk_webhooks import router as webhook_router
 
+# Global store variable (initialized in lifespan)
+store = None
+_store_context = None
+
 # Lifespan context manager for startup/shutdown
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Initialize scheduled post executor on startup"""
+    """Initialize scheduled post executor and PostgresStore on startup"""
+    global store, _store_context
     print("🚀 Starting Parallel Universe Backend...")
 
     # Initialize database tables
@@ -63,6 +68,21 @@ async def lifespan(app: FastAPI):
         init_db()
     except Exception as e:
         print(f"⚠️ Database initialization warning: {e}")
+
+    # Initialize PostgresStore using context manager
+    DB_URI = os.environ.get("DATABASE_URL", "postgresql://postgres:password@localhost:5433/xgrowth")
+    try:
+        # Use the context manager to get a properly initialized store
+        _store_context = PostgresStore.from_conn_string(DB_URI)
+        store = _store_context.__enter__()
+        store.setup()
+        print(f"✅ Initialized PostgresStore for persistent memory")
+    except Exception as e:
+        print(f"⚠️ Failed to initialize PostgresStore: {e}")
+        import traceback
+        traceback.print_exc()
+        store = None
+        _store_context = None
 
     try:
         executor = await get_executor()
@@ -75,12 +95,20 @@ async def lifespan(app: FastAPI):
     print("📡 WebSocket: ws://localhost:8001/ws/extension/{user_id}")
     print("🌐 Dashboard: http://localhost:3000")
     print("🔌 Extension will connect automatically!")
-    print("🤖 LangGraph Agent: http://localhost:8124")
+    print(f"🤖 LangGraph Agent: {os.getenv('LANGGRAPH_URL', 'http://localhost:8124')}")
 
     yield
 
     # Shutdown
     print("🛑 Shutting down...")
+
+    # Clean up PostgresStore context
+    if _store_context is not None:
+        try:
+            _store_context.__exit__(None, None, None)
+            print("✅ PostgresStore cleaned up")
+        except Exception as e:
+            print(f"⚠️ Error cleaning up PostgresStore: {e}")
 
 app = FastAPI(title="Parallel Universe Backend", lifespan=lifespan)
 
@@ -125,25 +153,8 @@ LANGGRAPH_URL = os.getenv("LANGGRAPH_URL", "http://localhost:8124")
 langgraph_client = get_client(url=LANGGRAPH_URL)
 print(f"✅ Initialized LangGraph client: {LANGGRAPH_URL}")
 
-# Initialize PostgreSQL Store for persistent memory (writing samples, preferences, etc.)
-# Using the same database as the main app
-DB_URI = os.environ.get("DATABASE_URL", "postgresql://postgres:password@localhost:5433/xgrowth")
-
-# Create store instance using direct initialization (not context manager)
-# This is appropriate for long-running FastAPI servers
-store = None
-try:
-    # Direct initialization - appropriate for servers
-    # Use connection_string parameter as per LangGraph docs
-    store = PostgresStore(connection_string=DB_URI)
-    # Setup store table - required on first run, uses CREATE TABLE IF NOT EXISTS
-    store.setup()
-    print(f"✅ Initialized PostgresStore for persistent memory: {DB_URI}")
-except Exception as e:
-    print(f"⚠️ Failed to initialize PostgresStore (will retry on demand): {e}")
-    import traceback
-    traceback.print_exc()
-    store = None
+# Note: PostgresStore is initialized in the lifespan handler above
+# The global 'store' variable is set there
 
 
 # ============================================================================
