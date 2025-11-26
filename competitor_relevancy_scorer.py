@@ -67,7 +67,7 @@ class CompetitorRelevancyScorer:
         posts = []
         bio = ""
 
-        # Try to get imported posts from database first
+        # Try to get imported posts from LangGraph store first
         if user_id and self.store:
             try:
                 posts_namespace = (user_id, "writing_samples")
@@ -77,11 +77,35 @@ class CompetitorRelevancyScorer:
                     post_texts = [p.value.get("content", "") for p in stored_posts if p.value.get("content")]
                     if post_texts:
                         posts = post_texts[:10]  # Use first 10 posts
-                        print(f"✅ Using {len(posts)} imported posts from database for @{username}")
+                        print(f"✅ Using {len(posts)} imported posts from LangGraph store for @{username}")
             except Exception as e:
-                print(f"⚠️ Could not load imported posts from database: {e}")
+                print(f"⚠️ Could not load imported posts from LangGraph store: {e}")
 
-        # If we don't have posts from database, we can't analyze this user
+        # Fallback: Try to get posts from PostgreSQL database (UserPost table)
+        if not posts:
+            try:
+                from database.database import SessionLocal
+                from database.models import UserPost, XAccount
+
+                db = SessionLocal()
+                try:
+                    # Find the X account by username
+                    x_account = db.query(XAccount).filter(XAccount.username == username).first()
+                    if x_account:
+                        # Get posts from database
+                        db_posts = db.query(UserPost).filter(
+                            UserPost.x_account_id == x_account.id
+                        ).order_by(UserPost.scraped_at.desc()).limit(10).all()
+
+                        if db_posts:
+                            posts = [p.content for p in db_posts if p.content]
+                            print(f"✅ Using {len(posts)} imported posts from PostgreSQL database for @{username}")
+                finally:
+                    db.close()
+            except Exception as e:
+                print(f"⚠️ Could not load imported posts from PostgreSQL: {e}")
+
+        # If we don't have posts from either source, we can't analyze this user
         if not posts:
             print(f"⚠️ No imported posts found for @{username}. Import posts first to enable relevancy analysis.")
 
