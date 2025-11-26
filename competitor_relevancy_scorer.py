@@ -95,7 +95,7 @@ class CompetitorRelevancyScorer:
                         # Get posts from database
                         db_posts = db.query(UserPost).filter(
                             UserPost.x_account_id == x_account.id
-                        ).order_by(UserPost.scraped_at.desc()).limit(10).all()
+                        ).order_by(UserPost.imported_at.desc()).limit(10).all()
 
                         if db_posts:
                             posts = [p.content for p in db_posts if p.content]
