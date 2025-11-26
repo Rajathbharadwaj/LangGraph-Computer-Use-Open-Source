@@ -27,10 +27,12 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=5s \
   CMD curl -f http://localhost:${PORT}/ || exit 1
 
 # Run with Uvicorn
+# Use 2 workers to reduce DB connection usage (each worker creates a connection pool)
+# Cloud SQL has limited max_connections, and multiple Cloud Run instances share it
 CMD uvicorn backend_websocket_server:app \
     --host 0.0.0.0 \
     --port ${PORT} \
-    --workers 4 \
+    --workers 2 \
     --timeout-keep-alive 300 \
     --ws-ping-interval 20 \
     --ws-ping-timeout 20
