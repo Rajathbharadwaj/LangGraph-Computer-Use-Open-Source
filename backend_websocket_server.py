@@ -76,11 +76,13 @@ async def lifespan(app: FastAPI):
         from psycopg_pool import ConnectionPool
 
         # Create a connection pool (will be shared across requests)
-        # min_size=1 to avoid holding too many connections, max_size for concurrency
+        # Keep pool small for Cloud Run (4 workers × N instances can exhaust connections)
+        # Cloud SQL default max_connections is ~100, so we use very small pools
         _pg_pool = ConnectionPool(
             conninfo=DB_URI,
             min_size=1,
-            max_size=10,
+            max_size=3,  # Small pool to avoid exhausting Cloud SQL connections
+            timeout=10,  # Fail fast if can't get connection
             open=True  # Open the pool immediately
         )
 
