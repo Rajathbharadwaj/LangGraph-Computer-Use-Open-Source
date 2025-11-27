@@ -82,54 +82,40 @@ ENGAGEMENT_WORKFLOW = Workflow(
             description="Get comprehensive context after scrolling",
             check_memory=True  # Check what we've already engaged with
         ),
-        # Now engage with posts (repeat 8-10 times)
+        # Now engage with posts - ONLY like posts that are comment-worthy
+        # Like AND comment together immediately (no sequential batching)
         WorkflowStep(
-            subagent="like_post",
-            action="Like the first relevant post (check memory first)",
-            description="Like post #1",
+            subagent="like_and_comment",
+            action="Find a comment-worthy post, like it, then immediately write a thoughtful comment",
+            description="Like + Comment on post #1 (together)",
             check_memory=True,
             update_memory=True
         ),
         WorkflowStep(
-            subagent="like_post",
-            action="Like the second relevant post (check memory first)",
-            description="Like post #2",
+            subagent="like_and_comment",
+            action="Find another comment-worthy post, like it, then immediately write a thoughtful comment",
+            description="Like + Comment on post #2 (together)",
             check_memory=True,
             update_memory=True
         ),
         WorkflowStep(
-            subagent="like_post",
-            action="Like the third relevant post (check memory first)",
-            description="Like post #3",
+            subagent="like_and_comment",
+            action="Find another comment-worthy post, like it, then immediately write a thoughtful comment",
+            description="Like + Comment on post #3 (together)",
             check_memory=True,
             update_memory=True
         ),
         WorkflowStep(
-            subagent="like_post",
-            action="Like the fourth relevant post (check memory first)",
-            description="Like post #4",
+            subagent="like_and_comment",
+            action="Find another comment-worthy post, like it, then immediately write a thoughtful comment",
+            description="Like + Comment on post #4 (together)",
             check_memory=True,
             update_memory=True
         ),
         WorkflowStep(
-            subagent="like_post",
-            action="Like the fifth relevant post (check memory first)",
-            description="Like post #5",
-            check_memory=True,
-            update_memory=True
-        ),
-        # Comment on 2 best posts
-        WorkflowStep(
-            subagent="comment_on_post",
-            action="Write a thoughtful comment on the best post",
-            description="Comment on best post",
-            check_memory=True,
-            update_memory=True
-        ),
-        WorkflowStep(
-            subagent="comment_on_post",
-            action="Write a thoughtful comment on the second best post",
-            description="Comment on second best post",
+            subagent="like_and_comment",
+            action="Find another comment-worthy post, like it, then immediately write a thoughtful comment",
+            description="Like + Comment on post #5 (together)",
             check_memory=True,
             update_memory=True
         ),
