@@ -8,7 +8,8 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import NullPool
 
 # Get database URL from environment (port 5433 to avoid conflict with other postgres instances)
-DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://postgres:password@localhost:5433/xgrowth")
+# Check both POSTGRES_URI (LangGraph) and DATABASE_URL (backend-api)
+DATABASE_URL = os.getenv("POSTGRES_URI") or os.getenv("DATABASE_URL") or "postgresql://postgres:password@localhost:5433/xgrowth"
 
 # Create engine with connection timeout for Cloud Run startup
 engine = create_engine(

@@ -9,3 +9,6 @@ logs/
 *.log
 *.pid
 .env.prod
+
+# Extension build artifacts
+*.zip

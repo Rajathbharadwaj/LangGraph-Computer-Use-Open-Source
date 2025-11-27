@@ -19,6 +19,7 @@ from typing import Literal
 import deepagents_patch  # noqa: F401 - imported for side effects
 
 from deepagents import create_deep_agent
+from deepagents.backends import CompositeBackend, StateBackend, StoreBackend
 from langchain.chat_models import init_chat_model
 from langchain_core.tools import tool
 from langchain_community.tools import TavilySearchResults
@@ -570,13 +571,13 @@ NOTE: comment_on_post and create_post AUTOMATICALLY use your writing style - no 
 4. Execute steps IN ORDER (do NOT skip or reorder)
 5. Delegate each step to appropriate subagent using task()
 6. Wait for result before next step
-7. Check/update action_history.json as specified
+7. Check/update /memories/action_history.json as specified (PERSISTENT STORAGE!)
 8. Call get_comprehensive_context again when you need to see page updates
 
 🚨 CRITICAL RULES:
 - ALWAYS call get_comprehensive_context FIRST to see what's actually on the page
 - NEVER make up or hallucinate posts/content - only describe what you actually see in the comprehensive context
-- ALWAYS check action_history.json before engaging to avoid duplicates
+- ALWAYS check /memories/action_history.json before engaging to avoid duplicates
 - NEVER engage with the same post/user twice in 24 hours
 - NEVER like more than 50 posts per day (rate limit)
 - NEVER comment more than 20 times per day (rate limit)
@@ -634,7 +635,10 @@ When generating content, ask yourself:
 "If someone read this comment, would they think the USER wrote it, or would they think an AI wrote it?"
 If the answer is "AI", REWRITE IT to sound exactly like the user!
 
-📊 MEMORY FORMAT (action_history.json):
+📊 MEMORY FORMAT (/memories/action_history.json):
+CRITICAL: ALL action history MUST be saved to /memories/action_history.json (persistent storage)
+DO NOT save to action_history.json (ephemeral - will be lost!)
+
 {
   "date": "2025-11-01",
   "actions": [
@@ -684,10 +688,10 @@ You execute:
 3. Call get_comprehensive_context() - see home timeline with curated posts
 4. task("scroll", "Scroll to load more posts")
 5. Call get_comprehensive_context() - see more timeline posts
-6. Read action_history.json - check what we've already engaged with
+6. Read /memories/action_history.json - check what we've already engaged with
 7. task("like_post", "Like post by @user1") - using actual username from context
 8. task("like_post", "Like post by @user2") - continue with more posts
-9. Write to action_history.json - record engagements
+9. Write to /memories/action_history.json - record engagements (PERSISTENT!)
 10. Repeat for 8-10 posts from timeline
 
 Remember: 
@@ -732,27 +736,36 @@ def create_x_growth_agent(config: dict = None):
     # Customize prompt with user preferences if user_id provided
     system_prompt = MAIN_AGENT_PROMPT
     user_memory = None
-    store_for_agent = None
 
-    if user_id and use_longterm_memory:
-        # Initialize store if not provided
-        if store is None:
-            from langgraph.store.memory import InMemoryStore
-            store = InMemoryStore()
+    # Initialize store for long-term memory
+    # When deployed on LangGraph Cloud, store is auto-provisioned
+    # For local development, we use InMemoryStore as fallback
+    store_for_agent = store
+    if store_for_agent is None and use_longterm_memory:
+        # Check if running in production (LangGraph Cloud)
+        import os
+        is_production = os.getenv("LANGGRAPH_CLOUD") == "true" or os.getenv("K_SERVICE") is not None
 
-        store_for_agent = store  # Save for passing to subagents
+        if is_production:
+            raise RuntimeError(
+                "CRITICAL: Store not initialized in production environment. "
+                "Action history will be lost! Check LangGraph Cloud store configuration."
+            )
+
+  
+    if user_id and store_for_agent:
 
         # Initialize user memory
         from x_user_memory import XUserMemory
-        user_memory = XUserMemory(store, user_id)
-        
+        user_memory = XUserMemory(store_for_agent, user_id)
+
         # Get user preferences
         preferences = user_memory.get_preferences()
-        
+
         # Get user's writing style from LangGraph Store
         from x_writing_style_learner import XWritingStyleManager
         try:
-            style_manager = XWritingStyleManager(store, user_id)
+            style_manager = XWritingStyleManager(store_for_agent, user_id)
             # Get style profile and examples count
             profile = style_manager.get_style_profile()
             if not profile:
@@ -761,7 +774,7 @@ def create_x_growth_agent(config: dict = None):
 
             # Get sample count
             namespace = (user_id, "writing_samples")
-            sample_items = list(store.search(namespace, limit=1000))
+            sample_items = list(store_for_agent.search(namespace, limit=1000))
             sample_count = len(sample_items)
 
             if sample_count > 0:
@@ -854,12 +867,29 @@ Just call the tools normally - the style transfer happens AUTOMATICALLY inside t
     playwright_tools = get_async_playwright_tools()
     comprehensive_context_tool = next(t for t in playwright_tools if t.name == "get_comprehensive_context")
 
+    # Configure backend for persistent storage
+    # /memories/* paths go to StoreBackend (persistent across threads)
+    # Other paths go to StateBackend (ephemeral, lost when thread ends)
+    def make_backend(runtime):
+        if store_for_agent:
+            return CompositeBackend(
+                default=StateBackend(runtime),  # Ephemeral storage
+                routes={
+                    "/memories/": StoreBackend(runtime)  # Persistent storage
+                }
+            )
+        else:
+            # No store available, use ephemeral only
+            return StateBackend(runtime)
+
     # Create the main agent with vision capability
     agent = create_deep_agent(
         model=model,
         system_prompt=system_prompt,
         tools=[comprehensive_context_tool],  # Main agent can see the page
         subagents=subagents,  # comment_on_post and create_post auto-use style transfer!
+        backend=make_backend,  # Persistent storage for /memories/ paths
+        store=store_for_agent,  # Required for StoreBackend
     )
     
     # Store user_memory reference in agent for access if needed
