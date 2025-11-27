@@ -1,0 +1,22 @@
+--- a/deepagents/middleware/subagents.py
++++ b/deepagents/middleware/subagents.py
+@@ -346,7 +346,8 @@ TASK_SYSTEM_PROMPT = """## `task` (subagent spawner)
+         runtime: ToolRuntime,
+     ) -> str | Command:
+         subagent, subagent_state = _validate_and_prepare_state(subagent_type, description, runtime)
+-        result = subagent.invoke(subagent_state)
++        # Forward config to subagent so tools receive runtime context (e.g., cua_url)
++        result = subagent.invoke(subagent_state, config=runtime.config)
+         if not runtime.tool_call_id:
+             value_error_msg = "Tool call ID is required for subagent invocation"
+             raise ValueError(value_error_msg)
+@@ -358,7 +359,8 @@ TASK_SYSTEM_PROMPT = """## `task` (subagent spawner)
+         runtime: ToolRuntime,
+     ) -> str | Command:
+         subagent, subagent_state = _validate_and_prepare_state(subagent_type, description, runtime)
+-        result = await subagent.ainvoke(subagent_state)
++        # Forward config to subagent so tools receive runtime context (e.g., cua_url)
++        result = await subagent.ainvoke(subagent_state, config=runtime.config)
+         if not runtime.tool_call_id:
+             value_error_msg = "Tool call ID is required for subagent invocation"
+             raise ValueError(value_error_msg)
