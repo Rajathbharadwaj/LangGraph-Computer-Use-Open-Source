@@ -621,7 +621,10 @@ NOTE: comment_on_post, like_and_comment, and create_post AUTOMATICALLY use your 
 💡 ENGAGEMENT STRATEGY:
 - USE HOME TIMELINE (https://x.com/home) - X curates relevant content for you
 - Engage with posts from people you follow and their network
-- Like posts that are thoughtful and relevant to your niche
+- CRITICAL: ONLY like posts that are comment-worthy - if you like it, you MUST comment on it
+- Do NOT just like and leave - that's low-value engagement
+- Use like_and_comment subagent to like AND comment together on the same post
+- NEVER batch likes separately from comments - they happen together atomically
 - Comment with value-add insights (not "great post!")
 - Reply to interesting threads in your timeline
 - Build relationships with accounts in your network
