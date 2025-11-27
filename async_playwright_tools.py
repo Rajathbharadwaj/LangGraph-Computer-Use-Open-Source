@@ -1177,7 +1177,7 @@ SCREENSHOT_DATA: {screenshot_b64}
 
             print("✅ Like button clicked!")
 
-            # Step 5: Wait and verify
+            # Step 5: Wait for UI to update
             await asyncio.sleep(1)
 
             return f"✅ Successfully liked the post matching '{author_or_content}'! ❤️"
@@ -1450,11 +1450,11 @@ SCREENSHOT_DATA: {screenshot_b64}
             
             # Step 9: Wait for submission and verify dialog closed
             await asyncio.sleep(2)
-            
+
             dialog_closed = await client._request("POST", "/playwright/evaluate", {
                 "script": "(() => { return !document.querySelector('[role=\"dialog\"]'); })()"
             })
-            
+
             if dialog_closed.get("result"):
                 print("✅ Dialog closed - comment posted successfully!")
                 return f"✅ Successfully commented on '{author_or_content}' post! 💬\nComment: \"{comment_text}\""
@@ -1991,6 +1991,7 @@ async def create_post_on_x(post_text: str, runtime: ToolRuntime) -> str:
     """
     try:
         client = _get_client(runtime)
+
         result = await client._request(
             "POST",
             "/create-post-playwright",
@@ -1998,7 +1999,11 @@ async def create_post_on_x(post_text: str, runtime: ToolRuntime) -> str:
             timeout=40  # Posting can take time
         )
 
+        # Wait for post to appear
+        await asyncio.sleep(2)
+
         if result.get("success"):
+            print("✅ Post created successfully!")
             return f"✅ Post created successfully! Text: '{result.get('post_text', post_text)}'"
         else:
             error = result.get("error", "Unknown error")
