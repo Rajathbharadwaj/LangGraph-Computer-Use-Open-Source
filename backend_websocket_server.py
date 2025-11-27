@@ -2377,7 +2377,13 @@ async def activity_websocket(websocket: WebSocket, user_id: str):
                         thread_id,
                         "x_growth_deep_agent",
                         input={"messages": [{"role": "user", "content": task}]},
-                        config={"configurable": {"user_id": user_id, "cua_url": vnc_url}},
+                        config={"configurable": {
+                            "user_id": user_id,
+                            "cua_url": vnc_url,
+                            # Extract host and port for screenshot middleware
+                            "x-cua-host": vnc_url.split("://")[1].split(":")[0] if vnc_url and "://" in vnc_url else None,
+                            "x-cua-port": vnc_url.split(":")[-1].rstrip("/") if vnc_url and ":" in vnc_url else None,
+                        }},
                         stream_mode=["messages", "custom"]  # Enable custom events!
                     ):
                         # Capture and forward activity events
@@ -3817,6 +3823,9 @@ async def stream_agent_execution(user_id: str, thread_id: str, task: str, use_ro
                 "configurable": {
                     "user_id": user_id,
                     "cua_url": vnc_url,  # Per-user VNC URL
+                    # Extract host and port from VNC URL for screenshot middleware
+                    "x-cua-host": vnc_url.split("://")[1].split(":")[0] if vnc_url and "://" in vnc_url else None,
+                    "x-cua-port": vnc_url.split(":")[-1].rstrip("/") if vnc_url and ":" in vnc_url else None,
                 },
                 "metadata": {
                     "assistant_id": user_id  # CRITICAL: Isolates /memories/ files per user in StoreBackend
@@ -4415,7 +4424,10 @@ async def execute_workflow_endpoint(workflow_json: dict, user_id: Optional[str] 
             "configurable": {
                 "user_id": user_id,
                 "cua_url": vnc_url,
-                "use_longterm_memory": True if user_id else False
+                "use_longterm_memory": True if user_id else False,
+                # Extract host and port for screenshot middleware
+                "x-cua-host": vnc_url.split("://")[1].split(":")[0] if vnc_url and "://" in vnc_url else None,
+                "x-cua-port": vnc_url.split(":")[-1].rstrip("/") if vnc_url and ":" in vnc_url else None,
             }
         }
 
@@ -4550,7 +4562,10 @@ async def execute_workflow_stream_endpoint(websocket: WebSocket):
             "configurable": {
                 "user_id": user_id,
                 "cua_url": vnc_url,
-                "use_longterm_memory": True if user_id else False
+                "use_longterm_memory": True if user_id else False,
+                # Extract host and port for screenshot middleware
+                "x-cua-host": vnc_url.split("://")[1].split(":")[0] if vnc_url and "://" in vnc_url else None,
+                "x-cua-port": vnc_url.split(":")[-1].rstrip("/") if vnc_url and ":" in vnc_url else None,
             }
         }
 
