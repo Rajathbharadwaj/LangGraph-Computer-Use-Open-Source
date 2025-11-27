@@ -20,7 +20,8 @@ from langgraph_sdk import get_client
 logger = logging.getLogger(__name__)
 
 # Database setup
-DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://postgres:password@localhost:5433/xgrowth")
+# Check both POSTGRES_URI (LangGraph) and DATABASE_URL (backend-api)
+DATABASE_URL = os.getenv("POSTGRES_URI") or os.getenv("DATABASE_URL") or "postgresql://postgres:password@localhost:5433/xgrowth"
 engine = create_engine(DATABASE_URL)
 SessionLocal = sessionmaker(bind=engine)
 
