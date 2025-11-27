@@ -96,11 +96,11 @@ class AsyncPlaywrightClient:
         """Get or create aiohttp session"""
         if self._session is None or self._session.closed:
             self._session = aiohttp.ClientSession(
-                timeout=aiohttp.ClientTimeout(total=10)
+                timeout=aiohttp.ClientTimeout(total=60)  # Increased for navigation operations
             )
         return self._session
     
-    async def _request(self, method: str, endpoint: str, data: dict = None, timeout: int = 30) -> Dict[str, Any]:
+    async def _request(self, method: str, endpoint: str, data: dict = None, timeout: int = 60) -> Dict[str, Any]:
         """Make async HTTP request to the Playwright CUA server"""
         url = f"{self.base_url}{endpoint}"
         try:

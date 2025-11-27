@@ -5,20 +5,19 @@ let userId = null;
 let reconnectAttempts = 0;
 const MAX_RECONNECT_ATTEMPTS = 5;
 
-// Connect to your backend
+// Connect to your backend - only if we have a valid Clerk user ID
 function connectToBackend() {
-  // Get user ID from storage
   chrome.storage.local.get(['userId'], (result) => {
-    if (result.userId) {
+    if (result.userId && result.userId.startsWith('user_') && result.userId.length > 20) {
+      // We have a valid Clerk user ID (they're long like user_35sAy5DRwouHPOUOk3okhywCGXN)
       userId = result.userId;
+      console.log('✅ Found stored Clerk user ID:', userId);
       initWebSocket();
     } else {
-      // Auto-generate a user ID for now (in production, this comes from dashboard)
-      userId = 'user_' + Math.random().toString(36).substr(2, 9);
-      chrome.storage.local.set({ userId }, () => {
-        console.log('Generated user ID:', userId);
-        initWebSocket();
-      });
+      // No valid Clerk user ID - wait for dashboard to send it
+      // Don't auto-generate a random ID anymore
+      console.log('⏳ Waiting for Clerk user ID from dashboard...');
+      console.log('💡 User needs to open app.paralleluniverse.ai to connect');
     }
   });
 }
@@ -189,11 +188,37 @@ async function captureCookiesAndSend(username) {
 // Listen for messages from popup or content script
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === 'CONNECT_WITH_USER_ID') {
-    // Dashboard sent user ID - save and connect
-    userId = message.userId;
-    chrome.storage.local.set({ userId }, () => {
+    // Dashboard sent user ID - save, connect, and immediately capture cookies
+    const newUserId = message.userId;
+    console.log('📥 Received Clerk user ID from dashboard:', newUserId);
+
+    // Check if this is a new/different user ID
+    const isNewUser = userId !== newUserId;
+    userId = newUserId;
+
+    chrome.storage.local.set({ userId }, async () => {
+      // Connect to WebSocket with this user ID
       initWebSocket();
+
+      // Immediately try to capture and send cookies
+      // This makes the flow seamless - user just needs to be logged into X
+      console.log('🔄 Auto-capturing cookies after receiving user ID...');
+      setTimeout(async () => {
+        await checkXLoginStatus();
+      }, 500); // Small delay to let WebSocket connect first
+
+      sendResponse({ success: true, userId: userId });
+    });
+    return true;
+  }
+
+  if (message.type === 'CAPTURE_COOKIES_NOW') {
+    // Dashboard explicitly requesting cookie capture
+    console.log('🔄 Dashboard requested cookie capture');
+    checkXLoginStatus().then(() => {
       sendResponse({ success: true });
+    }).catch(err => {
+      sendResponse({ success: false, error: err.message });
     });
     return true;
   }

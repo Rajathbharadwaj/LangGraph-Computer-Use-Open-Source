@@ -6,6 +6,11 @@
 
 console.log('🤖 Extension Agent Bridge loaded');
 
+// NOTE: WebSocket connection is now handled by background.js
+// This content script only handles page-level interactions
+// Commenting out duplicate WebSocket connection to avoid errors
+
+/*
 // WebSocket connection to backend
 let ws = null;
 let reconnectAttempts = 0;
@@ -23,36 +28,39 @@ chrome.storage.local.get(['userId'], (result) => {
     userId = 'user_' + Math.random().toString(36).substring(7);
     chrome.storage.local.set({ userId });
   }
-  
+
   console.log(`👤 User ID: ${userId}`);
   connectToBackend();
 });
+*/
 
-/**
+/*
  * Connect to backend WebSocket
+ * DISABLED: WebSocket connection is now handled by background.js
  */
+/*
 function connectToBackend() {
   const wsUrl = `ws://localhost:8002/ws/extension/${userId}`;
   console.log(`🔌 Connecting to backend: ${wsUrl}`);
-  
+
   ws = new WebSocket(wsUrl);
-  
+
   ws.onopen = () => {
     console.log('✅ Connected to backend');
     reconnectAttempts = 0;
   };
-  
+
   ws.onmessage = async (event) => {
     try {
       const command = JSON.parse(event.data);
       console.log('📨 Received command:', command.type);
-      
+
       // Handle command
       const response = await handleCommand(command);
-      
+
       // Send response back
       ws.send(JSON.stringify(response));
-      
+
     } catch (error) {
       console.error('❌ Error handling command:', error);
       ws.send(JSON.stringify({
@@ -62,14 +70,14 @@ function connectToBackend() {
       }));
     }
   };
-  
+
   ws.onerror = (error) => {
     console.error('❌ WebSocket error:', error);
   };
-  
+
   ws.onclose = () => {
     console.log('❌ Disconnected from backend');
-    
+
     // Attempt reconnection
     if (reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
       reconnectAttempts++;
@@ -78,6 +86,7 @@ function connectToBackend() {
     }
   };
 }
+*/
 
 /**
  * Handle command from agent

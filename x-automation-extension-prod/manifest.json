@@ -11,14 +11,21 @@
   ],
   "host_permissions": [
     "https://x.com/*",
-    "https://twitter.com/*"
+    "https://twitter.com/*",
+    "https://app.paralleluniverse.ai/*",
+    "http://localhost:3000/*"
   ],
   "background": {
     "service_worker": "background.js"
   },
   "content_scripts": [
     {
-      "matches": ["https://x.com/*", "https://twitter.com/*"],
+      "matches": [
+        "https://x.com/*",
+        "https://twitter.com/*",
+        "https://app.paralleluniverse.ai/*",
+        "http://localhost:3000/*"
+      ],
       "js": ["content.js", "extension_agent_bridge.js"],
       "run_at": "document_idle"
     }

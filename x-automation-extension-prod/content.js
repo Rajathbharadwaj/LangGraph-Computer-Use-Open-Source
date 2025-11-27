@@ -2,6 +2,41 @@
 
 console.log('🚀 X Automation Extension loaded on', window.location.href);
 
+// Check if we're on the dashboard page and send Clerk user ID to background script
+(function checkForClerkUserId() {
+  const currentUrl = window.location.href;
+
+  // Check if we're on the dashboard domain
+  if (currentUrl.includes('app.paralleluniverse.ai') || currentUrl.includes('localhost:3000')) {
+    console.log('📍 On dashboard page, checking for Clerk user ID...');
+
+    // Try to read the Clerk user ID from meta tag
+    const metaTag = document.querySelector('meta[name="clerk-user-id"]');
+
+    if (metaTag && metaTag.content) {
+      const clerkUserId = metaTag.content;
+      console.log('✅ Found Clerk user ID in meta tag:', clerkUserId);
+
+      // Send to background script
+      chrome.runtime.sendMessage({
+        type: 'CONNECT_WITH_USER_ID',
+        userId: clerkUserId
+      }, (response) => {
+        if (chrome.runtime.lastError) {
+          console.error('❌ Failed to send Clerk user ID:', chrome.runtime.lastError);
+        } else {
+          console.log('✅ Successfully sent Clerk user ID to background script');
+        }
+      });
+    } else {
+      console.log('⚠️ Clerk user ID meta tag not found yet, will retry...');
+
+      // Meta tag might not be added yet, retry after a short delay
+      setTimeout(checkForClerkUserId, 1000);
+    }
+  }
+})();
+
 // Check if user is logged into X
 function checkLoginStatus() {
   // Look for profile button (only visible when logged in)
