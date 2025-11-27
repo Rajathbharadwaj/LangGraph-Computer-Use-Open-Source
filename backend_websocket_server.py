@@ -238,7 +238,7 @@ async def get_user_vnc_client(user_id: str):
                 print(f"✅ Recovered VNC session from Cloud Run for user {user_id}: {vnc_url}")
                 return get_client_for_url(vnc_url)
 
-        await vnc_manager.close()
+        await vnc_manager.disconnect()
 
         raise HTTPException(
             status_code=400,
@@ -1231,6 +1231,35 @@ async def get_discovery_progress(user_id: str):
         return {"success": False, "error": str(e)}
 
 
+@app.post("/api/social-graph/reset-progress/{user_id}")
+async def reset_discovery_progress(user_id: str):
+    """Reset/clear the discovery progress state (clears stuck locks)"""
+    try:
+        if not store:
+            return {"success": False, "error": "Store not initialized"}
+
+        progress_namespace = (user_id, "discovery_progress")
+        # Clear the progress by setting to idle state
+        store.put(progress_namespace, "current", {
+            "stage": "idle",
+            "status": "idle",
+            "current": 0,
+            "total": 0
+        })
+
+        # Also clear any cancel flags
+        cancel_namespace = (user_id, "discovery_control")
+        store.put(cancel_namespace, "cancel_flag", {"cancelled": False})
+
+        print(f"✅ Reset progress state for user {user_id}")
+        return {
+            "success": True,
+            "message": "Progress state reset. You can now start a new scraping/discovery."
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
 @app.post("/api/social-graph/discover-optimized/{user_id}")
 async def discover_competitors_optimized(user_id: str, user_handle: str):
     """
@@ -1379,6 +1408,16 @@ async def discover_competitors_native(user_id: str, user_handle: str):
     try:
         from x_native_common_followers import XNativeCommonFollowersDiscovery
 
+        # CRITICAL: Fail early if store is not available - prevents data loss!
+        if store is None:
+            print("❌ CRITICAL: PostgresStore is None - cannot save discovery results!")
+            return {
+                "success": False,
+                "error": "Database connection unavailable. Please try again in a moment.",
+                "action": "retry",
+                "detail": "PostgresStore not initialized - results would be lost if discovery runs"
+            }
+
         print(f"⚡ Starting X NATIVE discovery for @{user_handle}")
 
         # Get per-user VNC client (enables multi-user scaling)
@@ -1455,6 +1494,16 @@ async def discover_competitors_native(user_id: str, user_handle: str):
 @app.post("/api/social-graph/discover/{user_id}")
 async def discover_competitors(user_id: str, user_handle: str):
     """Standard competitor discovery with cancellation support"""
+
+    # CRITICAL: Fail early if store is not available - prevents data loss!
+    if store is None:
+        print("❌ CRITICAL: PostgresStore is None - cannot save discovery results!")
+        return {
+            "success": False,
+            "error": "Database connection unavailable. Please try again in a moment.",
+            "action": "retry",
+            "detail": "PostgresStore not initialized - results would be lost if discovery runs"
+        }
 
     # Clear any previous cancel flag
     cancel_namespace = (user_id, "discovery_control")
@@ -1608,11 +1657,27 @@ async def scrape_competitor_posts(
         progress_namespace = (user_id, "discovery_progress")
         existing_progress = store.get(progress_namespace, "current")
         if existing_progress and existing_progress.value.get("stage") == "scraping_posts":
-            print("⚠️ Scraping already in progress, ignoring duplicate request")
-            return {
-                "success": False,
-                "error": "Scraping is already in progress. Please wait for it to complete."
-            }
+            # Check if it's been stuck for more than 10 minutes (stale lock)
+            import time
+            started_at = existing_progress.value.get("started_at", 0)
+            if time.time() - started_at < 600:  # 10 minutes
+                print("⚠️ Scraping already in progress, ignoring duplicate request")
+                return {
+                    "success": False,
+                    "error": "Scraping is already in progress. Please wait for it to complete."
+                }
+            else:
+                print("⚠️ Found stale scraping lock (>10 min old), clearing it...")
+
+        # Set initial progress with timestamp
+        import time
+        store.put(progress_namespace, "current", {
+            "stage": "scraping_posts",
+            "status": "starting",
+            "current": 0,
+            "total": 0,
+            "started_at": time.time()
+        })
 
         builder = SocialGraphBuilder(store, user_id)
         graph = builder.get_graph()
@@ -1722,6 +1787,15 @@ async def scrape_competitor_posts(
             graph
         )
 
+        # Clear progress state on success
+        store.put(progress_namespace, "current", {
+            "stage": "idle",
+            "status": "complete",
+            "current": 0,
+            "total": 0,
+            "message": f"Scraped {scraped_count} competitors"
+        })
+
         return {
             "success": True,
             "graph": graph,
@@ -1732,6 +1806,20 @@ async def scrape_competitor_posts(
         print(f"❌ Post scraping failed: {e}")
         import traceback
         traceback.print_exc()
+
+        # Clear progress state on error so it doesn't stay stuck
+        try:
+            progress_namespace = (user_id, "discovery_progress")
+            store.put(progress_namespace, "current", {
+                "stage": "idle",
+                "status": "error",
+                "current": 0,
+                "total": 0,
+                "error": str(e)
+            })
+        except:
+            pass  # Don't fail if we can't clear the lock
+
         return {
             "success": False,
             "error": str(e)
@@ -3657,6 +3745,9 @@ async def stream_agent_execution(user_id: str, thread_id: str, task: str, use_ro
                 "configurable": {
                     "user_id": user_id,
                     "cua_url": vnc_url,  # Per-user VNC URL
+                },
+                "metadata": {
+                    "assistant_id": user_id  # CRITICAL: Isolates /memories/ files per user in StoreBackend
                 }
             }
         }
