@@ -16,7 +16,7 @@ from pydantic import BaseModel, Field
 class CUAClient:
     """Client for communicating with the CUA server"""
     
-    def __init__(self, host: str = 'localhost', port: int = 8001):
+    def __init__(self, host: str = 'localhost', port: int = 8005):
         self.host = host
         self.port = port
         self.base_url = f"http://{host}:{port}"
@@ -328,7 +328,7 @@ class NavigateToURL(BaseTool):
 class SyncCUAClient:
     """Sync HTTP client for CUA server - no event loop conflicts"""
     
-    def __init__(self, host: str = 'localhost', port: int = 8001):
+    def __init__(self, host: str = 'localhost', port: int = 8005):
         self.base_url = f"http://{host}:{port}"
     
     def _request(self, method: str, endpoint: str, data: dict = None) -> Dict[str, Any]:

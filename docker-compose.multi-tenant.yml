@@ -1,0 +1,74 @@
+version: '3.8'
+
+services:
+  # Main API - Routes to user containers
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    container_name: xgrowth-api
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=postgresql://postgres:password@db:5432/xgrowth
+      - DOCKER_HOST=unix:///var/run/docker.sock
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock  # Access to Docker daemon
+      - ./:/app
+    depends_on:
+      - db
+    restart: unless-stopped
+    networks:
+      - xgrowth-network
+
+  # PostgreSQL Database
+  db:
+    image: postgres:15-alpine
+    container_name: xgrowth-db
+    environment:
+      - POSTGRES_DB=xgrowth
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=password
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    restart: unless-stopped
+    networks:
+      - xgrowth-network
+
+  # Redis for caching/queues (optional)
+  redis:
+    image: redis:7-alpine
+    container_name: xgrowth-redis
+    ports:
+      - "6379:6379"
+    restart: unless-stopped
+    networks:
+      - xgrowth-network
+
+  # Frontend (Next.js)
+  frontend:
+    build:
+      context: ../cua-frontend
+      dockerfile: Dockerfile
+    container_name: xgrowth-frontend
+    ports:
+      - "3000:3000"
+    environment:
+      - NEXT_PUBLIC_API_URL=http://localhost:8000
+    depends_on:
+      - api
+    restart: unless-stopped
+    networks:
+      - xgrowth-network
+
+volumes:
+  postgres_data:
+
+networks:
+  xgrowth-network:
+    driver: bridge
+
+# User containers are created dynamically by the API
+# They will be on the same network to communicate with the API

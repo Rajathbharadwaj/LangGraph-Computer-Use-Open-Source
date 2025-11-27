@@ -1,0 +1,99 @@
+name: Deploy Backend Services
+
+on:
+  push:
+    branches:
+      - main
+
+env:
+  PROJECT_ID: parallel-universe-prod
+  REGION: us-central1
+  WORKLOAD_IDENTITY_PROVIDER: ${{ secrets.WIF_PROVIDER }}
+  SERVICE_ACCOUNT: ${{ secrets.WIF_SERVICE_ACCOUNT }}
+
+jobs:
+  deploy-main-backend:
+    name: Deploy Main Backend API
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ env.WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ env.SERVICE_ACCOUNT }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Build and Deploy Main Backend
+        run: |
+          gcloud run deploy backend-api \
+            --source . \
+            --region $REGION \
+            --platform managed \
+            --allow-unauthenticated \
+            --set-env-vars "REDIS_HOST=${{ secrets.REDIS_HOST }},EXTENSION_BACKEND_URL=https://extension-backend-service-644185288504.us-central1.run.app,VNC_BROWSER_URL=https://vnc-browser-service-644185288504.us-central1.run.app,LANGGRAPH_URL=https://langgraph-service-bw5qfm5d5a-uc.a.run.app" \
+            --add-cloudsql-instances $PROJECT_ID:$REGION:parallel-universe-db \
+            --vpc-connector projects/$PROJECT_ID/locations/$REGION/connectors/paralleluniverse-vpc \
+            --vpc-egress all-traffic \
+            --project $PROJECT_ID
+
+  deploy-extension-backend:
+    name: Deploy Extension Backend
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ env.WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ env.SERVICE_ACCOUNT }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Build and Deploy Extension Backend
+        run: |
+          gcloud builds submit \
+            --config cloudbuild.extension.yaml \
+            --project $PROJECT_ID
+
+  deploy-omniparser:
+    name: Deploy OmniParser Service
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ env.WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ env.SERVICE_ACCOUNT }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Build and Deploy OmniParser
+        working-directory: ./omniparser
+        run: |
+          gcloud builds submit \
+            --config cloudbuild.yaml \
+            --project $PROJECT_ID

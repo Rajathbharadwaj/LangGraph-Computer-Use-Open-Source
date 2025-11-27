@@ -1,0 +1,11 @@
+.env
+__pycache__/
+*.pyc
+*.pckl
+.langgraph_api/
+.pids/
+logs/
+*.db
+*.log
+*.pid
+.env.prod

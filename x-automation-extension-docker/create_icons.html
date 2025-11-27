@@ -1,0 +1,41 @@
+STDIN
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Extension Icons</title>
+</head>
+<body>
+  <canvas id="icon16" width="16" height="16"></canvas>
+  <canvas id="icon48" width="48" height="48"></canvas>
+  <canvas id="icon128" width="128" height="128"></canvas>
+  
+  <script>
+    // Create simple X icons
+    ['icon16', 'icon48', 'icon128'].forEach(id => {
+      const canvas = document.getElementById(id);
+      const ctx = canvas.getContext('2d');
+      const size = parseInt(id.replace('icon', ''));
+      
+      // Background
+      ctx.fillStyle = '#1d9bf0';
+      ctx.fillRect(0, 0, size, size);
+      
+      // X symbol
+      ctx.fillStyle = 'white';
+      ctx.font = `bold ${size * 0.6}px Arial`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText('𝕏', size/2, size/2);
+      
+      // Download
+      canvas.toBlob(blob => {
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = id + '.png';
+        a.click();
+      });
+    });
+  </script>
+</body>
+</html>

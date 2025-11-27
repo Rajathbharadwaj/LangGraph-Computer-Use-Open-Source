@@ -1,0 +1,117 @@
+version: '3.8'
+
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:15-alpine
+    container_name: xgrowth-postgres
+    environment:
+      POSTGRES_DB: xgrowth
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # Redis Cache
+  redis:
+    image: redis:7-alpine
+    container_name: xgrowth-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+  # Main Backend API
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    container_name: xgrowth-backend
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://postgres:${POSTGRES_PASSWORD:-changeme}@postgres:5432/xgrowth
+      REDIS_URL: redis://redis:6379
+      COOKIE_ENCRYPTION_KEY: ${COOKIE_ENCRYPTION_KEY}
+      CLERK_SECRET_KEY: ${CLERK_SECRET_KEY}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      ENVIRONMENT: production
+    ports:
+      - "8000:8000"
+      - "8001:8001"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock  # For managing user containers
+      - ./logs:/app/logs
+    restart: unless-stopped
+
+  # LangGraph Server
+  langgraph:
+    build:
+      context: .
+      dockerfile: Dockerfile.langgraph
+    container_name: xgrowth-langgraph
+    depends_on:
+      - backend
+    environment:
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+    ports:
+      - "8124:8124"
+    restart: unless-stopped
+
+  # OmniParser Server
+  omniparser:
+    build:
+      context: ../OmniParser
+      dockerfile: Dockerfile
+    container_name: xgrowth-omniparser
+    ports:
+      - "8003:8003"
+    restart: unless-stopped
+
+  # Frontend Dashboard
+  frontend:
+    build:
+      context: ../cua-frontend
+      dockerfile: Dockerfile
+    container_name: xgrowth-frontend
+    depends_on:
+      - backend
+    environment:
+      NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: ${NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY}
+      CLERK_SECRET_KEY: ${CLERK_SECRET_KEY}
+      NEXT_PUBLIC_API_URL: http://backend:8000
+      NEXT_PUBLIC_EXTENSION_API_URL: http://backend:8001
+      NEXT_PUBLIC_LANGGRAPH_API_URL: http://langgraph:8124
+      NEXT_PUBLIC_OMNIPARSER_URL: http://omniparser:8003
+    ports:
+      - "3000:3000"
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  redis_data:
+
+networks:
+  default:
+    name: xgrowth_network
+

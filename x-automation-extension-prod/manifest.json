@@ -1,0 +1,47 @@
+{
+  "manifest_version": 3,
+  "name": "Parallel Universe AI",
+  "version": "1.0.0",
+  "description": "AI-Powered X Growth - Connect your account to automate engagement and grow your presence",
+  "permissions": [
+    "activeTab",
+    "storage",
+    "tabs",
+    "cookies"
+  ],
+  "host_permissions": [
+    "https://x.com/*",
+    "https://twitter.com/*",
+    "https://app.paralleluniverse.ai/*",
+    "http://localhost:3000/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://x.com/*",
+        "https://twitter.com/*",
+        "https://app.paralleluniverse.ai/*",
+        "http://localhost:3000/*"
+      ],
+      "js": ["content.js", "extension_agent_bridge.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icon16.png",
+      "48": "icon48.png",
+      "128": "icon128.png"
+    }
+  },
+  "icons": {
+    "16": "icon16.png",
+    "48": "icon48.png",
+    "128": "icon128.png"
+  }
+}
+

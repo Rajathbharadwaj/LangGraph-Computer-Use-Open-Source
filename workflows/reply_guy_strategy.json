@@ -1,0 +1,107 @@
+{
+  "workflow_id": "reply_guy_strategy",
+  "name": "Reply Guy Strategy",
+  "description": "Reply to viral threads EARLY to get massive visibility. Targets posts going viral (100-500 likes, <1hr old) from accounts with 10k-500k followers.",
+  "category": "engagement",
+  "difficulty": "beginner",
+  "estimated_time_minutes": 30,
+  "expected_roi": "high",
+  "version": "1.0",
+  "schedule": {
+    "frequency": "every_2_hours",
+    "optimal_times": ["9am", "2pm", "7pm"]
+  },
+  "config": {
+    "max_replies_per_session": 5,
+    "min_post_age_minutes": 5,
+    "max_post_age_hours": 1,
+    "min_likes": 100,
+    "max_likes": 500,
+    "min_author_followers": 10000,
+    "max_author_followers": 500000
+  },
+  "steps": [
+    {
+      "id": "step_1",
+      "type": "navigate",
+      "action": "navigate_to_url",
+      "params": {
+        "url": "https://x.com/home"
+      },
+      "description": "Navigate to For You page",
+      "next": "step_2"
+    },
+    {
+      "id": "step_2",
+      "type": "analyze",
+      "action": "get_comprehensive_context",
+      "params": {},
+      "description": "Analyze page to see what posts are visible",
+      "next": "step_3"
+    },
+    {
+      "id": "step_3",
+      "type": "loop",
+      "loop_count": "{{config.max_replies_per_session}}",
+      "description": "Find and reply to viral threads",
+      "children": [
+        {
+          "id": "step_3a",
+          "type": "filter",
+          "action": "find_viral_candidate",
+          "params": {
+            "min_likes": "{{config.min_likes}}",
+            "max_likes": "{{config.max_likes}}",
+            "max_age_hours": "{{config.max_post_age_hours}}"
+          },
+          "description": "Find post going viral but not viral yet",
+          "next": "step_3b"
+        },
+        {
+          "id": "step_3b",
+          "type": "research",
+          "action": "research_topic",
+          "params": {
+            "query": "{{post_topic}}"
+          },
+          "description": "Research the topic to provide value",
+          "next": "step_3c"
+        },
+        {
+          "id": "step_3c",
+          "type": "action",
+          "action": "comment_on_post",
+          "params": {
+            "author": "{{post_author}}",
+            "comment": "{{generated_comment}}"
+          },
+          "description": "Reply with thoughtful, researched insight",
+          "next": "step_3d"
+        },
+        {
+          "id": "step_3d",
+          "type": "memory",
+          "action": "save_to_history",
+          "params": {
+            "action": "replied_to_viral_thread",
+            "post_url": "{{post_url}}",
+            "engagement_tracking": true
+          },
+          "description": "Track action in memory"
+        }
+      ],
+      "next": "step_4"
+    },
+    {
+      "id": "step_4",
+      "type": "end",
+      "description": "Workflow complete"
+    }
+  ],
+  "success_metrics": {
+    "replies_posted": "count",
+    "avg_likes_on_replies": "metric",
+    "new_followers_gained": "metric"
+  },
+  "learning_enabled": true
+}

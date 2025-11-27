@@ -1,0 +1,82 @@
+FROM ubuntu:22.04
+
+# Prevent interactive prompts during package installation
+ENV DEBIAN_FRONTEND=noninteractive
+ENV DISPLAY=:98
+
+# Install all necessary packages including Node.js for Playwright
+RUN apt-get update && apt-get install -y \
+    xvfb \
+    x11vnc \
+    xfce4 \
+    xfce4-terminal \
+    python3 \
+    python3-pip \
+    xdotool \
+    scrot \
+    wmctrl \
+    wget \
+    xz-utils \
+    xsel \
+    xclip \
+    curl \
+    nodejs \
+    npm \
+    git \
+    nginx \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install websockify for VNC over WebSocket (required for Cloud Run/noVNC)
+RUN pip3 install websockify
+
+# Install Python packages including Patchright (drop-in Playwright replacement with stealth)
+RUN pip3 install fastapi uvicorn pydantic \
+    patchright \
+    anthropic python-dotenv aiohttp \
+    requests pillow asyncio cryptography
+
+# Install Google Chrome for extension support
+RUN wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | apt-key add - && \
+    echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" > /etc/apt/sources.list.d/google-chrome.list && \
+    apt-get update && \
+    apt-get install -y google-chrome-stable && \
+    rm -rf /var/lib/apt/lists/*
+
+# Install Patchright browsers and dependencies (with GUI support, not headless-shell)
+RUN python3 -m patchright install chromium --with-deps
+# Ensure we have the full browser, not just headless shell
+ENV PLAYWRIGHT_BROWSERS_PATH=/root/.cache/ms-playwright
+
+# Download and install Firefox (keep for compatibility)
+RUN cd /tmp && \
+    wget -q -O firefox.tar.xz "https://download.mozilla.org/?product=firefox-latest-ssl&os=linux64&lang=en-US" && \
+    tar -xJf firefox.tar.xz && \
+    mv firefox /opt/firefox && \
+    ln -sf /opt/firefox/firefox /usr/local/bin/firefox && \
+    rm firefox.tar.xz
+
+# Create app directory
+RUN mkdir -p /app
+
+# Copy Chrome extension into Docker (Docker-specific version with host IP)
+COPY x-automation-extension-docker /app/x-automation-extension
+
+# Copy all necessary files
+COPY cua_server.py /app/
+COPY stealth_cua_server.py /app/
+COPY start_stealth.sh /
+
+# Copy nginx config
+COPY nginx-vnc.conf /etc/nginx/nginx.conf
+
+# Make startup script executable
+RUN chmod +x /start_stealth.sh
+
+# Expose ports (websockify serves on PORT env var, default 6080)
+# 8005 for stealth API server (internal)
+# 5900 for VNC (internal - accessed via websockify)
+EXPOSE 6080 8005
+
+# Set the startup command
+CMD ["/start_stealth.sh"]
+

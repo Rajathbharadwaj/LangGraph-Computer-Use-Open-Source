@@ -1,0 +1,19 @@
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Install dependencies
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy database module
+COPY database/ ./database/
+
+# Copy extension backend server
+COPY backend_extension_server.py .
+
+# Expose port 8001
+EXPOSE 8001
+
+# Run the extension backend
+CMD ["python", "backend_extension_server.py"]

@@ -1,0 +1,46 @@
+steps:
+  # Build Extension Backend Docker image
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - 'build'
+      - '-f'
+      - 'Dockerfile.extension'
+      - '-t'
+      - 'gcr.io/$PROJECT_ID/extension-backend:$BUILD_ID'
+      - '-t'
+      - 'gcr.io/$PROJECT_ID/extension-backend:latest'
+      - '.'
+
+  # Push the images to Container Registry
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push', 'gcr.io/$PROJECT_ID/extension-backend:$BUILD_ID']
+
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push', 'gcr.io/$PROJECT_ID/extension-backend:latest']
+
+  # Deploy to Cloud Run with Cloud SQL connection
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: gcloud
+    args:
+      - 'run'
+      - 'deploy'
+      - 'extension-backend-service'
+      - '--image'
+      - 'gcr.io/$PROJECT_ID/extension-backend:$BUILD_ID'
+      - '--region'
+      - 'us-central1'
+      - '--platform'
+      - 'managed'
+      - '--allow-unauthenticated'
+      - '--port'
+      - '8001'
+      - '--add-cloudsql-instances'
+      - 'parallel-universe-prod:us-central1:parallel-universe-db'
+      - '--set-env-vars'
+      - 'DATABASE_URL=postgresql://postgres:iNfiNUmMXNg17EpkkPcOezFYv5leYBiMjPu26aRq27w=@/postgres?host=/cloudsql/parallel-universe-prod:us-central1:parallel-universe-db'
+
+images:
+  - 'gcr.io/$PROJECT_ID/extension-backend:$BUILD_ID'
+  - 'gcr.io/$PROJECT_ID/extension-backend:latest'
+
+timeout: 1200s

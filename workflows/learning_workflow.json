@@ -1,0 +1,125 @@
+{
+  "workflow_id": "learning_workflow",
+  "name": "Engagement Learning System",
+  "description": "Analyzes past actions to learn what works. Updates strategies based on performance data. Makes the agent smarter over time.",
+  "category": "optimization",
+  "difficulty": "advanced",
+  "estimated_time_minutes": 10,
+  "expected_roi": "compound_growth",
+  "version": "1.0",
+  "schedule": {
+    "frequency": "daily",
+    "optimal_times": ["11pm"]
+  },
+  "config": {
+    "lookback_days": 7,
+    "min_samples_for_learning": 10,
+    "confidence_threshold": 0.7
+  },
+  "steps": [
+    {
+      "id": "step_1",
+      "type": "memory",
+      "action": "read_file",
+      "params": {
+        "path": "/memories/engagement_history/"
+      },
+      "description": "Load past engagement data",
+      "next": "step_2"
+    },
+    {
+      "id": "step_2",
+      "type": "analysis",
+      "action": "analyze_engagement_patterns",
+      "params": {
+        "lookback_days": "{{config.lookback_days}}"
+      },
+      "description": "Analyze what's working",
+      "next": "step_3"
+    },
+    {
+      "id": "step_3",
+      "type": "analysis",
+      "action": "calculate_roi_by_workflow",
+      "params": {},
+      "description": "Calculate ROI per workflow type",
+      "next": "step_4"
+    },
+    {
+      "id": "step_4",
+      "type": "analysis",
+      "action": "identify_patterns",
+      "params": {
+        "patterns": [
+          "best_posting_times",
+          "best_comment_styles",
+          "best_accounts_to_engage",
+          "emoji_usage_optimal",
+          "comment_length_optimal"
+        ]
+      },
+      "description": "Find success patterns",
+      "next": "step_5"
+    },
+    {
+      "id": "step_5",
+      "type": "condition",
+      "condition": "samples >= {{config.min_samples_for_learning}} AND confidence > {{config.confidence_threshold}}",
+      "description": "Check if enough data to learn",
+      "if_true": "step_6",
+      "if_false": "step_8"
+    },
+    {
+      "id": "step_6",
+      "type": "memory",
+      "action": "write_file",
+      "params": {
+        "path": "/memories/learnings/engagement_insights.json",
+        "content": "{{discovered_patterns}}"
+      },
+      "description": "Save learnings",
+      "next": "step_7"
+    },
+    {
+      "id": "step_7",
+      "type": "optimization",
+      "action": "update_workflow_priorities",
+      "params": {
+        "high_roi_workflows": "{{increase_frequency}}",
+        "low_roi_workflows": "{{decrease_frequency}}"
+      },
+      "description": "Optimize workflow mix",
+      "next": "step_8"
+    },
+    {
+      "id": "step_8",
+      "type": "memory",
+      "action": "write_file",
+      "params": {
+        "path": "/memories/learnings/daily_report.txt",
+        "content": "{{learning_summary}}"
+      },
+      "description": "Save daily learning report",
+      "next": "step_9"
+    },
+    {
+      "id": "step_9",
+      "type": "end",
+      "description": "Learning cycle complete"
+    }
+  ],
+  "discovered_insights_examples": [
+    "Commenting on @username posts gets 5x more engagement",
+    "Posting at 9am EST gets 2x more impressions",
+    "Questions in comments perform 3x better than statements",
+    "1-2 emojis per comment is optimal",
+    "Reply Guy workflow has highest ROI (4.2x)",
+    "Follower Farming converts at 23% follow-back rate"
+  ],
+  "success_metrics": {
+    "patterns_discovered": "count",
+    "workflow_optimizations_made": "count",
+    "overall_roi_improvement": "percentage"
+  },
+  "learning_enabled": false
+}

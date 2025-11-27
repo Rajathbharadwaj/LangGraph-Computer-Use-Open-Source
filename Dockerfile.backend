@@ -1,0 +1,38 @@
+FROM python:3.12-slim
+
+WORKDIR /app
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    gcc \
+    postgresql-client \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy requirements
+COPY requirements-prod.txt .
+
+# Install Python dependencies
+RUN pip install --no-cache-dir -r requirements-prod.txt
+
+# Copy application code
+COPY backend_websocket_server.py .
+COPY backend_extension_server.py .
+COPY database/ ./database/
+COPY services/ ./services/
+COPY async_playwright_tools.py .
+COPY omniparser_client.py .
+
+# Create logs directory
+RUN mkdir -p /app/logs
+
+# Expose ports
+EXPOSE 8000 8001
+
+# Start both backend servers
+CMD python -c "import asyncio; \
+from database import init_db; \
+init_db(); \
+print('✅ Database initialized')" && \
+python backend_extension_server.py & \
+python backend_websocket_server.py
+

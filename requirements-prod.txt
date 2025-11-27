@@ -1,0 +1,43 @@
+# Existing dependencies
+fastapi
+uvicorn[standard]
+websockets
+aiohttp
+python-multipart
+
+# Database
+sqlalchemy
+asyncpg
+alembic
+psycopg2-binary
+
+# Redis
+redis
+aioredis
+
+# Security & Encryption
+cryptography
+python-jose[cryptography]
+passlib[bcrypt]
+
+# Rate Limiting
+slowapi
+
+# Monitoring
+sentry-sdk[fastapi]
+
+# Environment
+python-dotenv
+
+# Docker
+docker
+
+# LangGraph & AI
+langgraph
+langgraph-cli
+deepagents
+
+# Playwright
+playwright
+playwright-stealth
+

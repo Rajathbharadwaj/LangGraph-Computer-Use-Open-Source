@@ -1,0 +1,63 @@
+FROM ubuntu:22.04
+
+# Prevent interactive prompts during package installation
+ENV DEBIAN_FRONTEND=noninteractive
+ENV DISPLAY=:98
+
+# Install all necessary packages including Node.js for Playwright
+RUN apt-get update && apt-get install -y \
+    xvfb \
+    x11vnc \
+    xfce4 \
+    xfce4-terminal \
+    python3 \
+    python3-pip \
+    xdotool \
+    scrot \
+    wmctrl \
+    wget \
+    xz-utils \
+    xsel \
+    xclip \
+    curl \
+    nodejs \
+    npm \
+    git \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Python packages including Patchright (drop-in Playwright replacement with stealth)
+RUN pip3 install fastapi uvicorn pydantic \
+    patchright \
+    anthropic python-dotenv aiohttp \
+    requests pillow asyncio cryptography
+
+# Install Google Chrome for extension support
+RUN wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | apt-key add - && \
+    echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" > /etc/apt/sources.list.d/google-chrome.list && \
+    apt-get update && \
+    apt-get install -y google-chrome-stable && \
+    rm -rf /var/lib/apt/lists/*
+
+# Install Patchright browsers and dependencies (with GUI support, not headless-shell)
+RUN python3 -m patchright install chromium --with-deps
+# Ensure we have the full browser, not just headless shell
+ENV PLAYWRIGHT_BROWSERS_PATH=/root/.cache/ms-playwright
+
+# Create app directory
+RUN mkdir -p /app
+
+# Copy Chrome extension into Docker (Docker-specific version with host IP)
+COPY x-automation-extension-docker /app/x-automation-extension
+
+# Copy all necessary files
+COPY stealth_cua_server.py /app/
+
+# Copy and make startup script executable
+COPY start_stealth_api.sh /
+RUN chmod +x /start_stealth_api.sh
+
+# Cloud Run uses PORT env var (default 8080)
+EXPOSE 8080
+
+# Set the startup command
+CMD ["/start_stealth_api.sh"]
