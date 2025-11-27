@@ -742,6 +742,17 @@ def create_x_growth_agent(config: dict = None):
     # For local development, we use InMemoryStore as fallback
     store_for_agent = store
     if store_for_agent is None and use_longterm_memory:
+        # Check if running in production (LangGraph Cloud)
+        import os
+        is_production = os.getenv("LANGGRAPH_CLOUD") == "true" or os.getenv("K_SERVICE") is not None
+
+        if is_production:
+            raise RuntimeError(
+                "CRITICAL: Store not initialized in production environment. "
+                "Action history will be lost! Check LangGraph Cloud store configuration."
+            )
+
+        # Development fallback
         from langgraph.store.memory import InMemoryStore
         store_for_agent = InMemoryStore()
         print("⚠️ Using InMemoryStore for development (store not auto-provisioned)")

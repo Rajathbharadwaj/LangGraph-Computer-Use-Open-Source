@@ -42,9 +42,10 @@ OPENAI_KEY=$(gcloud secrets versions access latest --secret=openai-api-key --pro
 LANGSMITH_KEY=$(gcloud secrets versions access latest --secret=langsmith-api-key --project=$PROJECT_ID 2>/dev/null || echo "")
 CLERK_SECRET=$(gcloud secrets versions access latest --secret=clerk-secret-key --project=$PROJECT_ID 2>/dev/null || echo "")
 CLERK_PUBLISHABLE=$(gcloud secrets versions access latest --secret=clerk-publishable-key --project=$PROJECT_ID 2>/dev/null || echo "")
+DATABASE_URL=$(gcloud secrets versions access latest --secret=database-url --project=$PROJECT_ID 2>/dev/null || echo "postgresql://postgres:ParallelUniverse2024!@10.97.0.3:5432/parallel_universe_db")
 
 # Environment variables for Cloud Run
-ENV_VARS="DATABASE_URL=postgresql://postgres:ParallelUniverse2024!@10.97.0.3:5432/parallel_universe_db"
+ENV_VARS="DATABASE_URL=$DATABASE_URL"
 ENV_VARS="$ENV_VARS,REDIS_HOST=10.110.183.147"
 ENV_VARS="$ENV_VARS,GCP_PROJECT_ID=$PROJECT_ID"
 ENV_VARS="$ENV_VARS,LANGGRAPH_URL=https://langgraph-service-644185288504.us-central1.run.app"

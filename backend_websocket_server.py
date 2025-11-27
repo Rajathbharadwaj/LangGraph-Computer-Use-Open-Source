@@ -1654,29 +1654,48 @@ async def scrape_competitor_posts(
         user_client = await get_user_vnc_client(user_id)
 
         # Check if scraping is already in progress (prevent concurrent scraping)
+        # Use atomic check-and-set pattern to prevent race conditions
         import time
+        import uuid
         progress_namespace = (user_id, "discovery_progress")
+
+        # Generate unique request ID for this scraping attempt
+        request_id = str(uuid.uuid4())
+        current_time = time.time()
+
         existing_progress = store.get(progress_namespace, "current")
         if existing_progress and existing_progress.value.get("stage") == "scraping_posts":
             # Check if it's been stuck for more than 10 minutes (stale lock)
             started_at = existing_progress.value.get("started_at", 0)
-            if time.time() - started_at < 600:  # 10 minutes
-                print("⚠️ Scraping already in progress, ignoring duplicate request")
+            existing_request_id = existing_progress.value.get("request_id")
+
+            if current_time - started_at < 600:  # 10 minutes
+                print(f"⚠️ Scraping already in progress (request {existing_request_id}), rejecting duplicate")
                 return {
                     "success": False,
                     "error": "Scraping is already in progress. Please wait for it to complete."
                 }
             else:
-                print("⚠️ Found stale scraping lock (>10 min old), clearing it...")
+                print(f"⚠️ Found stale scraping lock (>10 min old, request {existing_request_id}), acquiring...")
 
-        # Set initial progress with timestamp
+        # Atomically set lock with our request ID
         store.put(progress_namespace, "current", {
             "stage": "scraping_posts",
             "status": "starting",
             "current": 0,
             "total": 0,
-            "started_at": time.time()
+            "started_at": current_time,
+            "request_id": request_id  # Track which request owns the lock
         })
+
+        # Verify we got the lock (handle race condition)
+        lock_check = store.get(progress_namespace, "current")
+        if lock_check and lock_check.value.get("request_id") != request_id:
+            print(f"⚠️ Lost lock race to request {lock_check.value.get('request_id')}, aborting")
+            return {
+                "success": False,
+                "error": "Another scraping request started concurrently. Please try again."
+            }
 
         builder = SocialGraphBuilder(store, user_id)
         graph = builder.get_graph()
