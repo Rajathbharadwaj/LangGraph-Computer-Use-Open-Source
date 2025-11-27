@@ -71,7 +71,8 @@ async def lifespan(app: FastAPI):
 
     # Initialize PostgresStore with a connection pool
     # This is the proper way to use PostgresStore in a long-running server
-    DB_URI = os.environ.get("DATABASE_URL", "postgresql://postgres:password@localhost:5433/xgrowth")
+    # LangGraph uses POSTGRES_URI, backend-api uses DATABASE_URL - check both
+    DB_URI = os.environ.get("POSTGRES_URI") or os.environ.get("DATABASE_URL") or "postgresql://postgres:password@localhost:5433/xgrowth"
     try:
         from psycopg_pool import ConnectionPool
 
