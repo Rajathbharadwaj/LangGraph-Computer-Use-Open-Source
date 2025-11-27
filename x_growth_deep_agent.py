@@ -752,24 +752,20 @@ def create_x_growth_agent(config: dict = None):
                 "Action history will be lost! Check LangGraph Cloud store configuration."
             )
 
-        # Development fallback
-        from langgraph.store.memory import InMemoryStore
-        store_for_agent = InMemoryStore()
-        print("⚠️ Using InMemoryStore for development (store not auto-provisioned)")
-
+  
     if user_id and store_for_agent:
 
         # Initialize user memory
         from x_user_memory import XUserMemory
-        user_memory = XUserMemory(store, user_id)
-        
+        user_memory = XUserMemory(store_for_agent, user_id)
+
         # Get user preferences
         preferences = user_memory.get_preferences()
-        
+
         # Get user's writing style from LangGraph Store
         from x_writing_style_learner import XWritingStyleManager
         try:
-            style_manager = XWritingStyleManager(store, user_id)
+            style_manager = XWritingStyleManager(store_for_agent, user_id)
             # Get style profile and examples count
             profile = style_manager.get_style_profile()
             if not profile:
@@ -778,7 +774,7 @@ def create_x_growth_agent(config: dict = None):
 
             # Get sample count
             namespace = (user_id, "writing_samples")
-            sample_items = list(store.search(namespace, limit=1000))
+            sample_items = list(store_for_agent.search(namespace, limit=1000))
             sample_count = len(sample_items)
 
             if sample_count > 0:
