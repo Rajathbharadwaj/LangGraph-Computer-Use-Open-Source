@@ -1,8 +1,12 @@
 #!/bin/bash
 
 # =============================================================================
-# Cloud Run Deployment Script for Parallel Universe Backend
+# Cloud Run Deployment Script for Backend API (backend-api)
 # =============================================================================
+#
+# IMPORTANT: This script deploys ONLY backend-api, NOT langgraph-service!
+#   - For backend-api: Use THIS script (runs backend_websocket_server.py)
+#   - For langgraph-service: Use deploy_langgraph_service.sh (runs LangGraph Cloud)
 #
 # WHEN TO USE THIS SCRIPT:
 #   - After making code changes to backend_websocket_server.py or any backend files
@@ -16,7 +20,7 @@
 #
 # WHAT THIS SCRIPT DOES:
 #   1. Fetches API keys from Google Secret Manager (Anthropic, OpenAI, Clerk, etc.)
-#   2. Builds the Docker image from source
+#   2. Builds the Docker image from source (using Dockerfile)
 #   3. Deploys to Cloud Run with all required environment variables
 #   4. Runs a health check to verify deployment
 #
