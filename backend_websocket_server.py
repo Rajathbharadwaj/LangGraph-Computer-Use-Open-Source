@@ -1613,6 +1613,27 @@ async def analyze_competitor_content(user_id: str):
         }
 
 
+async def _release_redis_lock(redis_client, lock_key: str, request_id: str, user_id: str):
+    """Helper function to safely release Redis lock"""
+    try:
+        if redis_client:
+            # Only delete if we still own the lock (check request_id)
+            current_lock = await redis_client.get(lock_key)
+            if current_lock == request_id:
+                await redis_client.delete(lock_key)
+                print(f"🔓 Released scraping lock for user {user_id}")
+            else:
+                print(f"⚠️ Lock already released or taken over by another request")
+    except Exception as unlock_error:
+        print(f"⚠️ Failed to release lock: {unlock_error}")
+    finally:
+        try:
+            if redis_client:
+                await redis_client.aclose()
+        except Exception as close_error:
+            print(f"⚠️ Failed to close Redis connection: {close_error}")
+
+
 @app.post("/api/social-graph/scrape-posts/{user_id}")
 async def scrape_competitor_posts(
     user_id: str,
@@ -1650,6 +1671,14 @@ async def scrape_competitor_posts(
 
         from social_graph_scraper import SocialGraphBuilder, SocialGraphScraper
 
+        # Check if store is initialized
+        if store is None:
+            print("❌ CRITICAL: PostgresStore is None")
+            return {
+                "success": False,
+                "error": "Database connection unavailable",
+            }
+
         # Get per-user VNC client (enables multi-user scaling)
         user_client = await get_user_vnc_client(user_id)
 
@@ -1664,12 +1693,15 @@ async def scrape_competitor_posts(
 
         redis_host = os.getenv("REDIS_HOST", "localhost")
         redis_port = int(os.getenv("REDIS_PORT", "6379"))
-        redis_client = aioredis.Redis(host=redis_host, port=redis_port, decode_responses=True)
 
         request_id = str(uuid.uuid4())
         lock_key = f"lock:scrape_posts:{user_id}"
+        redis_client = None
 
         try:
+            # Create Redis client with context manager for proper cleanup
+            redis_client = aioredis.Redis(host=redis_host, port=redis_port, decode_responses=True)
+
             # Atomic lock acquisition with auto-expiration
             # Returns True if lock acquired, False if already held
             lock_acquired = await redis_client.set(
@@ -1683,7 +1715,6 @@ async def scrape_competitor_posts(
                 # Check who owns the lock (for debugging)
                 existing_lock = await redis_client.get(lock_key)
                 print(f"⚠️ Scraping already in progress (lock held by request {existing_lock})")
-                await redis_client.aclose()
                 return {
                     "success": False,
                     "error": "Scraping is already in progress. Please wait for it to complete."
@@ -1693,7 +1724,6 @@ async def scrape_competitor_posts(
 
         except Exception as lock_error:
             print(f"❌ Failed to acquire Redis lock: {lock_error}")
-            await redis_client.aclose()
             return {
                 "success": False,
                 "error": "Failed to acquire lock. Please try again."
@@ -1707,6 +1737,8 @@ async def scrape_competitor_posts(
         graph = builder.get_graph()
 
         if not graph:
+            # Release lock before returning
+            await _release_redis_lock(redis_client, lock_key, request_id, user_id)
             return {
                 "success": False,
                 "error": "No graph data found. Run discovery first."
@@ -1716,6 +1748,8 @@ async def scrape_competitor_posts(
         all_competitors = graph.get("all_competitors_raw", [])
 
         if not all_competitors:
+            # Release lock before returning
+            await _release_redis_lock(redis_client, lock_key, request_id, user_id)
             return {
                 "success": False,
                 "error": "No competitors found"
@@ -1738,7 +1772,6 @@ async def scrape_competitor_posts(
 
         # Scrape posts for competitors that don't have them
         scraped_count = 0
-        progress_namespace = (user_id, "discovery_progress")
         total_to_scrape = len(top_competitors) if force_rescrape else len([c for c in top_competitors if not (c.get("posts") and len(c.get("posts", [])) > 0)])
         current_index = 0
 
@@ -1811,28 +1844,22 @@ async def scrape_competitor_posts(
             graph
         )
 
-        # Clear progress state on success
-        store.put(progress_namespace, "current", {
-            "stage": "idle",
-            "status": "complete",
-            "current": 0,
-            "total": 0,
-            "message": f"Scraped {scraped_count} competitors"
-        })
+        # CRITICAL: Release Redis lock FIRST before updating progress state
+        # This prevents race condition where another request acquires lock
+        # but sees stale "scraping" status
+        await _release_redis_lock(redis_client, lock_key, request_id, user_id)
 
-        # Release Redis lock
+        # THEN update progress state (non-critical, for UI only)
         try:
-            # Only delete if we still own the lock (check request_id)
-            current_lock = await redis_client.get(lock_key)
-            if current_lock == request_id:
-                await redis_client.delete(lock_key)
-                print(f"🔓 Released scraping lock for user {user_id}")
-            else:
-                print(f"⚠️ Lock already released or taken over by another request")
-        except Exception as unlock_error:
-            print(f"⚠️ Failed to release lock: {unlock_error}")
-        finally:
-            await redis_client.aclose()
+            store.put(progress_namespace, "current", {
+                "stage": "idle",
+                "status": "complete",
+                "current": 0,
+                "total": 0,
+                "message": f"Scraped {scraped_count} competitors"
+            })
+        except Exception as progress_error:
+            print(f"⚠️ Failed to update progress state: {progress_error}")
 
         return {
             "success": True,
@@ -1845,7 +1872,13 @@ async def scrape_competitor_posts(
         import traceback
         traceback.print_exc()
 
-        # Clear progress state on error so it doesn't stay stuck
+        # Release Redis lock on error FIRST
+        try:
+            await _release_redis_lock(redis_client, lock_key, request_id, user_id)
+        except Exception as unlock_error:
+            print(f"⚠️ Failed to release lock helper: {unlock_error}")
+
+        # THEN clear progress state (non-critical)
         try:
             progress_namespace = (user_id, "discovery_progress")
             store.put(progress_namespace, "current", {
@@ -1857,20 +1890,6 @@ async def scrape_competitor_posts(
             })
         except Exception as clear_error:
             print(f"⚠️ Failed to clear progress state: {clear_error}")
-
-        # Release Redis lock on error
-        try:
-            current_lock = await redis_client.get(lock_key)
-            if current_lock == request_id:
-                await redis_client.delete(lock_key)
-                print(f"🔓 Released scraping lock after error for user {user_id}")
-        except Exception as unlock_error:
-            print(f"⚠️ Failed to release lock on error: {unlock_error}")
-        finally:
-            try:
-                await redis_client.aclose()
-            except:
-                pass  # Ignore close errors
 
         return {
             "success": False,
