@@ -32,6 +32,7 @@ async def screenshot_middleware(
 ) -> ToolMessage | Command:
     """Wrap tool calls with before/after screenshots for visual verification"""
 
+    print("=" * 80)
     print("🔥 [Middleware] ENTERED screenshot_middleware!")
     print(f"🔥 [Middleware] request type: {type(request)}")
     print(f"🔥 [Middleware] request attributes: {dir(request)}")
@@ -43,18 +44,34 @@ async def screenshot_middleware(
 
         # Get runtime to access Playwright client
         runtime = getattr(request, 'runtime', None)
-        print(f"🔥 [Middleware] runtime: {runtime}")
+        print(f"🔥 [Middleware] runtime exists: {runtime is not None}")
         if not runtime:
             # No runtime, just execute tool normally
             print("⚠️ [Middleware] No runtime found, passing through")
+            print("=" * 80)
             return await handler(request)
 
         # Get config to access Playwright client info
         config = getattr(runtime, 'config', {})
-        print(f"🔥 [Middleware] config: {config}")
-        cua_host = config.get('configurable', {}).get('x-cua-host')
-        cua_port = config.get('configurable', {}).get('x-cua-port')
-        print(f"🔥 [Middleware] cua_host: {cua_host}, cua_port: {cua_port}")
+        print(f"🔥 [Middleware] config type: {type(config)}")
+        print(f"🔥 [Middleware] config keys: {list(config.keys())}")
+
+        # Get configurable dict
+        configurable = config.get('configurable', {})
+        print(f"🔥 [Middleware] configurable type: {type(configurable)}")
+        print(f"🔥 [Middleware] configurable keys: {list(configurable.keys())}")
+
+        # Get specific values
+        cua_host = configurable.get('x-cua-host')
+        cua_port = configurable.get('x-cua-port')
+        user_id = configurable.get('user_id')
+        cua_url = configurable.get('cua_url')
+
+        print(f"🔥 [Middleware] cua_host: {repr(cua_host)}")
+        print(f"🔥 [Middleware] cua_port: {repr(cua_port)}")
+        print(f"🔥 [Middleware] user_id: {repr(user_id)}")
+        print(f"🔥 [Middleware] cua_url: {repr(cua_url)}")
+        print("=" * 80)
 
         if not (cua_host and cua_port):
             # No Playwright client configured, execute tool normally

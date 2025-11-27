@@ -3809,6 +3809,30 @@ async def stream_agent_execution(user_id: str, thread_id: str, task: str, use_ro
 
         # Use "messages" stream mode for token-by-token streaming
         # If double-texting, use rollback strategy to delete the previous run
+
+        # Parse host and port from VNC URL
+        print(f"🔍 [Backend] DEBUG: vnc_url RAW = {repr(vnc_url)}")
+        cua_host = None
+        cua_port = None
+        if vnc_url and "://" in vnc_url:
+            try:
+                # Example: http://vnc-service-xyz:8080/
+                after_protocol = vnc_url.split("://")[1]  # "vnc-service-xyz:8080/"
+                print(f"🔍 [Backend] DEBUG: after_protocol = {repr(after_protocol)}")
+                host_and_port = after_protocol.rstrip("/")  # "vnc-service-xyz:8080"
+                print(f"🔍 [Backend] DEBUG: host_and_port = {repr(host_and_port)}")
+                if ":" in host_and_port:
+                    cua_host = host_and_port.split(":")[0]
+                    cua_port = host_and_port.split(":")[1]
+                else:
+                    cua_host = host_and_port
+                    cua_port = "80" if vnc_url.startswith("http://") else "443"
+            except Exception as e:
+                print(f"❌ [Backend] ERROR parsing VNC URL: {e}")
+
+        print(f"🔍 [Backend] DEBUG: FINAL cua_host = {repr(cua_host)}")
+        print(f"🔍 [Backend] DEBUG: FINAL cua_port = {repr(cua_port)}")
+
         stream_kwargs = {
             "thread_id": thread_id,
             "assistant_id": "x_growth_deep_agent",
@@ -3823,9 +3847,8 @@ async def stream_agent_execution(user_id: str, thread_id: str, task: str, use_ro
                 "configurable": {
                     "user_id": user_id,
                     "cua_url": vnc_url,  # Per-user VNC URL
-                    # Extract host and port from VNC URL for screenshot middleware
-                    "x-cua-host": vnc_url.split("://")[1].split(":")[0] if vnc_url and "://" in vnc_url else None,
-                    "x-cua-port": vnc_url.split(":")[-1].rstrip("/") if vnc_url and ":" in vnc_url else None,
+                    "x-cua-host": cua_host,
+                    "x-cua-port": cua_port,
                 },
                 "metadata": {
                     "assistant_id": user_id  # CRITICAL: Isolates /memories/ files per user in StoreBackend
@@ -3836,7 +3859,11 @@ async def stream_agent_execution(user_id: str, thread_id: str, task: str, use_ro
         # Add multitask_strategy if double-texting
         if use_rollback:
             stream_kwargs["multitask_strategy"] = "rollback"
-        
+
+        # DEBUG: Log what we're sending to LangGraph
+        print(f"🔍 DEBUG: vnc_url = {vnc_url}")
+        print(f"🔍 DEBUG: stream_kwargs['config']['configurable'] = {stream_kwargs['config']['configurable']}")
+
         try:
             async for chunk in langgraph_client.runs.stream(**stream_kwargs):
                 # Check if cancelled
@@ -4420,14 +4447,35 @@ async def execute_workflow_endpoint(workflow_json: dict, user_id: Optional[str] 
             "messages": [{"role": "user", "content": prompt}]
         }
 
+        # Parse host and port from VNC URL (same logic as task execution)
+        print(f"🔍 [Backend-Workflow] DEBUG: vnc_url RAW = {repr(vnc_url)}")
+        cua_host = None
+        cua_port = None
+        if vnc_url and "://" in vnc_url:
+            try:
+                after_protocol = vnc_url.split("://")[1]
+                print(f"🔍 [Backend-Workflow] DEBUG: after_protocol = {repr(after_protocol)}")
+                host_and_port = after_protocol.rstrip("/")
+                print(f"🔍 [Backend-Workflow] DEBUG: host_and_port = {repr(host_and_port)}")
+                if ":" in host_and_port:
+                    cua_host = host_and_port.split(":")[0]
+                    cua_port = host_and_port.split(":")[1]
+                else:
+                    cua_host = host_and_port
+                    cua_port = "80" if vnc_url.startswith("http://") else "443"
+            except Exception as e:
+                print(f"❌ [Backend-Workflow] ERROR parsing VNC URL: {e}")
+
+        print(f"🔍 [Backend-Workflow] DEBUG: FINAL cua_host = {repr(cua_host)}")
+        print(f"🔍 [Backend-Workflow] DEBUG: FINAL cua_port = {repr(cua_port)}")
+
         config = {
             "configurable": {
                 "user_id": user_id,
                 "cua_url": vnc_url,
                 "use_longterm_memory": True if user_id else False,
-                # Extract host and port for screenshot middleware
-                "x-cua-host": vnc_url.split("://")[1].split(":")[0] if vnc_url and "://" in vnc_url else None,
-                "x-cua-port": vnc_url.split(":")[-1].rstrip("/") if vnc_url and ":" in vnc_url else None,
+                "x-cua-host": cua_host,
+                "x-cua-port": cua_port,
             }
         }
 
@@ -4558,14 +4606,35 @@ async def execute_workflow_stream_endpoint(websocket: WebSocket):
             "messages": [{"role": "user", "content": prompt}]
         }
 
+        # Parse host and port from VNC URL (same logic as task execution)
+        print(f"🔍 [Backend-Workflow] DEBUG: vnc_url RAW = {repr(vnc_url)}")
+        cua_host = None
+        cua_port = None
+        if vnc_url and "://" in vnc_url:
+            try:
+                after_protocol = vnc_url.split("://")[1]
+                print(f"🔍 [Backend-Workflow] DEBUG: after_protocol = {repr(after_protocol)}")
+                host_and_port = after_protocol.rstrip("/")
+                print(f"🔍 [Backend-Workflow] DEBUG: host_and_port = {repr(host_and_port)}")
+                if ":" in host_and_port:
+                    cua_host = host_and_port.split(":")[0]
+                    cua_port = host_and_port.split(":")[1]
+                else:
+                    cua_host = host_and_port
+                    cua_port = "80" if vnc_url.startswith("http://") else "443"
+            except Exception as e:
+                print(f"❌ [Backend-Workflow] ERROR parsing VNC URL: {e}")
+
+        print(f"🔍 [Backend-Workflow] DEBUG: FINAL cua_host = {repr(cua_host)}")
+        print(f"🔍 [Backend-Workflow] DEBUG: FINAL cua_port = {repr(cua_port)}")
+
         config = {
             "configurable": {
                 "user_id": user_id,
                 "cua_url": vnc_url,
                 "use_longterm_memory": True if user_id else False,
-                # Extract host and port for screenshot middleware
-                "x-cua-host": vnc_url.split("://")[1].split(":")[0] if vnc_url and "://" in vnc_url else None,
-                "x-cua-port": vnc_url.split(":")[-1].rstrip("/") if vnc_url and ":" in vnc_url else None,
+                "x-cua-host": cua_host,
+                "x-cua-port": cua_port,
             }
         }
 
