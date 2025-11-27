@@ -1654,11 +1654,11 @@ async def scrape_competitor_posts(
         user_client = await get_user_vnc_client(user_id)
 
         # Check if scraping is already in progress (prevent concurrent scraping)
+        import time
         progress_namespace = (user_id, "discovery_progress")
         existing_progress = store.get(progress_namespace, "current")
         if existing_progress and existing_progress.value.get("stage") == "scraping_posts":
             # Check if it's been stuck for more than 10 minutes (stale lock)
-            import time
             started_at = existing_progress.value.get("started_at", 0)
             if time.time() - started_at < 600:  # 10 minutes
                 print("⚠️ Scraping already in progress, ignoring duplicate request")
@@ -1670,7 +1670,6 @@ async def scrape_competitor_posts(
                 print("⚠️ Found stale scraping lock (>10 min old), clearing it...")
 
         # Set initial progress with timestamp
-        import time
         store.put(progress_namespace, "current", {
             "stage": "scraping_posts",
             "status": "starting",
@@ -1817,8 +1816,8 @@ async def scrape_competitor_posts(
                 "total": 0,
                 "error": str(e)
             })
-        except:
-            pass  # Don't fail if we can't clear the lock
+        except Exception as clear_error:
+            print(f"⚠️ Failed to clear progress lock: {clear_error}")
 
         return {
             "success": False,
