@@ -60,28 +60,21 @@ echo ""
 echo "✅ Image pushed to GCR"
 echo ""
 
-# Step 3: Fetch secrets from Google Secret Manager
-echo "🔐 Fetching secrets from Secret Manager..."
-ANTHROPIC_KEY=$(gcloud secrets versions access latest --secret=anthropic-api-key --project=$PROJECT_ID)
-OPENAI_KEY=$(gcloud secrets versions access latest --secret=openai-api-key --project=$PROJECT_ID 2>/dev/null || echo "")
-LANGSMITH_KEY=$(gcloud secrets versions access latest --secret=langsmith-api-key --project=$PROJECT_ID 2>/dev/null || echo "")
-
-# Get POSTGRES_URI (LangGraph uses POSTGRES_URI, not DATABASE_URL!)
+# Step 3: Get POSTGRES_URI value
+echo "🔐 Fetching database connection string..."
 POSTGRES_URI=$(gcloud secrets versions access latest --secret=postgres-uri --project=$PROJECT_ID 2>/dev/null || gcloud secrets versions access latest --secret=database-url --project=$PROJECT_ID 2>/dev/null || echo "postgresql://postgres:ParallelUniverse2024!@10.97.0.3:5432/parallel_universe_db")
 
-echo "✅ Secrets retrieved"
+echo "✅ Database URI retrieved"
 echo ""
 
 # Step 4: Deploy to Cloud Run
 echo "🚀 Deploying to Cloud Run..."
 
-# Environment variables for LangGraph service
+# Environment variables for LangGraph service (non-secret values only)
 ENV_VARS="POSTGRES_URI=$POSTGRES_URI"
+ENV_VARS="$ENV_VARS,REDIS_URI=redis://10.110.183.147:6379"
 ENV_VARS="$ENV_VARS,REDIS_HOST=10.110.183.147"
 ENV_VARS="$ENV_VARS,GCP_PROJECT_ID=$PROJECT_ID"
-ENV_VARS="$ENV_VARS,ANTHROPIC_API_KEY=$ANTHROPIC_KEY"
-[ -n "$OPENAI_KEY" ] && ENV_VARS="$ENV_VARS,OPENAI_API_KEY=$OPENAI_KEY"
-[ -n "$LANGSMITH_KEY" ] && ENV_VARS="$ENV_VARS,LANGSMITH_API_KEY=$LANGSMITH_KEY"
 
 gcloud run deploy "$SERVICE_NAME" \
   --image="$IMAGE_TAG" \
@@ -90,6 +83,7 @@ gcloud run deploy "$SERVICE_NAME" \
   --allow-unauthenticated \
   --vpc-connector=paralleluniverse-vpc \
   --set-env-vars="$ENV_VARS" \
+  --update-secrets="ANTHROPIC_API_KEY=anthropic-api-key:latest,OPENAI_API_KEY=openai-api-key:latest,LANGSMITH_API_KEY=langsmith-api-key:latest" \
   --memory=4Gi \
   --cpu=2 \
   --timeout=3600 \
