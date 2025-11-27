@@ -1653,49 +1653,55 @@ async def scrape_competitor_posts(
         # Get per-user VNC client (enables multi-user scaling)
         user_client = await get_user_vnc_client(user_id)
 
-        # Check if scraping is already in progress (prevent concurrent scraping)
-        # Use atomic check-and-set pattern to prevent race conditions
+        # Constants for lock management
+        STALE_LOCK_TIMEOUT_SECONDS = 600  # 10 minutes
+        MAX_COMPETITORS_TO_SCRAPE = 20
+
+        # Distributed lock using Redis (atomic SETNX operation)
+        # This prevents race conditions that can occur with store.put() + store.get()
         import time
         import uuid
-        progress_namespace = (user_id, "discovery_progress")
 
-        # Generate unique request ID for this scraping attempt
+        redis_host = os.getenv("REDIS_HOST", "localhost")
+        redis_port = int(os.getenv("REDIS_PORT", "6379"))
+        redis_client = aioredis.Redis(host=redis_host, port=redis_port, decode_responses=True)
+
         request_id = str(uuid.uuid4())
-        current_time = time.time()
+        lock_key = f"lock:scrape_posts:{user_id}"
 
-        existing_progress = store.get(progress_namespace, "current")
-        if existing_progress and existing_progress.value.get("stage") == "scraping_posts":
-            # Check if it's been stuck for more than 10 minutes (stale lock)
-            started_at = existing_progress.value.get("started_at", 0)
-            existing_request_id = existing_progress.value.get("request_id")
+        try:
+            # Atomic lock acquisition with auto-expiration
+            # Returns True if lock acquired, False if already held
+            lock_acquired = await redis_client.set(
+                lock_key,
+                request_id,
+                nx=True,  # Only set if not exists (atomic check-and-set)
+                ex=STALE_LOCK_TIMEOUT_SECONDS  # Auto-expire to prevent stuck locks
+            )
 
-            if current_time - started_at < 600:  # 10 minutes
-                print(f"⚠️ Scraping already in progress (request {existing_request_id}), rejecting duplicate")
+            if not lock_acquired:
+                # Check who owns the lock (for debugging)
+                existing_lock = await redis_client.get(lock_key)
+                print(f"⚠️ Scraping already in progress (lock held by request {existing_lock})")
+                await redis_client.aclose()
                 return {
                     "success": False,
                     "error": "Scraping is already in progress. Please wait for it to complete."
                 }
-            else:
-                print(f"⚠️ Found stale scraping lock (>10 min old, request {existing_request_id}), acquiring...")
 
-        # Atomically set lock with our request ID
-        store.put(progress_namespace, "current", {
-            "stage": "scraping_posts",
-            "status": "starting",
-            "current": 0,
-            "total": 0,
-            "started_at": current_time,
-            "request_id": request_id  # Track which request owns the lock
-        })
+            print(f"🔒 Acquired scraping lock for user {user_id} (request {request_id})")
 
-        # Verify we got the lock (handle race condition)
-        lock_check = store.get(progress_namespace, "current")
-        if lock_check and lock_check.value.get("request_id") != request_id:
-            print(f"⚠️ Lost lock race to request {lock_check.value.get('request_id')}, aborting")
+        except Exception as lock_error:
+            print(f"❌ Failed to acquire Redis lock: {lock_error}")
+            await redis_client.aclose()
             return {
                 "success": False,
-                "error": "Another scraping request started concurrently. Please try again."
+                "error": "Failed to acquire lock. Please try again."
             }
+
+        # Store progress state (non-critical, for UI updates)
+        progress_namespace = (user_id, "discovery_progress")
+        current_time = time.time()
 
         builder = SocialGraphBuilder(store, user_id)
         graph = builder.get_graph()
@@ -1720,12 +1726,12 @@ async def scrape_competitor_posts(
             top_competitors = [c for c in all_competitors if c['username'] in filtered_usernames]
             print(f"📝 Scraping {len(top_competitors)} filtered competitors")
         else:
-            # Sort by overlap and take top 20 to avoid scraping for hours
+            # Sort by overlap and take top N to avoid scraping for hours
             top_competitors = sorted(
                 all_competitors,
                 key=lambda x: x['overlap_percentage'],
                 reverse=True
-            )[:20]
+            )[:MAX_COMPETITORS_TO_SCRAPE]
 
         # Initialize scraper with per-user client
         scraper = SocialGraphScraper(user_client)
@@ -1814,6 +1820,20 @@ async def scrape_competitor_posts(
             "message": f"Scraped {scraped_count} competitors"
         })
 
+        # Release Redis lock
+        try:
+            # Only delete if we still own the lock (check request_id)
+            current_lock = await redis_client.get(lock_key)
+            if current_lock == request_id:
+                await redis_client.delete(lock_key)
+                print(f"🔓 Released scraping lock for user {user_id}")
+            else:
+                print(f"⚠️ Lock already released or taken over by another request")
+        except Exception as unlock_error:
+            print(f"⚠️ Failed to release lock: {unlock_error}")
+        finally:
+            await redis_client.aclose()
+
         return {
             "success": True,
             "graph": graph,
@@ -1836,7 +1856,21 @@ async def scrape_competitor_posts(
                 "error": str(e)
             })
         except Exception as clear_error:
-            print(f"⚠️ Failed to clear progress lock: {clear_error}")
+            print(f"⚠️ Failed to clear progress state: {clear_error}")
+
+        # Release Redis lock on error
+        try:
+            current_lock = await redis_client.get(lock_key)
+            if current_lock == request_id:
+                await redis_client.delete(lock_key)
+                print(f"🔓 Released scraping lock after error for user {user_id}")
+        except Exception as unlock_error:
+            print(f"⚠️ Failed to release lock on error: {unlock_error}")
+        finally:
+            try:
+                await redis_client.aclose()
+            except:
+                pass  # Ignore close errors
 
         return {
             "success": False,
