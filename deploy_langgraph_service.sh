@@ -71,7 +71,9 @@ echo ""
 echo "🚀 Deploying to Cloud Run..."
 
 # Environment variables for LangGraph service (non-secret values only)
-ENV_VARS="POSTGRES_URI=$POSTGRES_URI"
+# DATABASE_URI is required for LangGraph to auto-provision the store
+ENV_VARS="DATABASE_URI=$POSTGRES_URI"
+ENV_VARS="$ENV_VARS,POSTGRES_URI=$POSTGRES_URI"
 ENV_VARS="$ENV_VARS,REDIS_URI=redis://10.110.183.147:6379"
 ENV_VARS="$ENV_VARS,REDIS_HOST=10.110.183.147"
 ENV_VARS="$ENV_VARS,GCP_PROJECT_ID=$PROJECT_ID"

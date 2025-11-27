@@ -738,21 +738,10 @@ def create_x_growth_agent(config: dict = None):
     user_memory = None
 
     # Initialize store for long-term memory
-    # When deployed on LangGraph Cloud, store is auto-provisioned
-    # For local development, we use InMemoryStore as fallback
+    # When deployed on LangGraph, store is auto-provisioned via langgraph.json + DATABASE_URI
+    # No need to check or initialize - LangGraph handles it automatically
     store_for_agent = store
-    if store_for_agent is None and use_longterm_memory:
-        # Check if running in production (LangGraph Cloud)
-        import os
-        is_production = os.getenv("LANGGRAPH_CLOUD") == "true" or os.getenv("K_SERVICE") is not None
 
-        if is_production:
-            raise RuntimeError(
-                "CRITICAL: Store not initialized in production environment. "
-                "Action history will be lost! Check LangGraph Cloud store configuration."
-            )
-
-  
     if user_id and store_for_agent:
 
         # Initialize user memory
@@ -932,76 +921,4 @@ def run_workflow(workflow_name: str, **params):
     
     print("\n✅ Workflow complete!")
     return result
-
-
-if __name__ == "__main__":
-    # Set your API key
-    if "ANTHROPIC_API_KEY" not in os.environ:
-        print("⚠️  Please set ANTHROPIC_API_KEY environment variable")
-        exit(1)
-    
-    print("=" * 60)
-    print("🤖 X Growth Agent - Examples")
-    print("=" * 60)
-    
-    # Example 1: Basic agent (no user memory)
-    print("\n📝 Example 1: Basic Agent (no user memory)")
-    print("-" * 60)
-    agent = create_x_growth_agent()
-    print("✅ Basic agent created")
-    
-    # Example 2: Agent with user-specific memory
-    print("\n📝 Example 2: Agent with User Memory")
-    print("-" * 60)
-    from langgraph.store.memory import InMemoryStore
-    from x_user_memory import XUserMemory, UserPreferences
-    
-    # Create store
-    store = InMemoryStore()
-    user_id = "user_123"
-    
-    # Set up user preferences
-    user_memory = XUserMemory(store, user_id)
-    preferences = UserPreferences(
-        user_id=user_id,
-        niche=["AI", "LangChain", "agents"],
-        target_audience="AI/ML practitioners",
-        growth_goal="build authority",
-        engagement_style="thoughtful_expert",
-        tone="professional",
-        daily_limits={"likes": 50, "comments": 20},
-        optimal_times=["9-11am EST", "7-9pm EST"],
-        avoid_topics=["politics", "religion"]
-    )
-    user_memory.save_preferences(preferences)
-    print(f"✅ User preferences saved for {user_id}")
-    
-    # Create agent with user memory
-    agent = create_x_growth_agent(config={
-        "configurable": {
-            "user_id": user_id,
-            "store": store,
-            "use_longterm_memory": True
-        }
-    })
-    print(f"✅ Agent created with user-specific memory")
-    print(f"   Niche: {preferences.niche}")
-    print(f"   Goal: {preferences.growth_goal}")
-    
-    # Example 3: Run workflow with user memory
-    print("\n📝 Example 3: Run Workflow with User Memory")
-    print("-" * 60)
-    print("🎯 Running engagement workflow...")
-    print("   (Agent will use user preferences and check memory)")
-    
-    # List available workflows
-    print("\n📋 Available Workflows:")
-    for name, workflow in WORKFLOWS.items():
-        print(f"  • {name}: {workflow.goal}")
-    
-    print("\n" + "=" * 60)
-    print("✅ Examples complete!")
-    print("\nTo run a workflow:")
-    print("  result = run_workflow('engagement', keywords='AI agents')")
-    print("=" * 60)
 
