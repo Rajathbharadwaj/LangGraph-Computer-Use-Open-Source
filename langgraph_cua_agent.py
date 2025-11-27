@@ -12,7 +12,7 @@ from langchain_core.runnables import RunnableConfig
 from langchain_openai import ChatOpenAI
 from langgraph.prebuilt import create_react_agent
 from langgraph.graph import StateGraph, MessagesState
-from langgraph.checkpoint.memory import MemorySaver
+from langgraph.checkpoint.sqlite import SqliteSaver
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -67,7 +67,8 @@ When interacting with the computer:
 """
     
     # Create the agent with better configuration
-    memory = MemorySaver()
+    # Use SqliteSaver for file-based persistence instead of in-memory storage
+    memory = SqliteSaver.from_conn_string("checkpoints.sqlite")
     agent = create_react_agent(
         llm,
         tools,
