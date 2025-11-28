@@ -75,6 +75,14 @@ async def screenshot_middleware(
         print(f"🔥 [Middleware] cua_url: {repr(cua_url)}")
         print("=" * 80)
 
+        # AGGRESSIVE DEBUG: Check conditional logic
+        print(f"🔍 [DEBUG] Checking conditional logic:")
+        print(f"🔍 [DEBUG] cua_host is None? {cua_host is None}")
+        print(f"🔍 [DEBUG] cua_port is None? {cua_port is None}")
+        print(f"🔍 [DEBUG] x_user_id exists? {x_user_id is not None}")
+        print(f"🔍 [DEBUG] not (cua_host and cua_port)? {not (cua_host and cua_port)}")
+        print(f"🔍 [DEBUG] Full condition? {not (cua_host and cua_port) and x_user_id}")
+
         # If cua_host/port not provided, try to fetch VNC URL from backend using x-user-id
         if not (cua_host and cua_port) and x_user_id:
             print(f"🔍 [Middleware] Fetching VNC URL from backend for user: {x_user_id}")
@@ -118,7 +126,10 @@ async def screenshot_middleware(
         import aiohttp
         import asyncio
 
-        base_url = f"http://{cua_host}:{cua_port}"
+        # Use HTTPS for port 443, HTTP otherwise
+        protocol = "https" if cua_port == "443" else "http"
+        base_url = f"{protocol}://{cua_host}:{cua_port}"
+        print(f"🔍 [Middleware] Using base_url: {base_url}")
 
         # 📸 Take screenshot BEFORE action
         print(f"📸 [Middleware] Taking BEFORE screenshot for {tool_name}")
