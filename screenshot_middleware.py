@@ -65,17 +65,53 @@ async def screenshot_middleware(
         cua_host = configurable.get('x-cua-host')
         cua_port = configurable.get('x-cua-port')
         user_id = configurable.get('user_id')
+        x_user_id = configurable.get('x-user-id')  # Clerk user ID from frontend
         cua_url = configurable.get('cua_url')
 
         print(f"🔥 [Middleware] cua_host: {repr(cua_host)}")
         print(f"🔥 [Middleware] cua_port: {repr(cua_port)}")
         print(f"🔥 [Middleware] user_id: {repr(user_id)}")
+        print(f"🔥 [Middleware] x_user_id: {repr(x_user_id)}")
         print(f"🔥 [Middleware] cua_url: {repr(cua_url)}")
         print("=" * 80)
 
+        # If cua_host/port not provided, try to fetch VNC URL from backend using x-user-id
+        if not (cua_host and cua_port) and x_user_id:
+            print(f"🔍 [Middleware] Fetching VNC URL from backend for user: {x_user_id}")
+            try:
+                import aiohttp
+                import os
+
+                # Get backend URL from environment
+                backend_url = os.environ.get('BACKEND_URL', 'https://backend-api-644185288504.us-central1.run.app')
+
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(f"{backend_url}/api/vnc/session/{x_user_id}") as response:
+                        if response.status == 200:
+                            vnc_data = await response.json()
+                            vnc_url = vnc_data.get('https_url') or vnc_data.get('service_url')
+
+                            if vnc_url and "://" in vnc_url:
+                                # Parse host and port
+                                after_protocol = vnc_url.split("://")[1]
+                                host_and_port = after_protocol.rstrip("/")
+                                if ":" in host_and_port:
+                                    cua_host = host_and_port.split(":")[0]
+                                    cua_port = host_and_port.split(":")[1]
+                                else:
+                                    cua_host = host_and_port
+                                    cua_port = "80" if vnc_url.startswith("http://") else "443"
+
+                                print(f"✅ [Middleware] Fetched VNC URL: {vnc_url}")
+                                print(f"✅ [Middleware] Parsed - host: {cua_host}, port: {cua_port}")
+                        else:
+                            print(f"⚠️ [Middleware] Backend returned status {response.status}")
+            except Exception as e:
+                print(f"❌ [Middleware] Error fetching VNC URL: {e}")
+
         if not (cua_host and cua_port):
             # No Playwright client configured, execute tool normally
-            print("⚠️ [Middleware] No cua_host/cua_port found, passing through")
+            print("⚠️ [Middleware] No cua_host/cua_port found after all attempts, passing through")
             return await handler(request)
 
         # Import here to avoid circular dependencies
