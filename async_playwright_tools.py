@@ -21,6 +21,9 @@ from pydantic import BaseModel, Field
 # Import ToolRuntime for per-user context injection
 from langchain.tools import ToolRuntime
 
+# Import AsyncExtensionClient for premium status checks
+from async_extension_tools import AsyncExtensionClient
+
 
 @dataclass
 class CUAContext:
@@ -1990,17 +1993,26 @@ async def create_post_on_x(post_text: str, runtime: ToolRuntime) -> str:
         result = await create_post_on_x("Hello world! 🌍")
     """
     try:
-        # Validate post length BEFORE posting
-        if len(post_text) > 280:
-            return f"""❌ Post Too Long!
-Length: {len(post_text)} characters
-Max: 280 characters (for non-premium X accounts)
-Exceeds by: {len(post_text) - 280} characters
-
-Please SHORTEN your post and try again."""
-
+        # Check if post is empty first
         if len(post_text.strip()) == 0:
             return "❌ Post is empty! Please provide text content."
+
+        # Check premium status to determine character limit
+        extension_client = AsyncExtensionClient()
+        premium_check = await extension_client._request("GET", "/extension/premium_status")
+        char_limit = 280  # Default to non-premium
+        if premium_check.get("success"):
+            char_limit = premium_check.get("character_limit", 280)
+
+        # Validate post length BEFORE posting
+        if len(post_text) > char_limit:
+            account_type = "premium" if char_limit == 25000 else "non-premium"
+            return f"""❌ Post Too Long!
+Length: {len(post_text)} characters
+Max: {char_limit:,} characters (for {account_type} X accounts)
+Exceeds by: {len(post_text) - char_limit} characters
+
+Please SHORTEN your post and try again."""
 
         client = _get_client(runtime)
 

@@ -464,7 +464,18 @@ async def session_health(user_id: str = "default"):
     command = {
         "type": "CHECK_SESSION_HEALTH"
     }
-    
+
+    response = await send_to_extension(user_id, command)
+    return response
+
+
+@app.get("/extension/premium_status")
+async def premium_status(user_id: str = "default"):
+    """Check if current X account has Premium/Blue subscription"""
+    command = {
+        "type": "CHECK_PREMIUM_STATUS"
+    }
+
     response = await send_to_extension(user_id, command)
     return response
 

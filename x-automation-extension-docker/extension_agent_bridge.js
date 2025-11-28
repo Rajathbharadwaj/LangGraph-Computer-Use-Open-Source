@@ -124,7 +124,11 @@ async function handleCommand(command) {
       case 'FIND_HIGH_ENGAGEMENT_POSTS':
         result = await findHighEngagementPosts(command.topic, command.limit);
         break;
-        
+
+      case 'CHECK_PREMIUM_STATUS':
+        result = await checkPremiumStatus();
+        break;
+
       default:
         throw new Error(`Unknown command type: ${type}`);
     }
@@ -424,15 +428,15 @@ async function extractAccountInsights(username) {
  */
 async function checkSessionHealth() {
   console.log('🏥 Checking session health');
-  
+
   // Check if logged in
   const profileButton = document.querySelector('[data-testid="SideNav_AccountSwitcher_Button"]');
   const isLoggedIn = !!profileButton;
-  
+
   // Get username
   const profileLink = document.querySelector('a[href^="/"][aria-label*="Profile"]');
   const username = profileLink?.getAttribute('href')?.replace('/', '') || 'Unknown';
-  
+
   return {
     health: {
       is_healthy: isLoggedIn,
@@ -442,6 +446,93 @@ async function checkSessionHealth() {
       cookies_valid: isLoggedIn,
       account_status: isLoggedIn ? 'Active' : 'Unknown'
     }
+  };
+}
+
+/**
+ * Check if the current account has X Premium
+ */
+async function checkPremiumStatus() {
+  console.log('💎 Checking X Premium status');
+
+  let isPremium = false;
+  let detectionMethod = 'none';
+  let characterLimit = 280;
+
+  // Method 1: Check for verification badge on profile
+  const verifiedBadge = document.querySelector('[data-testid="icon-verified"]');
+  if (verifiedBadge) {
+    isPremium = true;
+    detectionMethod = 'verified_badge';
+    characterLimit = 25000;
+    console.log('✅ Premium detected via verified badge');
+  }
+
+  // Method 2: Check compose box character counter
+  if (!isPremium) {
+    const composeBox = document.querySelector('[data-testid="tweetTextarea_0"]');
+    if (composeBox) {
+      // Type a test string and check the character counter
+      const originalValue = composeBox.value;
+      composeBox.value = 'a'.repeat(281); // 281 chars (exceeds non-premium limit)
+      composeBox.dispatchEvent(new Event('input', { bubbles: true }));
+
+      // Wait for counter to update
+      await new Promise(resolve => setTimeout(resolve, 100));
+
+      // Check if post button is still enabled (would be disabled for non-premium)
+      const postButton = document.querySelector('[data-testid="tweetButtonInline"]') ||
+                        document.querySelector('[data-testid="tweetButton"]');
+
+      if (postButton && !postButton.disabled) {
+        isPremium = true;
+        detectionMethod = 'character_counter';
+        characterLimit = 25000;
+        console.log('✅ Premium detected via character counter');
+      }
+
+      // Restore original value
+      composeBox.value = originalValue;
+      composeBox.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+  }
+
+  // Method 3: Check for "Premium" or "Blue" text in navigation/profile
+  if (!isPremium) {
+    const navItems = document.querySelectorAll('[role="link"], [role="menuitem"]');
+    for (const item of navItems) {
+      const text = item.innerText?.toLowerCase() || '';
+      if (text.includes('premium') || text.includes('blue')) {
+        isPremium = true;
+        detectionMethod = 'navigation_text';
+        characterLimit = 25000;
+        console.log('✅ Premium detected via navigation text');
+        break;
+      }
+    }
+  }
+
+  // Method 4: Check Settings page for Premium features (if on settings page)
+  if (!isPremium && window.location.href.includes('/settings')) {
+    const premiumSection = document.querySelector('[data-testid="premium_section"]') ||
+                          Array.from(document.querySelectorAll('span')).find(el =>
+                            el.innerText?.includes('Premium')
+                          );
+    if (premiumSection) {
+      isPremium = true;
+      detectionMethod = 'settings_page';
+      characterLimit = 25000;
+      console.log('✅ Premium detected via settings page');
+    }
+  }
+
+  console.log(`💎 Premium Status: ${isPremium ? 'YES' : 'NO'} (detected via: ${detectionMethod})`);
+  console.log(`📝 Character Limit: ${characterLimit}`);
+
+  return {
+    is_premium: isPremium,
+    character_limit: characterLimit,
+    detection_method: detectionMethod
   };
 }
 
