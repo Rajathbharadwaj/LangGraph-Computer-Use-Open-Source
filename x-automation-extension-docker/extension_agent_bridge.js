@@ -683,5 +683,39 @@ function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
+// Listen for messages from popup
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message.action === 'CHECK_PREMIUM') {
+    // Call the premium check function and send response
+    checkPremiumStatus().then(result => {
+      sendResponse({
+        success: true,
+        is_premium: result.is_premium,
+        character_limit: result.character_limit,
+        detection_method: result.detection_method
+      });
+    }).catch(error => {
+      sendResponse({
+        success: false,
+        error: error.message
+      });
+    });
+    return true; // Keep the message channel open for async response
+  }
+
+  if (message.action === 'CHECK_LOGIN') {
+    // Check if user is logged in
+    const profileButton = document.querySelector('[data-testid="SideNav_AccountSwitcher_Button"]');
+    const profileLink = document.querySelector('a[href^="/"][aria-label*="Profile"]');
+    const username = profileLink?.getAttribute('href')?.replace('/', '') || 'Unknown';
+
+    sendResponse({
+      loggedIn: !!profileButton,
+      username: username
+    });
+    return true;
+  }
+});
+
 console.log('✅ Extension Agent Bridge ready');
 
