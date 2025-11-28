@@ -1981,7 +1981,7 @@ async def create_post_on_x(post_text: str, runtime: ToolRuntime) -> str:
     This uses real keyboard typing to properly interact with React's contenteditable.
 
     Args:
-        post_text: The text content to post (max 280 characters)
+        post_text: The text content to post (max 280 characters for non-premium accounts)
 
     Returns:
         Success message if posted, error message if failed
@@ -1990,6 +1990,18 @@ async def create_post_on_x(post_text: str, runtime: ToolRuntime) -> str:
         result = await create_post_on_x("Hello world! 🌍")
     """
     try:
+        # Validate post length BEFORE posting
+        if len(post_text) > 280:
+            return f"""❌ Post Too Long!
+Length: {len(post_text)} characters
+Max: 280 characters (for non-premium X accounts)
+Exceeds by: {len(post_text) - 280} characters
+
+Please SHORTEN your post and try again."""
+
+        if len(post_text.strip()) == 0:
+            return "❌ Post is empty! Please provide text content."
+
         client = _get_client(runtime)
 
         result = await client._request(

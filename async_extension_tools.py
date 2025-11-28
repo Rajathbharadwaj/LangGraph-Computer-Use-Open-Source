@@ -491,7 +491,7 @@ These posts have the highest engagement potential!"""
 
         Args:
             post_identifier: Author name or content snippet to identify the post (e.g., "@elonmusk SpaceX")
-            comment_text: The text of your comment/reply
+            comment_text: The text of your comment/reply (max 280 characters for non-premium accounts)
 
         Returns:
         - Success/failure status
@@ -503,6 +503,18 @@ These posts have the highest engagement potential!"""
         ⚡ This is the PREFERRED method for commenting - much more accurate than Playwright!
         """
         try:
+            # Validate comment length BEFORE posting
+            if len(comment_text) > 280:
+                return f"""❌ Comment Too Long!
+Length: {len(comment_text)} characters
+Max: 280 characters (for non-premium X accounts)
+Exceeds by: {len(comment_text) - 280} characters
+
+Please SHORTEN your comment and try again."""
+
+            if len(comment_text.strip()) == 0:
+                return "❌ Comment is empty! Please provide text content."
+
             result = await _global_extension_client._request("POST", "/extension/comment", {
                 "post_identifier": post_identifier,
                 "comment_text": comment_text
