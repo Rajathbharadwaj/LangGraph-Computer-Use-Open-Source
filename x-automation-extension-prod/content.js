@@ -242,10 +242,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     });
     return true;
   }
-  
-  // Unknown action
-  sendResponse({ success: false, error: 'Unknown action' });
-  return true;
+
+  // Don't respond to unknown actions - let other listeners handle them
+  return false;
 });
 
 // Notify background script that content script is ready

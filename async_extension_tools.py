@@ -393,7 +393,48 @@ Recommended action: {health.get('recommended_action', 'Re-authenticate')}
                 return f"❌ Failed to check session: {result.get('error', 'Unknown error')}"
         except Exception as e:
             return f"❌ Extension tool failed: {str(e)}"
-    
+
+    @tool
+    async def check_premium_status() -> str:
+        """
+        Check if the current X account has Premium/Blue subscription.
+        This determines the character limit for posts and comments.
+
+        Returns:
+        - is_premium: Boolean indicating if account has Premium
+        - character_limit: 280 for non-premium, 25000 for premium
+        - detection_method: How premium status was detected
+
+        IMPORTANT: Call this BEFORE posting or commenting to validate character limits!
+        """
+        try:
+            result = await _global_extension_client._request("GET", "/extension/premium_status")
+
+            if result.get("success"):
+                is_premium = result.get("is_premium", False)
+                char_limit = result.get("character_limit", 280)
+                detection = result.get("detection_method", "none")
+
+                if is_premium:
+                    return f"""✅ X Premium Account Detected
+Character Limit: {char_limit:,} characters
+Detection Method: {detection}
+
+You can post up to 25,000 characters! 💎"""
+                else:
+                    return f"""📝 Standard X Account
+Character Limit: {char_limit} characters
+Detection Method: {detection}
+
+Posts and comments must be ≤ 280 characters."""
+            else:
+                # Default to non-premium if check fails (safer to be conservative)
+                return f"""⚠️ Could not detect premium status: {result.get('error', 'Unknown error')}
+Defaulting to standard account limits (280 characters) to be safe."""
+        except Exception as e:
+            # Default to non-premium if error (safer)
+            return f"❌ Extension tool failed: {str(e)}. Defaulting to 280 character limit."
+
     @tool
     async def get_trending_topics() -> str:
         """
@@ -491,7 +532,7 @@ These posts have the highest engagement potential!"""
 
         Args:
             post_identifier: Author name or content snippet to identify the post (e.g., "@elonmusk SpaceX")
-            comment_text: The text of your comment/reply
+            comment_text: The text of your comment/reply (max 280 characters for non-premium accounts)
 
         Returns:
         - Success/failure status
@@ -503,6 +544,26 @@ These posts have the highest engagement potential!"""
         ⚡ This is the PREFERRED method for commenting - much more accurate than Playwright!
         """
         try:
+            # Check if comment is empty first
+            if len(comment_text.strip()) == 0:
+                return "❌ Comment is empty! Please provide text content."
+
+            # Check premium status to determine character limit
+            premium_check = await _global_extension_client._request("GET", "/extension/premium_status")
+            char_limit = 280  # Default to non-premium
+            if premium_check.get("success"):
+                char_limit = premium_check.get("character_limit", 280)
+
+            # Validate comment length BEFORE posting
+            if len(comment_text) > char_limit:
+                account_type = "premium" if char_limit == 25000 else "non-premium"
+                return f"""❌ Comment Too Long!
+Length: {len(comment_text)} characters
+Max: {char_limit:,} characters (for {account_type} X accounts)
+Exceeds by: {len(comment_text) - char_limit} characters
+
+Please SHORTEN your comment and try again."""
+
             result = await _global_extension_client._request("POST", "/extension/comment", {
                 "post_identifier": post_identifier,
                 "comment_text": comment_text
@@ -557,15 +618,25 @@ Common issues:
         ⚡ This is the PREFERRED method for posting - uses the Docker VNC extension!
         """
         try:
-            # Validate post length
-            if len(post_text) > 280:
-                return f"""❌ Post Too Long!
-Length: {len(post_text)} characters
-Max: 280 characters
-Please shorten your post."""
-
+            # Check if post is empty first
             if len(post_text.strip()) == 0:
                 return "❌ Post is empty! Please provide text content."
+
+            # Check premium status to determine character limit
+            premium_check = await _global_extension_client._request("GET", "/extension/premium_status")
+            char_limit = 280  # Default to non-premium
+            if premium_check.get("success"):
+                char_limit = premium_check.get("character_limit", 280)
+
+            # Validate post length BEFORE posting
+            if len(post_text) > char_limit:
+                account_type = "premium" if char_limit == 25000 else "non-premium"
+                return f"""❌ Post Too Long!
+Length: {len(post_text)} characters
+Max: {char_limit:,} characters (for {account_type} X accounts)
+Exceeds by: {len(post_text) - char_limit} characters
+
+Please SHORTEN your post and try again."""
 
             # Use the Docker VNC extension (the one without cookies) for automation
             # First, get status to find which extension is connected
@@ -627,6 +698,7 @@ Common issues:
         monitor_action_result,
         extract_account_insights,
         check_session_health,
+        check_premium_status,
         get_trending_topics,
         find_high_engagement_posts,
         comment_on_post_via_extension,

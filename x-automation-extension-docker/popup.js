@@ -44,7 +44,7 @@ function checkStatus() {
     }
   });
   
-  // Check X login status
+  // Check X login status and premium status
   chrome.tabs.query({ url: ['https://x.com/*', 'https://twitter.com/*'] }, (tabs) => {
     if (tabs.length > 0) {
       chrome.tabs.sendMessage(tabs[0].id, { action: 'CHECK_LOGIN' }, (response) => {
@@ -56,8 +56,44 @@ function checkStatus() {
               X Account: <strong>@${response.username}</strong>
             </div>
           `;
+
+          // Check premium status
+          checkPremiumStatus(tabs[0].id);
         }
       });
+    }
+  });
+}
+
+function checkPremiumStatus(tabId) {
+  // Send message to content script to check premium status
+  chrome.tabs.sendMessage(tabId, { action: 'CHECK_PREMIUM' }, (response) => {
+    const premiumDiv = document.getElementById('premiumStatus');
+    const premiumText = document.getElementById('premiumText');
+    const charLimit = document.getElementById('charLimit');
+
+    if (response && response.success) {
+      const isPremium = response.is_premium;
+      const limit = response.character_limit;
+      const method = response.detection_method;
+
+      if (isPremium) {
+        premiumDiv.className = 'premium-status premium';
+        premiumDiv.querySelector('.premium-icon').textContent = '💎';
+        premiumText.textContent = 'X Premium Account';
+        charLimit.textContent = `Character limit: ${limit.toLocaleString()} chars`;
+      } else {
+        premiumDiv.className = 'premium-status standard';
+        premiumDiv.querySelector('.premium-icon').textContent = '📝';
+        premiumText.textContent = 'Standard X Account';
+        charLimit.textContent = `Character limit: ${limit} chars`;
+      }
+
+      // Add detection method as tooltip
+      premiumDiv.title = `Detected via: ${method}`;
+    } else {
+      // Could not detect - hide the status
+      premiumDiv.style.display = 'none';
     }
   });
 }

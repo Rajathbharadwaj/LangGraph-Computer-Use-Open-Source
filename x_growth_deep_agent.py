@@ -21,6 +21,55 @@ import deepagents_patch  # noqa: F401 - imported for side effects
 from deepagents import create_deep_agent
 from deepagents.backends import CompositeBackend, StateBackend, StoreBackend
 from screenshot_middleware import screenshot_middleware
+
+# Patch StoreBackend to use x-user-id for namespace instead of assistant_id
+# This ensures files are isolated per user, not per thread's assistant_id (which is a UUID)
+_original_get_namespace = StoreBackend._get_namespace
+
+def _custom_get_namespace(self):
+    """Get namespace using x-user-id from config instead of assistant_id."""
+    namespace_base = "filesystem"
+
+    # Try to get x-user-id from runtime config
+    runtime_cfg = getattr(self.runtime, "config", None)
+    if isinstance(runtime_cfg, dict):
+        # Check configurable first
+        user_id = runtime_cfg.get("configurable", {}).get("x-user-id")
+        if user_id:
+            print(f"🔧 [StoreBackend] Using namespace: ({user_id}, {namespace_base})")
+            return (user_id, namespace_base)
+
+        # Fallback to metadata
+        user_id = runtime_cfg.get("metadata", {}).get("x-user-id")
+        if user_id:
+            print(f"🔧 [StoreBackend] Using namespace from metadata: ({user_id}, {namespace_base})")
+            return (user_id, namespace_base)
+
+    # If no x-user-id found, fall back to original behavior
+    print(f"⚠️  [StoreBackend] No x-user-id found, falling back to default namespace")
+    return _original_get_namespace(self)
+
+StoreBackend._get_namespace = _custom_get_namespace
+
+# Add logging to StoreBackend operations for debugging
+_original_storebackend_read = StoreBackend.read
+_original_storebackend_write = StoreBackend.write
+
+def _logged_read(self, file_path, offset=0, limit=2000):
+    print(f"📖 [StoreBackend] Reading: {file_path}")
+    result = _original_storebackend_read(self, file_path, offset, limit)
+    success = not result.startswith("Error:")
+    print(f"{'✅' if success else '❌'} [StoreBackend] Read {file_path}: {len(result)} chars")
+    return result
+
+def _logged_write(self, file_path, content):
+    print(f"✍️ [StoreBackend] Writing: {file_path} ({len(content)} chars)")
+    result = _original_storebackend_write(self, file_path, content)
+    print(f"{'✅' if not result.error else '❌'} [StoreBackend] Write {file_path}: {result.error or 'success'}")
+    return result
+
+StoreBackend.read = _logged_read
+StoreBackend.write = _logged_write
 from langchain.chat_models import init_chat_model
 from langchain_core.tools import tool
 from langchain_community.tools import TavilySearchResults
@@ -920,17 +969,20 @@ Just call the tools normally - the style transfer happens AUTOMATICALLY inside t
     # Configure backend for persistent storage
     # /memories/* paths go to StoreBackend (persistent across threads)
     # Other paths go to StateBackend (ephemeral, lost when thread ends)
+    # NOTE: When deployed on LangGraph Platform, the store is automatically available
+    # via runtime.store, so we ALWAYS configure StoreBackend for /memories/
     def make_backend(runtime):
-        if store_for_agent:
-            return CompositeBackend(
-                default=StateBackend(runtime),  # Ephemeral storage
-                routes={
-                    "/memories/": StoreBackend(runtime)  # Persistent storage
-                }
-            )
-        else:
-            # No store available, use ephemeral only
-            return StateBackend(runtime)
+        print(f"🔧 [DeepAgents] Creating CompositeBackend with StoreBackend for /memories/")
+        print(f"🔧 [DeepAgents] runtime.store available: {runtime.store is not None}")
+        if runtime.store is not None:
+            print(f"🔧 [DeepAgents] Store type: {type(runtime.store).__name__}")
+
+        return CompositeBackend(
+            default=StateBackend(runtime),  # Ephemeral storage
+            routes={
+                "/memories/": StoreBackend(runtime)  # Persistent storage (uses runtime.store)
+            }
+        )
 
     # Create the main agent with vision capability
     agent = create_deep_agent(
