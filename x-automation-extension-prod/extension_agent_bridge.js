@@ -459,6 +459,112 @@ async function checkSessionHealth() {
 }
 
 /**
+ * Check if the current account has X Premium
+ */
+async function checkPremiumStatus() {
+  console.log('💎 Checking X Premium status');
+
+  let isPremium = false;
+  let detectionMethod = 'none';
+  let characterLimit = 280;
+
+  // Method 1: Check for verification badge on profile
+  const verifiedBadge = document.querySelector('[data-testid="icon-verified"]');
+  if (verifiedBadge) {
+    isPremium = true;
+    detectionMethod = 'verified_badge';
+    characterLimit = 25000;
+    console.log('✅ Premium detected via verified badge');
+  }
+
+  // Method 2: Check compose box character counter
+  if (!isPremium) {
+    const composeBox = document.querySelector('[data-testid="tweetTextarea_0"]');
+    if (composeBox) {
+      // Type a test string and check the character counter
+      const originalValue = composeBox.value;
+      composeBox.value = 'a'.repeat(281); // 281 chars (exceeds non-premium limit)
+      composeBox.dispatchEvent(new Event('input', { bubbles: true }));
+
+      // Wait for counter to update
+      await new Promise(resolve => setTimeout(resolve, 100));
+
+      // Check if post button is still enabled (would be disabled for non-premium)
+      const postButton = document.querySelector('[data-testid="tweetButtonInline"]') ||
+                        document.querySelector('[data-testid="tweetButton"]');
+
+      if (postButton && !postButton.disabled) {
+        isPremium = true;
+        detectionMethod = 'character_counter';
+        characterLimit = 25000;
+        console.log('✅ Premium detected via character counter');
+      }
+
+      // Restore original value
+      composeBox.value = originalValue;
+      composeBox.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+  }
+
+  // Method 3: Check for "Premium" in navigation sidebar (most reliable)
+  if (!isPremium) {
+    // Check sidebar navigation
+    const sidebar = document.querySelector('[data-testid="SideNav_AccountSwitcher_Button"]')?.closest('nav') ||
+                   document.querySelector('nav[aria-label="Primary"]');
+
+    if (sidebar) {
+      const sidebarText = sidebar.innerText?.toLowerCase() || '';
+      if (sidebarText.includes('premium') && !sidebarText.includes('upgrade to premium')) {
+        // Has "Premium" in sidebar (and it's not just the upgrade prompt)
+        isPremium = true;
+        detectionMethod = 'sidebar_premium_link';
+        characterLimit = 25000;
+        console.log('✅ Premium detected via sidebar Premium link');
+      }
+    }
+
+    // Also check all navigation links as fallback
+    if (!isPremium) {
+      const navItems = document.querySelectorAll('[role="link"], [role="menuitem"], a');
+      for (const item of navItems) {
+        const text = item.innerText?.toLowerCase() || '';
+        // Look for standalone "Premium" text (not "Upgrade to Premium")
+        if (text === 'premium' || (text.includes('premium') && !text.includes('upgrade'))) {
+          isPremium = true;
+          detectionMethod = 'navigation_premium_link';
+          characterLimit = 25000;
+          console.log('✅ Premium detected via Premium navigation link');
+          break;
+        }
+      }
+    }
+  }
+
+  // Method 4: Check Settings page for Premium features (if on settings page)
+  if (!isPremium && window.location.href.includes('/settings')) {
+    const premiumSection = document.querySelector('[data-testid="premium_section"]') ||
+                          Array.from(document.querySelectorAll('span')).find(el =>
+                            el.innerText?.includes('Premium')
+                          );
+    if (premiumSection) {
+      isPremium = true;
+      detectionMethod = 'settings_page';
+      characterLimit = 25000;
+      console.log('✅ Premium detected via settings page');
+    }
+  }
+
+  console.log(`💎 Premium Status: ${isPremium ? 'YES' : 'NO'} (detected via: ${detectionMethod})`);
+  console.log(`📝 Character Limit: ${characterLimit}`);
+
+  return {
+    is_premium: isPremium,
+    character_limit: characterLimit,
+    detection_method: detectionMethod
+  };
+}
+
+/**
  * Get trending topics
  */
 async function getTrendingTopics() {
@@ -725,6 +831,45 @@ function calculateAge(timestamp) {
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
+
+// Listen for messages from popup
+chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+  if (message.action === 'CHECK_PREMIUM') {
+    console.log('📩 Popup requested premium check');
+    console.log('📩 checkPremiumStatus function exists?', typeof checkPremiumStatus);
+
+    // Call the premium check function and send response
+    checkPremiumStatus().then(result => {
+      console.log('✅ checkPremiumStatus resolved with:', result);
+      sendResponse({
+        success: true,
+        is_premium: result.is_premium,
+        character_limit: result.character_limit,
+        detection_method: result.detection_method
+      });
+    }).catch(error => {
+      console.log('❌ checkPremiumStatus failed:', error);
+      sendResponse({
+        success: false,
+        error: error.message
+      });
+    });
+    return true; // Keep the message channel open for async response
+  }
+
+  if (message.action === 'CHECK_LOGIN') {
+    // Check if user is logged in
+    const profileButton = document.querySelector('[data-testid="SideNav_AccountSwitcher_Button"]');
+    const profileLink = document.querySelector('a[href^="/"][aria-label*="Profile"]');
+    const username = profileLink?.getAttribute('href')?.replace('/', '') || 'Unknown';
+
+    sendResponse({
+      loggedIn: !!profileButton,
+      username: username
+    });
+    return true;
+  }
+});
 
 console.log('✅ Extension Agent Bridge ready');
 

@@ -91,26 +91,87 @@ function checkXLoginStatus() {
   // Check X login status
   chrome.tabs.query({ url: ['https://x.com/*', 'https://twitter.com/*'] }, (tabs) => {
     if (tabs && tabs.length > 0) {
-      chrome.tabs.sendMessage(tabs[0].id, { action: 'CHECK_LOGIN' }, (response) => {
-        if (chrome.runtime.lastError) {
-          // Content script not ready
-          updateStatusUI('connected', 'Connected', 'Open x.com to sync account');
-          hideAccountInfo();
-          return;
-        }
+      // Wait a bit for content script to be ready
+      setTimeout(() => {
+        chrome.tabs.sendMessage(tabs[0].id, { action: 'CHECK_LOGIN' }, (response) => {
+          if (chrome.runtime.lastError) {
+            // Content script not ready
+            updateStatusUI('connected', 'Connected', 'Open x.com to sync account');
+            hideAccountInfo();
+            return;
+          }
 
-        if (response && response.loggedIn) {
-          updateStatusUI('connected', 'Connected', 'Account synced');
-          showAccountInfo(response.username, response.displayName);
-        } else {
-          updateStatusUI('connected', 'Connected', 'Please log into X');
-          hideAccountInfo();
-        }
-      });
+          if (response && response.loggedIn) {
+            console.log('🔵 User logged in, updating UI and checking premium');
+            updateStatusUI('connected', 'Connected', 'Account synced');
+            showAccountInfo(response.username, response.displayName);
+
+            // Check premium status
+            console.log('🔵 About to call checkPremiumStatus with tab:', tabs[0].id);
+            checkPremiumStatus(tabs[0].id);
+          } else {
+            updateStatusUI('connected', 'Connected', 'Please log into X');
+            hideAccountInfo();
+          }
+        });
+      }, 100); // Give content script 100ms to load
     } else {
       // No X tabs open
       updateStatusUI('connected', 'Connected', 'Open x.com to sync account');
       hideAccountInfo();
+    }
+  });
+}
+
+function checkPremiumStatus(tabId) {
+  console.log('💎 checkPremiumStatus called with tabId:', tabId);
+
+  // Send message to content script to check premium status
+  chrome.tabs.sendMessage(tabId, { action: 'CHECK_PREMIUM' }, (response) => {
+    console.log('💎 Received response from content script:', response);
+    console.log('💎 Response details - success:', response?.success, 'is_premium:', response?.is_premium, 'limit:', response?.character_limit);
+    if (response?.error) {
+      console.log('❌ Error from content script:', response.error);
+    }
+
+    const premiumDiv = document.getElementById('premiumStatus');
+    const premiumText = document.getElementById('premiumText');
+    const charLimit = document.getElementById('charLimit');
+
+    console.log('💎 Found elements:', { premiumDiv, premiumText, charLimit });
+
+    // Check for errors
+    if (chrome.runtime.lastError) {
+      console.log('❌ Error sending message:', chrome.runtime.lastError.message);
+      if (premiumDiv) premiumDiv.style.display = 'none';
+      return;
+    }
+
+    if (response && response.success) {
+      const isPremium = response.is_premium;
+      const limit = response.character_limit;
+      const method = response.detection_method;
+
+      console.log('✅ Premium status received:', isPremium, limit, method);
+
+      if (isPremium) {
+        premiumDiv.className = 'premium-status premium';
+        premiumDiv.querySelector('.premium-icon').textContent = '💎';
+        premiumText.textContent = 'X Premium Account';
+        charLimit.textContent = `Character limit: ${limit.toLocaleString()} chars`;
+      } else {
+        premiumDiv.className = 'premium-status standard';
+        premiumDiv.querySelector('.premium-icon').textContent = '📝';
+        premiumText.textContent = 'Standard X Account';
+        charLimit.textContent = `Character limit: ${limit} chars`;
+      }
+
+      // Add detection method as tooltip
+      premiumDiv.title = `Detected via: ${method}`;
+    } else {
+      // Could not detect - hide the status
+      console.log('❌ No valid response from content script:', response);
+      if (premiumDiv) premiumDiv.style.display = 'none';
     }
   });
 }

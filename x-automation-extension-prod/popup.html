@@ -267,6 +267,41 @@
     .hidden {
       display: none !important;
     }
+
+    /* Premium Status */
+    .premium-status {
+      padding: 12px;
+      border-radius: 12px;
+      margin-bottom: 16px;
+      font-size: 13px;
+      text-align: center;
+      display: none;
+    }
+
+    .premium-status.premium {
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      color: white;
+      display: block;
+      border: 1px solid rgba(255, 255, 255, 0.2);
+    }
+
+    .premium-status.standard {
+      background: rgba(255, 255, 255, 0.05);
+      color: #a1a1aa;
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      display: block;
+    }
+
+    .premium-icon {
+      font-size: 18px;
+      margin-right: 5px;
+    }
+
+    .char-limit {
+      font-size: 11px;
+      opacity: 0.9;
+      margin-top: 3px;
+    }
   </style>
 </head>
 <body>
@@ -299,6 +334,15 @@
         </div>
         <div class="account-badge">Active</div>
       </div>
+    </div>
+
+    <!-- Premium Status -->
+    <div id="premiumStatus" class="premium-status">
+      <div>
+        <span class="premium-icon">💎</span>
+        <span id="premiumText">Checking account type...</span>
+      </div>
+      <div class="char-limit" id="charLimit"></div>
     </div>
 
     <!-- Info Section -->
