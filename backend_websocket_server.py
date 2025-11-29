@@ -978,10 +978,10 @@ async def extension_disconnect(user_id: str):
 @app.get("/api/activity/recent/{user_id}")
 async def get_recent_activity(user_id: str, limit: int = 50):
     """
-    Get recent activity logs for a user from the LangGraph Store.
+    Get recent activity logs for a user from /memories/action_history.json.
 
     This retrieves activity logs (posts, comments, likes, etc.) stored by the agent
-    for display on the dashboard's "Recent Activity" section.
+    in the DeepAgents persistent memory system for display on the dashboard's "Recent Activity" section.
 
     Args:
         user_id: User ID to get activity for
@@ -993,19 +993,109 @@ async def get_recent_activity(user_id: str, limit: int = 50):
     try:
         if not store:
             return {"success": False, "error": "Store not initialized", "activities": [], "count": 0}
-        from activity_logger import ActivityLogger
 
-        # Use the global store instance (already initialized at startup)
-        # Create activity logger instance
-        logger = ActivityLogger(store, user_id)
+        # Read from DeepAgents persistent memory: /action_history.json
+        # StoreBackend uses namespace (assistant_id, "filesystem")
+        # We now pass user_id as assistant_id when invoking the agent
+        namespace = (user_id, "filesystem")
 
-        # Get recent activity
-        activities = logger.get_recent_activity(limit=limit)
+        print(f"🔍 [Activity API] Looking for action_history.json")
+        print(f"🔍 [Activity API] Namespace: {namespace}")
+        print(f"🔍 [Activity API] Key: /action_history.json")
+
+        # Get the action_history.json file directly by key
+        item = store.get(namespace, "/action_history.json")
+
+        print(f"🔍 [Activity API] Item found: {item is not None}")
+        if item:
+            print(f"🔍 [Activity API] Item value type: {type(item.value)}")
+            print(f"🔍 [Activity API] Item value keys: {item.value.keys() if isinstance(item.value, dict) else 'not a dict'}")
+
+        if not item:
+            # No action history yet for this user
+            print(f"⚠️  [Activity API] No action_history.json found for user {user_id}")
+            return {
+                "success": True,
+                "activities": [],
+                "count": 0
+            }
+
+        # Get the file content
+        action_history = item.value
+
+        # The agent stores action history in this format:
+        # {
+        #   "date": "2025-11-01",
+        #   "actions": [
+        #     {"timestamp": "...", "action": "liked", "post_author": "@user", ...},
+        #     ...
+        #   ],
+        #   "daily_stats": {...}
+        # }
+
+        # Extract actions from the stored format
+        activities = []
+        if isinstance(action_history, dict):
+            # Check if it's a file object with content field (from StoreBackend)
+            if "content" in action_history:
+                import json
+                content = action_history["content"]
+                # content is a list of strings (lines of the JSON file)
+                if isinstance(content, list):
+                    content_str = "\n".join(content)
+                    history_data = json.loads(content_str)
+                elif isinstance(content, str):
+                    history_data = json.loads(content)
+                else:
+                    history_data = content
+            else:
+                history_data = action_history
+
+            # Extract actions array
+            if isinstance(history_data, dict) and "actions" in history_data:
+                activities = history_data["actions"]
+            elif isinstance(history_data, list):
+                # If it's already a list of actions
+                activities = history_data
+
+        # Normalize and sort activities
+        normalized_activities = []
+        if activities:
+            for idx, activity in enumerate(activities):
+                # Transform to match frontend ActivityItem interface
+                # Frontend expects: id, timestamp, action_type, status, target?, details{}
+                timestamp = activity.get("timestamp", "")
+                action = activity.get("action", "unknown")
+
+                # Clean post URL - don't include if it's invalid
+                post_url = activity.get("post_url", "")
+                if "unknown" in post_url or not post_url.startswith("https://"):
+                    post_url = ""  # Don't show invalid URLs
+
+                normalized = {
+                    "id": f"{action}_{timestamp}_{idx}",  # Create unique ID
+                    "timestamp": timestamp,
+                    "action_type": action,  # Frontend uses "action_type" not "action"
+                    "status": "success",  # Mark completed actions as success
+                    "target": activity.get("post_author", ""),
+                    "details": {
+                        "content": activity.get("post_content_snippet", ""),
+                        "post_url": post_url,
+                    }
+                }
+                normalized_activities.append(normalized)
+
+            # Sort by timestamp (newest first) and limit
+            normalized_activities.sort(
+                key=lambda x: x.get("timestamp", ""),
+                reverse=True
+            )
+            normalized_activities = normalized_activities[:limit]
 
         return {
             "success": True,
-            "activities": activities,
-            "count": len(activities)
+            "activities": normalized_activities,
+            "count": len(normalized_activities)
         }
 
     except Exception as e:
@@ -3893,9 +3983,10 @@ async def stream_agent_execution(user_id: str, thread_id: str, task: str, use_ro
                     "cua_url": vnc_url,  # Per-user VNC URL
                     "x-cua-host": cua_host,
                     "x-cua-port": cua_port,
+                    "x-user-id": user_id,  # For StoreBackend namespace (checked by DeepAgents)
                 },
                 "metadata": {
-                    "assistant_id": user_id  # CRITICAL: Isolates /memories/ files per user in StoreBackend
+                    "x-user-id": user_id  # Store user_id in metadata for namespace isolation
                 }
             }
         }
