@@ -4881,6 +4881,83 @@ async def execute_workflow_stream_endpoint(websocket: WebSocket):
         await websocket.close()
 
 
+# ============================================================================
+# POST MIGRATION ENDPOINT
+# ============================================================================
+
+@app.post("/api/migrate-posts-to-langgraph")
+async def migrate_posts_to_langgraph(data: dict):
+    """
+    Migrate user posts from PostgreSQL to LangGraph Store for style learning.
+
+    This fixes the issue where posts exist in PostgreSQL but not in LangGraph Store,
+    preventing the agent from learning the user's writing style.
+    """
+    user_id = data.get("user_id")
+    username = data.get("username")
+
+    if not user_id or not username:
+        return {"success": False, "error": "Missing user_id or username"}
+
+    print(f"\n{'='*80}")
+    print(f"🔄 MIGRATING POSTS TO LANGGRAPH STORE")
+    print(f"   User: @{username} ({user_id})")
+    print(f"{'='*80}\n")
+
+    try:
+        from database.models import UserPost, XAccount
+        from database.database import SessionLocal
+        from x_writing_style_learner import XWritingStyleManager
+
+        # Get posts from PostgreSQL
+        db = SessionLocal()
+        try:
+            x_account = db.query(XAccount).filter(XAccount.username == username).first()
+
+            if not x_account:
+                return {"success": False, "error": f"User @{username} not found in database"}
+
+            posts = db.query(UserPost).filter(UserPost.x_account_id == x_account.id).all()
+
+            if not posts:
+                return {"success": False, "error": "No posts found in database"}
+
+            print(f"📊 Found {len(posts)} posts in PostgreSQL")
+
+            # Convert to dict format expected by bulk_import_posts
+            post_dicts = []
+            for post in posts:
+                post_dicts.append({
+                    "content": post.content,
+                    "timestamp": post.imported_at.isoformat() if post.imported_at else None,
+                    "engagement": {}  # No engagement data in PostgreSQL
+                })
+
+            print(f"📦 Prepared {len(post_dicts)} posts for import\n")
+
+        finally:
+            db.close()
+
+        # Import to LangGraph Store
+        print(f"💾 Importing to LangGraph Store...")
+        style_manager = XWritingStyleManager(store, user_id)
+        style_manager.bulk_import_posts(post_dicts)
+
+        print(f"\n✅ Migration complete!")
+
+        return {
+            "success": True,
+            "migrated_count": len(post_dicts),
+            "username": username
+        }
+
+    except Exception as e:
+        print(f"❌ Migration failed: {e}")
+        import traceback
+        traceback.print_exc()
+        return {"success": False, "error": str(e)}
+
+
 if __name__ == "__main__":
     import uvicorn
     print("🚀 Starting Parallel Universe Backend...")
