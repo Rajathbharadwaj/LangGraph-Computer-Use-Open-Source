@@ -107,14 +107,20 @@ def create_web_search_tool():
 # COMPETITOR LEARNING TOOLS
 # ============================================================================
 
-def create_competitor_learning_tool(store, user_id):
-    """Create tool to retrieve high-performing competitor posts from store"""
+def create_competitor_learning_tool(user_id):
+    """Create tool to retrieve high-performing competitor posts from store.
+
+    The store is accessed at runtime via the agent's context, not at creation time.
+    """
+
+    from langchain.tools import ToolRuntime
 
     @tool
     async def get_high_performing_competitor_posts(
         topic: str = None,
         min_likes: int = 100,
-        limit: int = 10
+        limit: int = 10,
+        runtime: ToolRuntime = None  # Injected by LangGraph at execution time
     ) -> str:
         """
         Get competitor posts with high engagement to learn what content performs well in your niche.
@@ -136,19 +142,40 @@ def create_competitor_learning_tool(store, user_id):
         print(f"   Topic: {topic or 'all'}, Min likes: {min_likes}, Limit: {limit}")
 
         try:
-            # Search competitor_profiles namespace for all competitors
-            namespace = (user_id, "competitor_profiles")
-            competitors = list(store.search(namespace, limit=50))
+            # Access store from runtime (injected by LangGraph Platform)
+            if not runtime or not runtime.store:
+                return "❌ Store not available. This tool requires LangGraph Store to be configured."
 
-            if not competitors:
+            store = runtime.store
+            print(f"   ✅ Got runtime store: {type(store).__name__}")
+
+            # IMPORTANT: Access social_graph namespace (NOT competitor_profiles)
+            # - social_graph stores all_competitors_raw[] with FULL post data
+            # - competitor_profiles stores individual entries but posts[] is often empty
+            # - See docs/COMPETITOR_DATA_ARCHITECTURE.md for details
+            namespace_graph = (user_id, "social_graph")
+            graph_results = await store.asearch(namespace_graph, limit=1)
+            graph_list = list(graph_results) if graph_results else []
+
+            if not graph_list:
                 return "No competitor data found. Run competitor discovery from the dashboard first."
 
-            print(f"   Found {len(competitors)} competitors in store")
+            graph_data = graph_list[0].value
+            print(f"   ✅ Found graph data with {len(graph_data.get('all_competitors_raw', []))} competitors")
+
+            # Use all_competitors_raw which has ALL competitors with posts
+            all_competitors = graph_data.get("all_competitors_raw", [])
+
+            if not all_competitors:
+                return "No competitors found in graph data. Run competitor discovery first."
+
+            # Count how many have posts
+            comps_with_posts = sum(1 for c in all_competitors if c.get('posts') and len(c.get('posts', [])) > 0)
+            print(f"   Found {comps_with_posts} competitors with posts out of {len(all_competitors)} total")
 
             # Extract all posts from all competitors
             all_posts = []
-            for comp_item in competitors:
-                comp_data = comp_item.value
+            for comp_data in all_competitors:
                 username = comp_data.get("username", "unknown")
                 posts = comp_data.get("posts", [])
 
@@ -158,6 +185,10 @@ def create_competitor_learning_tool(store, user_id):
                     retweets = post.get("retweets", 0)
                     replies = post.get("replies", 0)
                     views = post.get("views", 0)
+
+                    # Skip reposts - we only want original content to learn writing style
+                    if "reposted" in post_text.lower():
+                        continue
 
                     # Filter by min_likes
                     if likes >= min_likes:
@@ -209,6 +240,189 @@ def create_competitor_learning_tool(store, user_id):
             return f"Error retrieving competitor posts: {str(e)}"
 
     return get_high_performing_competitor_posts
+
+
+def create_user_posts_tool(user_id: str):
+    """
+    Create a tool that retrieves the user's own imported posts.
+
+    This gives the agent access to the user's writing history to understand
+    their style, topics, and engagement patterns.
+
+    Args:
+        user_id: User ID to retrieve posts for
+
+    Returns:
+        Tool that accesses user's posts from writing_samples namespace
+    """
+    from langchain.tools import ToolRuntime
+
+    @tool
+    async def get_my_posts(
+        limit: int = 20,
+        min_engagement: int = 0,
+        runtime: ToolRuntime = None  # Injected by LangGraph at execution time
+    ) -> str:
+        """
+        Retrieve my own imported X posts to understand my writing style and topics.
+
+        Use this tool to:
+        - Learn what topics I write about
+        - Understand my writing style and tone
+        - See what kind of content gets engagement
+        - Find examples of my successful posts
+
+        Args:
+            limit: Maximum number of posts to retrieve (default: 20, max: 100)
+            min_engagement: Minimum total engagement (likes + replies + reposts) (default: 0)
+
+        Returns:
+            Summary of user's posts with content, engagement metrics, and insights
+        """
+        try:
+            store = runtime.store
+            print(f"\n🔍 [get_my_posts] Retrieving posts for user {user_id}...")
+            print(f"   Parameters: limit={limit}, min_engagement={min_engagement}")
+
+            # Access writing_samples namespace where user posts are stored
+            namespace = (user_id, "writing_samples")
+            results = await store.asearch(namespace, limit=min(limit, 100))
+            results_list = list(results) if results else []
+
+            if not results_list:
+                return "No imported posts found. Please import your X posts first from the dashboard."
+
+            print(f"   ✅ Found {len(results_list)} imported posts")
+
+            # Extract and filter posts
+            my_posts = []
+            for item in results_list:
+                post_data = item.value
+                content = post_data.get("content", "")
+                engagement = post_data.get("engagement", {})
+
+                total_engagement = (
+                    engagement.get("likes", 0) +
+                    engagement.get("replies", 0) +
+                    engagement.get("reposts", 0)
+                )
+
+                if total_engagement >= min_engagement:
+                    my_posts.append({
+                        "content": content,
+                        "likes": engagement.get("likes", 0),
+                        "replies": engagement.get("replies", 0),
+                        "reposts": engagement.get("reposts", 0),
+                        "total_engagement": total_engagement,
+                        "timestamp": post_data.get("timestamp", ""),
+                        "topic": post_data.get("topic")
+                    })
+
+            if not my_posts:
+                return f"Found {len(results_list)} posts, but none match min_engagement={min_engagement}"
+
+            # Sort by engagement
+            my_posts.sort(key=lambda x: x["total_engagement"], reverse=True)
+
+            # Generate summary
+            summary = f"📊 Your Imported Posts Summary (showing {len(my_posts)} posts):\n\n"
+
+            # Show top posts
+            for i, post in enumerate(my_posts[:limit], 1):
+                summary += f"{i}. \"{post['content'][:200]}{'...' if len(post['content']) > 200 else ''}\"\n"
+                summary += f"   Engagement: {post['likes']} likes, {post['replies']} replies, {post['reposts']} reposts\n"
+                if post['topic']:
+                    summary += f"   Topic: {post['topic']}\n"
+                summary += "\n"
+
+            # Add writing style insights
+            total_posts = len(my_posts)
+            avg_length = sum(len(p['content']) for p in my_posts) // total_posts if total_posts > 0 else 0
+            avg_engagement = sum(p['total_engagement'] for p in my_posts) // total_posts if total_posts > 0 else 0
+
+            summary += f"\n💡 Writing Style Insights:\n"
+            summary += f"- Average post length: {avg_length} characters\n"
+            summary += f"- Average engagement: {avg_engagement} per post\n"
+            summary += f"- Total posts analyzed: {total_posts}\n"
+
+            return summary
+
+        except Exception as e:
+            print(f"❌ Error retrieving user posts: {e}")
+            import traceback
+            traceback.print_exc()
+            return f"Error retrieving your posts: {str(e)}"
+
+    return get_my_posts
+
+
+def create_user_profile_tool(user_id: str):
+    """
+    Create a tool that retrieves the user's X profile information.
+
+    This gives the agent access to the user's X handle and profile metadata.
+
+    Args:
+        user_id: User ID to retrieve profile for
+
+    Returns:
+        Tool that accesses user's profile from social_graph namespace
+    """
+    from langchain.tools import ToolRuntime
+
+    @tool
+    async def get_my_profile(runtime: ToolRuntime) -> str:
+        """
+        Retrieve my X profile information including handle and basic info.
+
+        Use this tool to:
+        - Know my X handle/username
+        - Understand my account context
+        - Reference my profile when needed
+
+        Returns:
+            Summary of user's X profile information
+        """
+        try:
+            store = runtime.store
+            print(f"\n🔍 [get_my_profile] Retrieving profile for user {user_id}...")
+
+            # Access social_graph namespace where user handle is stored
+            namespace = (user_id, "social_graph")
+            results = await store.asearch(namespace, limit=1)
+            results_list = list(results) if results else []
+
+            if not results_list:
+                return "No profile information found. Please run competitor discovery first from the dashboard."
+
+            graph_data = results_list[0].value
+            user_handle = graph_data.get("user_handle", "Unknown")
+
+            print(f"   ✅ Found profile: @{user_handle}")
+
+            # Generate summary
+            summary = f"👤 Your X Profile:\n\n"
+            summary += f"Handle: @{user_handle}\n"
+            summary += f"Profile URL: https://x.com/{user_handle}\n\n"
+
+            # Add competitor stats if available
+            all_competitors = graph_data.get("all_competitors_raw", [])
+            comps_with_posts = sum(1 for c in all_competitors if c.get('posts'))
+
+            if all_competitors:
+                summary += f"📊 Your Network:\n"
+                summary += f"- Discovered competitors: {len(all_competitors)}\n"
+                summary += f"- Competitors with posts: {comps_with_posts}\n"
+
+            return summary
+
+        except Exception as e:
+            print(f"❌ Error retrieving user profile: {e}")
+            import traceback
+            traceback.print_exc()
+            return f"Error retrieving your profile: {str(e)}"
+
+    return get_my_profile
 
 
 # ============================================================================
@@ -1074,12 +1288,24 @@ Just call the tools normally - the style transfer happens AUTOMATICALLY inside t
     playwright_tools = get_async_playwright_tools()
     comprehensive_context_tool = next(t for t in playwright_tools if t.name == "get_comprehensive_context")
 
-    # Create competitor learning tool if store and user_id available
+    # Create data access tools if user_id available
+    # These tools access runtime.store at execution time
     main_tools = [comprehensive_context_tool]
-    if store_for_agent and user_id:
-        competitor_tool = create_competitor_learning_tool(store_for_agent, user_id)
+    if user_id:
+        # Competitor posts tool - learn from high-performing competitors
+        competitor_tool = create_competitor_learning_tool(user_id)
         main_tools.append(competitor_tool)
-        print(f"✅ Added competitor learning tool to main agent")
+        print(f"✅ Added competitor learning tool to main agent (will use runtime.store)")
+
+        # User's own posts tool - access writing history
+        user_posts_tool = create_user_posts_tool(user_id)
+        main_tools.append(user_posts_tool)
+        print(f"✅ Added user posts tool to main agent (will use runtime.store)")
+
+        # User profile tool - get X handle and profile info
+        user_profile_tool = create_user_profile_tool(user_id)
+        main_tools.append(user_profile_tool)
+        print(f"✅ Added user profile tool to main agent (will use runtime.store)")
 
     # Configure backend for persistent storage
     # /memories/* paths go to StoreBackend (persistent across threads)
@@ -1106,7 +1332,7 @@ Just call the tools normally - the style transfer happens AUTOMATICALLY inside t
         tools=main_tools,  # Main agent gets comprehensive_context + competitor_learning tools
         subagents=subagents,  # comment_on_post and create_post auto-use style transfer!
         backend=make_backend,  # Persistent storage for /memories/ paths
-        store=store_for_agent,  # Required for StoreBackend
+        store=store_for_agent,  # Required for StoreBackend and subagents
     )
     
     # Store user_memory reference in agent for access if needed
