@@ -104,6 +104,114 @@ def create_web_search_tool():
 
 
 # ============================================================================
+# COMPETITOR LEARNING TOOLS
+# ============================================================================
+
+def create_competitor_learning_tool(store, user_id):
+    """Create tool to retrieve high-performing competitor posts from store"""
+
+    @tool
+    async def get_high_performing_competitor_posts(
+        topic: str = None,
+        min_likes: int = 100,
+        limit: int = 10
+    ) -> str:
+        """
+        Get competitor posts with high engagement to learn what content performs well in your niche.
+
+        Use this BEFORE creating posts or comments to understand:
+        - What topics resonate with your target audience
+        - What formats get high engagement (threads, tutorials, hot takes)
+        - What length and style works best
+
+        Args:
+            topic: Optional topic to filter by (e.g., "AI", "productivity", "SaaS")
+            min_likes: Minimum likes to consider "high-performing" (default: 100)
+            limit: Maximum posts to return (default: 10)
+
+        Returns:
+            Formatted string with high-performing posts and their metrics
+        """
+        print(f"🔍 [Competitor Tool] Searching for high-performing posts")
+        print(f"   Topic: {topic or 'all'}, Min likes: {min_likes}, Limit: {limit}")
+
+        try:
+            # Search competitor_profiles namespace for all competitors
+            namespace = (user_id, "competitor_profiles")
+            competitors = list(store.search(namespace, limit=50))
+
+            if not competitors:
+                return "No competitor data found. Run competitor discovery from the dashboard first."
+
+            print(f"   Found {len(competitors)} competitors in store")
+
+            # Extract all posts from all competitors
+            all_posts = []
+            for comp_item in competitors:
+                comp_data = comp_item.value
+                username = comp_data.get("username", "unknown")
+                posts = comp_data.get("posts", [])
+
+                for post in posts:
+                    post_text = post.get("text", "")
+                    likes = post.get("likes", 0)
+                    retweets = post.get("retweets", 0)
+                    replies = post.get("replies", 0)
+                    views = post.get("views", 0)
+
+                    # Filter by min_likes
+                    if likes >= min_likes:
+                        # Simple topic filtering (case-insensitive substring match)
+                        if topic is None or topic.lower() in post_text.lower():
+                            all_posts.append({
+                                "author": username,
+                                "text": post_text,
+                                "likes": likes,
+                                "retweets": retweets,
+                                "replies": replies,
+                                "views": views,
+                                "total_engagement": likes + retweets + replies
+                            })
+
+            if not all_posts:
+                return f"No high-performing posts found with {min_likes}+ likes" + (f" about '{topic}'" if topic else "")
+
+            # Sort by total engagement (likes + retweets + replies)
+            all_posts.sort(key=lambda x: x["total_engagement"], reverse=True)
+
+            # Take top posts
+            top_posts = all_posts[:limit]
+
+            print(f"   ✅ Found {len(top_posts)} high-performing posts")
+
+            # Format for LLM
+            result = f"📊 High-Performing Posts in Your Niche ({len(top_posts)} examples):\n\n"
+
+            for i, post in enumerate(top_posts, 1):
+                result += f"Example {i} (by @{post['author']}):\n"
+                result += f"Metrics: {post['likes']} likes, {post['retweets']} retweets, {post['replies']} replies"
+                if post['views'] > 0:
+                    result += f", {post['views']} views"
+                result += f"\nContent: {post['text']}\n\n"
+
+            # Add pattern analysis
+            avg_length = sum(len(p['text']) for p in top_posts) / len(top_posts)
+            result += f"📈 Pattern Analysis:\n"
+            result += f"- Average length: {int(avg_length)} characters\n"
+            result += f"- Average engagement: {sum(p['total_engagement'] for p in top_posts) // len(top_posts)} total interactions\n"
+
+            return result
+
+        except Exception as e:
+            print(f"❌ Error retrieving competitor posts: {e}")
+            import traceback
+            traceback.print_exc()
+            return f"Error retrieving competitor posts: {str(e)}"
+
+    return get_high_performing_competitor_posts
+
+
+# ============================================================================
 # ATOMIC ACTION SUBAGENTS
 # Each subagent executes ONE Playwright action and returns immediately
 # ============================================================================
@@ -966,6 +1074,13 @@ Just call the tools normally - the style transfer happens AUTOMATICALLY inside t
     playwright_tools = get_async_playwright_tools()
     comprehensive_context_tool = next(t for t in playwright_tools if t.name == "get_comprehensive_context")
 
+    # Create competitor learning tool if store and user_id available
+    main_tools = [comprehensive_context_tool]
+    if store_for_agent and user_id:
+        competitor_tool = create_competitor_learning_tool(store_for_agent, user_id)
+        main_tools.append(competitor_tool)
+        print(f"✅ Added competitor learning tool to main agent")
+
     # Configure backend for persistent storage
     # /memories/* paths go to StoreBackend (persistent across threads)
     # Other paths go to StateBackend (ephemeral, lost when thread ends)
@@ -988,7 +1103,7 @@ Just call the tools normally - the style transfer happens AUTOMATICALLY inside t
     agent = create_deep_agent(
         model=model,
         system_prompt=system_prompt,
-        tools=[comprehensive_context_tool],  # Main agent can see the page
+        tools=main_tools,  # Main agent gets comprehensive_context + competitor_learning tools
         subagents=subagents,  # comment_on_post and create_post auto-use style transfer!
         backend=make_backend,  # Persistent storage for /memories/ paths
         store=store_for_agent,  # Required for StoreBackend

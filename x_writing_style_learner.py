@@ -366,26 +366,65 @@ class XWritingStyleManager:
         self,
         context: str,
         content_type: str = "comment",
-        num_examples: int = 3
+        num_examples: int = 3,
+        include_competitor_examples: bool = True,
+        competitor_topic: str = None
     ) -> str:
         """
-        Generate a few-shot prompt with user's writing examples
-        
+        Generate a few-shot prompt with user's writing examples AND high-performing competitor posts
+
         Args:
             context: The post/thread to respond to
             content_type: Type of content to generate
-            num_examples: Number of examples to include
-        
+            num_examples: Number of user examples to include
+            include_competitor_examples: Whether to include competitor posts (default: True)
+            competitor_topic: Topic to filter competitor posts by
+
         Returns:
-            Few-shot prompt string
+            Few-shot prompt string with both user style + competitor patterns
         """
-        # Get similar examples
+        # Get similar examples from user's posts
         examples = self.get_similar_examples(context, content_type, num_examples)
-        
+
         # Get style profile
         profile = self.get_style_profile()
         if not profile:
             profile = self.analyze_writing_style()
+
+        # Get high-performing competitor posts if enabled
+        competitor_posts = []
+        if include_competitor_examples:
+            try:
+                # Search competitor_profiles namespace
+                namespace = (self.user_id, "competitor_profiles")
+                competitors = list(self.store.search(namespace, limit=30))
+
+                # Extract high-performing posts
+                for comp_item in competitors:
+                    comp_data = comp_item.value
+                    posts = comp_data.get("posts", [])
+
+                    for post in posts:
+                        likes = post.get("likes", 0)
+                        if likes >= 100:  # High-performing threshold
+                            # Topic filter if specified
+                            if competitor_topic is None or competitor_topic.lower() in post.get("text", "").lower():
+                                competitor_posts.append({
+                                    "text": post.get("text", ""),
+                                    "likes": likes,
+                                    "retweets": post.get("retweets", 0),
+                                    "replies": post.get("replies", 0)
+                                })
+
+                # Sort by engagement and take top 5
+                competitor_posts.sort(key=lambda x: x["likes"] + x["retweets"] + x["replies"], reverse=True)
+                competitor_posts = competitor_posts[:5]
+
+                print(f"✅ Added {len(competitor_posts)} high-performing competitor examples to ICL prompt")
+
+            except Exception as e:
+                print(f"⚠️ Could not load competitor examples: {e}")
+                competitor_posts = []
         
         # Build few-shot prompt
         prompt = f"""You are a Parallel Universe AI writing assistant. Your ONLY job is to write EXACTLY like this specific user.
@@ -418,8 +457,35 @@ EXAMPLES OF USER'S WRITING (STUDY THESE CAREFULLY):
                 total_engagement = sum(example.engagement.values())
                 prompt += f" (Got {total_engagement} engagement)"
             prompt += "\n"
-        
+
+        # Add competitor examples section if available
+        if competitor_posts:
+            prompt += f"""
+---
+
+HIGH-PERFORMING POSTS IN YOUR NICHE (Learn what works):
+These are top posts from accounts in your niche with high engagement.
+Study these to understand what content/format resonates with your target audience.
+"""
+
+            for i, post in enumerate(competitor_posts, 1):
+                engagement = post["likes"] + post["retweets"] + post["replies"]
+                prompt += f"\nHigh-Performing Example {i}:"
+                prompt += f"\nMetrics: {post['likes']} likes, {post['retweets']} retweets, {post['replies']} replies (Total: {engagement})"
+                prompt += f"\nContent: {post['text']}\n"
+
+            # Add pattern analysis
+            avg_length = sum(len(p['text']) for p in competitor_posts) / len(competitor_posts) if competitor_posts else 0
+            prompt += f"""
+📈 Pattern Analysis of High-Performing Posts:
+- Average length: {int(avg_length)} characters
+- These posts got high engagement - study their structure, tone, and format
+- BUT: Write in YOUR style (Section 1), using successful patterns from these examples (Section 2)
+"""
+
         prompt += f"""
+---
+
 STEP 1: ANALYZE THE USER'S STYLE
 Before writing, take a moment to deeply understand this user's unique voice:
 
@@ -440,12 +506,17 @@ Context: {context}
 CRITICAL INSTRUCTIONS:
 You MUST write this {content_type} so that it's IMPOSSIBLE to tell it wasn't written by the user themselves.
 
-REPLICATE EXACTLY:
+REPLICATE FROM USER EXAMPLES (Section 1):
 1. Their vocabulary and word choice (use THEIR words, not generic ones)
 2. Their sentence rhythm and flow (match their pacing)
 3. Their level of formality/casualness (don't be more polished than them)
 4. Their punctuation style and emoji usage
 5. Their length (around {profile.avg_comment_length if content_type == 'comment' else profile.avg_post_length} chars)
+
+LEARN FROM COMPETITOR EXAMPLES (Section 2 - if provided):
+6. Use successful content patterns (frameworks, tutorials, hot takes, etc.)
+7. Match the engagement-optimized structure and format
+8. Apply what works in the niche while keeping YOUR voice
 
 If they're sarcastic, be sarcastic. If they're enthusiastic, be enthusiastic.
 If they use "dude" or "man", use those words. If they use technical jargon, use that jargon.
@@ -455,7 +526,7 @@ DO NOT:
 - Sound generic or AI-like
 - Use hashtags (X penalizes them)
 - Be more formal or polished than the user
-- Add extra context the user wouldn't add
+- Copy competitor content verbatim - adapt patterns to YOUR style
 - Use words or phrases the user never uses
 
 Your {content_type} (write ONLY the content, nothing else):"""
