@@ -83,39 +83,39 @@ ENGAGEMENT_WORKFLOW = Workflow(
             check_memory=True  # Check what we've already engaged with
         ),
         # Now engage with posts - ONLY like posts that are comment-worthy
-        # Like AND comment together immediately (no sequential batching)
+        # Analyze tone/intent DEEPLY using extended thinking, then engage ONLY if truly worthwhile
         WorkflowStep(
             subagent="like_and_comment",
-            action="Find a comment-worthy post, like it, then immediately write a thoughtful comment",
-            description="Like + Comment on post #1 (together)",
+            action="Analyze post tone/intent deeply using extended thinking, then engage ONLY if truly worthwhile",
+            description="Analyze + Engage post #1 (tone-aware, skips spam/sarcasm)",
             check_memory=True,
             update_memory=True
         ),
         WorkflowStep(
             subagent="like_and_comment",
-            action="Find another comment-worthy post, like it, then immediately write a thoughtful comment",
-            description="Like + Comment on post #2 (together)",
+            action="Analyze post tone/intent deeply using extended thinking, then engage ONLY if truly worthwhile",
+            description="Analyze + Engage post #2 (tone-aware, skips spam/sarcasm)",
             check_memory=True,
             update_memory=True
         ),
         WorkflowStep(
             subagent="like_and_comment",
-            action="Find another comment-worthy post, like it, then immediately write a thoughtful comment",
-            description="Like + Comment on post #3 (together)",
+            action="Analyze post tone/intent deeply using extended thinking, then engage ONLY if truly worthwhile",
+            description="Analyze + Engage post #3 (tone-aware, skips spam/sarcasm)",
             check_memory=True,
             update_memory=True
         ),
         WorkflowStep(
             subagent="like_and_comment",
-            action="Find another comment-worthy post, like it, then immediately write a thoughtful comment",
-            description="Like + Comment on post #4 (together)",
+            action="Analyze post tone/intent deeply using extended thinking, then engage ONLY if truly worthwhile",
+            description="Analyze + Engage post #4 (tone-aware, skips spam/sarcasm)",
             check_memory=True,
             update_memory=True
         ),
         WorkflowStep(
             subagent="like_and_comment",
-            action="Find another comment-worthy post, like it, then immediately write a thoughtful comment",
-            description="Like + Comment on post #5 (together)",
+            action="Analyze post tone/intent deeply using extended thinking, then engage ONLY if truly worthwhile",
+            description="Analyze + Engage post #5 (tone-aware, skips spam/sarcasm)",
             check_memory=True,
             update_memory=True
         ),
