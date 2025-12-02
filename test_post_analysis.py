@@ -15,7 +15,18 @@ import asyncio
 import json
 import time
 from test_post_analysis_dataset import TEST_POSTS, get_test_post
-from async_extension_tools import analyze_post_tone_and_intent
+from async_extension_tools import get_async_extension_tools
+
+# Get the analyze_post_tone_and_intent tool from the tool list
+_tools = get_async_extension_tools()
+analyze_post_tone_and_intent = None
+for tool in _tools:
+    if tool.name == "analyze_post_tone_and_intent":
+        analyze_post_tone_and_intent = tool
+        break
+
+if not analyze_post_tone_and_intent:
+    raise ImportError("analyze_post_tone_and_intent tool not found in async extension tools")
 
 
 @pytest.mark.asyncio
@@ -23,12 +34,12 @@ async def test_humor_detection():
     """Test that humorous posts are detected correctly"""
     post = get_test_post("humor_debugging")
 
-    result = await analyze_post_tone_and_intent(
-        post_text=post["post_text"],
-        author_handle=post["author_handle"],
-        author_followers=post["author_followers"],
-        engagement_metrics=json.dumps(post["engagement_metrics"])
-    )
+    result = await analyze_post_tone_and_intent.ainvoke({
+        "post_text": post["post_text"],
+        "author_handle": post["author_handle"],
+        "author_followers": post["author_followers"],
+        "engagement_metrics": json.dumps(post["engagement_metrics"])
+    })
 
     analysis = json.loads(result)
 
@@ -46,12 +57,12 @@ async def test_spam_rejection():
     """Test that promotional spam is rejected"""
     post = get_test_post("promotional_spam")
 
-    result = await analyze_post_tone_and_intent(
-        post_text=post["post_text"],
-        author_handle=post["author_handle"],
-        author_followers=post["author_followers"],
-        engagement_metrics=json.dumps(post["engagement_metrics"])
-    )
+    result = await analyze_post_tone_and_intent.ainvoke({
+        "post_text": post["post_text"],
+        "author_handle": post["author_handle"],
+        "author_followers": post["author_followers"],
+        "engagement_metrics": json.dumps(post["engagement_metrics"])
+    })
 
     analysis = json.loads(result)
 
@@ -67,12 +78,12 @@ async def test_sarcasm_detection():
     """Test that sarcastic posts are detected with appropriate confidence"""
     post = get_test_post("hard_sarcasm_risky")
 
-    result = await analyze_post_tone_and_intent(
-        post_text=post["post_text"],
-        author_handle=post["author_handle"],
-        author_followers=post["author_followers"],
-        engagement_metrics=json.dumps(post["engagement_metrics"])
-    )
+    result = await analyze_post_tone_and_intent.ainvoke({
+        "post_text": post["post_text"],
+        "author_handle": post["author_handle"],
+        "author_followers": post["author_followers"],
+        "engagement_metrics": json.dumps(post["engagement_metrics"])
+    })
 
     analysis = json.loads(result)
 
@@ -92,12 +103,12 @@ async def test_educational_approval():
     """Test that high-quality educational content is approved"""
     post = get_test_post("educational_technical")
 
-    result = await analyze_post_tone_and_intent(
-        post_text=post["post_text"],
-        author_handle=post["author_handle"],
-        author_followers=post["author_followers"],
-        engagement_metrics=json.dumps(post["engagement_metrics"])
-    )
+    result = await analyze_post_tone_and_intent.ainvoke({
+        "post_text": post["post_text"],
+        "author_handle": post["author_handle"],
+        "author_followers": post["author_followers"],
+        "engagement_metrics": json.dumps(post["engagement_metrics"])
+    })
 
     analysis = json.loads(result)
 
@@ -116,12 +127,12 @@ async def test_extended_thinking_present():
     """Test that extended thinking reasoning is captured"""
     post = get_test_post("genuine_question")
 
-    result = await analyze_post_tone_and_intent(
-        post_text=post["post_text"],
-        author_handle=post["author_handle"],
-        author_followers=post["author_followers"],
-        engagement_metrics=json.dumps(post["engagement_metrics"])
-    )
+    result = await analyze_post_tone_and_intent.ainvoke({
+        "post_text": post["post_text"],
+        "author_handle": post["author_handle"],
+        "author_followers": post["author_followers"],
+        "engagement_metrics": json.dumps(post["engagement_metrics"])
+    })
 
     analysis = json.loads(result)
 
@@ -137,12 +148,12 @@ async def test_safe_sarcasm_vs_harsh_sarcasm():
     """Test that safe relatable sarcasm is distinguished from harsh sarcasm"""
     safe_post = get_test_post("safe_sarcasm_relatable")
 
-    result = await analyze_post_tone_and_intent(
-        post_text=safe_post["post_text"],
-        author_handle=safe_post["author_handle"],
-        author_followers=safe_post["author_followers"],
-        engagement_metrics=json.dumps(safe_post["engagement_metrics"])
-    )
+    result = await analyze_post_tone_and_intent.ainvoke({
+        "post_text": safe_post["post_text"],
+        "author_handle": safe_post["author_handle"],
+        "author_followers": safe_post["author_followers"],
+        "engagement_metrics": json.dumps(safe_post["engagement_metrics"])
+    })
 
     analysis = json.loads(result)
 
@@ -165,12 +176,12 @@ async def test_genuine_question_engagement():
     """Test that genuine questions are recommended for thoughtful engagement"""
     post = get_test_post("genuine_question")
 
-    result = await analyze_post_tone_and_intent(
-        post_text=post["post_text"],
-        author_handle=post["author_handle"],
-        author_followers=post["author_followers"],
-        engagement_metrics=json.dumps(post["engagement_metrics"])
-    )
+    result = await analyze_post_tone_and_intent.ainvoke({
+        "post_text": post["post_text"],
+        "author_handle": post["author_handle"],
+        "author_followers": post["author_followers"],
+        "engagement_metrics": json.dumps(post["engagement_metrics"])
+    })
 
     analysis = json.loads(result)
 
@@ -190,12 +201,12 @@ async def test_performance_latency():
 
     start_time = time.time()
 
-    result = await analyze_post_tone_and_intent(
-        post_text=post["post_text"],
-        author_handle=post["author_handle"],
-        author_followers=post["author_followers"],
-        engagement_metrics=json.dumps(post["engagement_metrics"])
-    )
+    result = await analyze_post_tone_and_intent.ainvoke({
+        "post_text": post["post_text"],
+        "author_handle": post["author_handle"],
+        "author_followers": post["author_followers"],
+        "engagement_metrics": json.dumps(post["engagement_metrics"])
+    })
 
     elapsed = time.time() - start_time
 
@@ -212,20 +223,20 @@ async def test_cache_functionality():
 
     # First call (uncached)
     start1 = time.time()
-    result1 = await analyze_post_tone_and_intent(
-        post_text=post["post_text"],
-        author_handle=post["author_handle"],
-        author_followers=post["author_followers"]
-    )
+    result1 = await analyze_post_tone_and_intent.ainvoke({
+        "post_text": post["post_text"],
+        "author_handle": post["author_handle"],
+        "author_followers": post["author_followers"]
+    })
     elapsed1 = time.time() - start1
 
     # Second call (should be cached)
     start2 = time.time()
-    result2 = await analyze_post_tone_and_intent(
-        post_text=post["post_text"],
-        author_handle=post["author_handle"],
-        author_followers=post["author_followers"]
-    )
+    result2 = await analyze_post_tone_and_intent.ainvoke({
+        "post_text": post["post_text"],
+        "author_handle": post["author_handle"],
+        "author_followers": post["author_followers"]
+    })
     elapsed2 = time.time() - start2
 
     # Results should be identical
@@ -244,12 +255,12 @@ async def test_all_posts_in_dataset():
 
     for post in TEST_POSTS:
         try:
-            result = await analyze_post_tone_and_intent(
-                post_text=post["post_text"],
-                author_handle=post["author_handle"],
-                author_followers=post["author_followers"],
-                engagement_metrics=json.dumps(post.get("engagement_metrics", {}))
-            )
+            result = await analyze_post_tone_and_intent.ainvoke({
+                "post_text": post["post_text"],
+                "author_handle": post["author_handle"],
+                "author_followers": post["author_followers"],
+                "engagement_metrics": json.dumps(post.get("engagement_metrics", {}))
+            })
 
             analysis = json.loads(result)
             results.append({

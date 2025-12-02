@@ -802,7 +802,7 @@ Common issues:
             model = init_chat_model(
                 "claude-sonnet-4-5-20250929",
                 model_provider="anthropic",
-                temperature=0.7,
+                temperature=1.0,  # Required when thinking is enabled
                 model_kwargs={
                     "thinking": {
                         "type": "enabled",
