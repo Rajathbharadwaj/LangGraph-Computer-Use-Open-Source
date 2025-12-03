@@ -15,7 +15,6 @@ TEST_POSTS = [
         "id": "humor_debugging",
         "post_text": "My debugging process:\n\n1. It doesn't work\n2. Why doesn't it work?\n3. Oh that's why\n4. Now it works\n5. Why does it work now?\n\n😭",
         "author_handle": "devmemes",
-        "author_followers": 5000,
         "engagement_metrics": {"likes": 250, "retweets": 45, "replies": 12},
         "expected_analysis": {
             "tone": "humorous",
@@ -31,7 +30,6 @@ TEST_POSTS = [
         "id": "educational_technical",
         "post_text": "Deep dive into Python's GIL and why it matters for concurrent programming:\n\nThread 🧵\n\n1/ The Global Interpreter Lock (GIL) is a mutex that protects access to Python objects, preventing multiple threads from executing Python bytecodes at once.\n\nThis means CPU-bound Python programs don't benefit from multi-threading...",
         "author_handle": "pythonexpert",
-        "author_followers": 12000,
         "engagement_metrics": {"likes": 450, "retweets": 120, "replies": 35},
         "expected_analysis": {
             "tone": "serious",
@@ -47,7 +45,6 @@ TEST_POSTS = [
         "id": "hard_sarcasm_risky",
         "post_text": "Oh yeah, writing tests is SUCH a waste of time. Who needs tests when you have production users to find bugs for you? 🙄\n\nJust ship it and pray, that's my motto. Works every time! 💯",
         "author_handle": "frustrateddev",
-        "author_followers": 800,
         "engagement_metrics": {"likes": 15, "retweets": 2, "replies": 8},
         "expected_analysis": {
             "tone": "sarcastic",
@@ -63,7 +60,6 @@ TEST_POSTS = [
         "id": "promotional_spam",
         "post_text": "🚀 Make $10k/month with my NEW COURSE on web development! 💰\n\n✅ No experience needed\n✅ Learn in 7 days\n✅ Guaranteed results\n\nLink in bio! 👇 DM me for discount code! 🔥🔥🔥",
         "author_handle": "webdevguru2024",
-        "author_followers": 450,
         "engagement_metrics": {"likes": 5, "retweets": 1, "replies": 0},
         "expected_analysis": {
             "tone": "neutral",  # Promotional tone
@@ -79,7 +75,6 @@ TEST_POSTS = [
         "id": "safe_sarcasm_relatable",
         "post_text": "Me: *writes clean, well-documented code*\n\nMe 3 months later looking at the same code: \"What absolute genius wrote this masterpiece? Oh wait, it was me. Past me was a legend.\" 😎",
         "author_handle": "codinglife",
-        "author_followers": 8500,
         "engagement_metrics": {"likes": 320, "retweets": 55, "replies": 18},
         "expected_analysis": {
             "tone": "humorous",  # Self-deprecating humor, not harsh sarcasm
@@ -95,7 +90,6 @@ TEST_POSTS = [
         "id": "genuine_question",
         "post_text": "Quick question for React devs: What's your preferred state management solution in 2024?\n\nI'm torn between:\n- Redux Toolkit\n- Zustand\n- Jotai\n- Context + useReducer\n\nWorking on a medium-sized app (~20 components). What would you recommend and why?",
         "author_handle": "reactlearner",
-        "author_followers": 1200,
         "engagement_metrics": {"likes": 45, "retweets": 5, "replies": 32},
         "expected_analysis": {
             "tone": "neutral",
@@ -130,7 +124,6 @@ def print_test_dataset():
 
     for i, post in enumerate(TEST_POSTS, 1):
         print(f"\n{i}. {post['id'].upper()}")
-        print(f"   Author: @{post['author_handle']} ({post['author_followers']:,} followers)")
         print(f"   Post: {post['post_text'][:100]}...")
         print(f"   Expected: {post['expected_analysis']['tone']} / {post['expected_analysis']['intent']}")
         print(f"   Engage? {post['expected_analysis']['engagement_worthy']}")

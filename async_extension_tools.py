@@ -760,7 +760,6 @@ Common issues:
     async def analyze_post_tone_and_intent(
         post_text: str,
         author_handle: str,
-        author_followers: int = 0,
         engagement_metrics: str = None,
         post_age: str = "unknown",
         thread_context: str = None
@@ -773,6 +772,13 @@ Common issues:
         - Intent (educational, viral bait, meme, promotion, etc.)
         - Quality and originality
         - Whether the post is worth engaging with
+
+        Args:
+            post_text: The post content to analyze
+            author_handle: Twitter handle of the author
+            engagement_metrics: Optional engagement data
+            post_age: How long ago the post was made
+            thread_context: Optional thread context
 
         Returns JSON with structured analysis including thinking summary.
         """
@@ -817,7 +823,7 @@ Common issues:
 POST CONTENT:
 "{post_text}"
 
-AUTHOR: @{author_handle} ({author_followers:,} followers)
+AUTHOR: @{author_handle}
 ENGAGEMENT: {engagement_metrics or 'Unknown'}
 POSTED: {post_age}
 {f"THREAD CONTEXT: {thread_context}" if thread_context else ""}

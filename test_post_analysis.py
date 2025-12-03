@@ -27,8 +27,6 @@ for tool in _tools:
 
 if not analyze_post_tone_and_intent:
     raise ImportError("analyze_post_tone_and_intent tool not found in async extension tools")
-
-
 @pytest.mark.asyncio
 async def test_humor_detection():
     """Test that humorous posts are detected correctly"""
@@ -37,7 +35,6 @@ async def test_humor_detection():
     result = await analyze_post_tone_and_intent.ainvoke({
         "post_text": post["post_text"],
         "author_handle": post["author_handle"],
-        "author_followers": post["author_followers"],
         "engagement_metrics": json.dumps(post["engagement_metrics"])
     })
 
@@ -50,8 +47,6 @@ async def test_humor_detection():
     assert len(analysis.get("thinking_summary", "")) > 0, "Should have thinking summary"
 
     print(f"✅ Humor detection passed: {analysis['tone']} (confidence: {analysis['confidence']:.2f})")
-
-
 @pytest.mark.asyncio
 async def test_spam_rejection():
     """Test that promotional spam is rejected"""
@@ -60,7 +55,6 @@ async def test_spam_rejection():
     result = await analyze_post_tone_and_intent.ainvoke({
         "post_text": post["post_text"],
         "author_handle": post["author_handle"],
-        "author_followers": post["author_followers"],
         "engagement_metrics": json.dumps(post["engagement_metrics"])
     })
 
@@ -71,8 +65,6 @@ async def test_spam_rejection():
     assert analysis["recommended_response_type"] == "skip", "Should recommend skip for spam"
 
     print(f"✅ Spam rejection passed: {analysis['intent']} (engagement_worthy: {analysis['engagement_worthy']})")
-
-
 @pytest.mark.asyncio
 async def test_sarcasm_detection():
     """Test that sarcastic posts are detected with appropriate confidence"""
@@ -81,7 +73,6 @@ async def test_sarcasm_detection():
     result = await analyze_post_tone_and_intent.ainvoke({
         "post_text": post["post_text"],
         "author_handle": post["author_handle"],
-        "author_followers": post["author_followers"],
         "engagement_metrics": json.dumps(post["engagement_metrics"])
     })
 
@@ -96,8 +87,6 @@ async def test_sarcasm_detection():
             "Low-confidence sarcasm should be skipped"
 
     print(f"✅ Sarcasm detection passed: {analysis['tone']} (confidence: {analysis['confidence']:.2f}, engage: {analysis['engagement_worthy']})")
-
-
 @pytest.mark.asyncio
 async def test_educational_approval():
     """Test that high-quality educational content is approved"""
@@ -106,7 +95,6 @@ async def test_educational_approval():
     result = await analyze_post_tone_and_intent.ainvoke({
         "post_text": post["post_text"],
         "author_handle": post["author_handle"],
-        "author_followers": post["author_followers"],
         "engagement_metrics": json.dumps(post["engagement_metrics"])
     })
 
@@ -120,8 +108,6 @@ async def test_educational_approval():
         "Educational posts deserve thoughtful comments"
 
     print(f"✅ Educational approval passed: quality={analysis['quality_score']}, engage={analysis['engagement_worthy']}")
-
-
 @pytest.mark.asyncio
 async def test_extended_thinking_present():
     """Test that extended thinking reasoning is captured"""
@@ -130,7 +116,6 @@ async def test_extended_thinking_present():
     result = await analyze_post_tone_and_intent.ainvoke({
         "post_text": post["post_text"],
         "author_handle": post["author_handle"],
-        "author_followers": post["author_followers"],
         "engagement_metrics": json.dumps(post["engagement_metrics"])
     })
 
@@ -141,8 +126,6 @@ async def test_extended_thinking_present():
     # but the field should exist
 
     print(f"✅ Extended thinking field present: {len(analysis.get('thinking_summary', ''))} chars")
-
-
 @pytest.mark.asyncio
 async def test_safe_sarcasm_vs_harsh_sarcasm():
     """Test that safe relatable sarcasm is distinguished from harsh sarcasm"""
@@ -169,8 +152,6 @@ async def test_safe_sarcasm_vs_harsh_sarcasm():
         assert analysis["confidence"] >= 0.7, "Sarcastic classification needs decent confidence"
 
     print(f"✅ Safe sarcasm test passed: {analysis['tone']} (confidence: {analysis['confidence']:.2f})")
-
-
 @pytest.mark.asyncio
 async def test_genuine_question_engagement():
     """Test that genuine questions are recommended for thoughtful engagement"""
@@ -179,7 +160,6 @@ async def test_genuine_question_engagement():
     result = await analyze_post_tone_and_intent.ainvoke({
         "post_text": post["post_text"],
         "author_handle": post["author_handle"],
-        "author_followers": post["author_followers"],
         "engagement_metrics": json.dumps(post["engagement_metrics"])
     })
 
@@ -192,8 +172,6 @@ async def test_genuine_question_engagement():
         "Questions need thoughtful responses"
 
     print(f"✅ Question engagement passed: {analysis['intent']}, response_type={analysis['recommended_response_type']}")
-
-
 @pytest.mark.asyncio
 async def test_performance_latency():
     """Test that analysis completes within acceptable time (<5 seconds)"""
@@ -204,7 +182,6 @@ async def test_performance_latency():
     result = await analyze_post_tone_and_intent.ainvoke({
         "post_text": post["post_text"],
         "author_handle": post["author_handle"],
-        "author_followers": post["author_followers"],
         "engagement_metrics": json.dumps(post["engagement_metrics"])
     })
 
@@ -214,8 +191,6 @@ async def test_performance_latency():
     assert elapsed < 10.0, f"Analysis took {elapsed:.2f}s, expected <10s"
 
     print(f"✅ Performance test passed: {elapsed:.2f}s")
-
-
 @pytest.mark.asyncio
 async def test_cache_functionality():
     """Test that caching works (second call is faster)"""
@@ -246,8 +221,6 @@ async def test_cache_functionality():
     assert elapsed2 < 0.5, f"Cache retrieval took {elapsed2:.2f}s, expected <0.5s"
 
     print(f"✅ Cache test passed: first={elapsed1:.2f}s, cached={elapsed2:.2f}s")
-
-
 @pytest.mark.asyncio
 async def test_all_posts_in_dataset():
     """Run analysis on all test posts to ensure no crashes"""
@@ -258,7 +231,7 @@ async def test_all_posts_in_dataset():
             result = await analyze_post_tone_and_intent.ainvoke({
                 "post_text": post["post_text"],
                 "author_handle": post["author_handle"],
-                "author_followers": post["author_followers"],
+                
                 "engagement_metrics": json.dumps(post.get("engagement_metrics", {}))
             })
 
@@ -284,8 +257,6 @@ async def test_all_posts_in_dataset():
     assert len(failures) == 0, f"Some posts failed: {failures}"
 
     print(f"✅ All {len(TEST_POSTS)} test posts analyzed successfully")
-
-
 if __name__ == "__main__":
     print("=" * 80)
     print("POST TONE ANALYSIS UNIT TESTS")
