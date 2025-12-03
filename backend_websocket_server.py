@@ -43,7 +43,7 @@ import uuid
 
 # Database imports
 from database.database import SessionLocal, get_db
-from database.models import ScheduledPost, XAccount, CronJob, CronJobRun
+from database.models import ScheduledPost, XAccount, CronJob, CronJobRun, User
 from sqlalchemy.orm import Session
 from fastapi import Depends
 
@@ -3802,6 +3802,21 @@ async def create_cron_job(
     try:
         from cron_job_executor import get_cron_executor
 
+        # Ensure user exists in database (in case webhook hasn't run yet)
+        user = db.query(User).filter(User.id == user_id).first()
+        if not user:
+            # Get email from JWT token payload
+            from clerk_auth import verify_clerk_token
+            from fastapi import Header
+            # Create user on the fly if they don't exist
+            user = User(
+                id=user_id,
+                email=f"{user_id}@temp.com"  # Temporary email, will be updated by webhook
+            )
+            db.add(user)
+            db.commit()
+            print(f"✅ Created user {user_id} in database")
+
         # Create cron job in database
         cron_job = CronJob(
             user_id=user_id,
@@ -3825,7 +3840,7 @@ async def create_cron_job(
             "message": "Cron job created successfully"
         }
     except Exception as e:
-        logger.error(f"Error creating cron job: {e}")
+        print(f"Error creating cron job: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -3889,7 +3904,7 @@ async def delete_cron_job(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error deleting cron job: {e}")
+        print(f"Error deleting cron job: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -3932,7 +3947,7 @@ async def get_cron_job_runs(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error getting cron job runs: {e}")
+        print(f"Error getting cron job runs: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
