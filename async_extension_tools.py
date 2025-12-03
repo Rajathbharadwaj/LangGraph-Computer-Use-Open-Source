@@ -6,12 +6,15 @@ These tools complement Playwright by offering capabilities Playwright doesn't ha
 """
 
 import asyncio
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Literal
 import aiohttp
 import json
 import os
+import hashlib
+from datetime import datetime, timedelta
 from langchain_core.tools import tool
 from pydantic import BaseModel, Field
+from langchain.chat_models import init_chat_model
 
 
 class AsyncExtensionClient:
@@ -62,6 +65,70 @@ class AsyncExtensionClient:
 
 # Global client instance
 _global_extension_client = AsyncExtensionClient()
+
+
+# ============================================================================
+# POST ANALYSIS MODELS & HELPERS (Issue #16: Better Post Understanding)
+# ============================================================================
+
+class PostAnalysis(BaseModel):
+    """Structured analysis of post tone and intent using Claude's extended thinking"""
+    tone: Literal["sarcastic", "serious", "humorous", "inspirational", "angry", "neutral"]
+    tone_confidence: float = Field(ge=0.0, le=1.0, description="Confidence in tone detection")
+    intent: Literal["educational", "viral_bait", "personal_story", "hot_take",
+                    "promotion", "meme", "conversation_starter", "question"]
+    intent_confidence: float = Field(ge=0.0, le=1.0, description="Confidence in intent detection")
+    quality_score: int = Field(ge=0, le=100, description="Overall content quality")
+    originality_score: int = Field(ge=0, le=100, description="How original/derivative")
+    engagement_worthy: bool = Field(description="Should we engage with this post?")
+    recommended_response_type: Literal["thoughtful_comment", "quick_reaction", "question", "skip"]
+    reasoning: str = Field(description="Why this analysis was reached")
+    confidence: float = Field(ge=0.0, le=1.0, description="Overall analysis confidence")
+    thinking_summary: str = Field(default="", description="Claude's reasoning process")
+
+
+def get_cached_analysis(cache_key: str, user_id: str = None):
+    """Retrieve cached post analysis from LangGraph Store"""
+    if not user_id or not hasattr(_global_extension_client, 'store') or _global_extension_client.store is None:
+        return None
+
+    try:
+        namespace = (user_id, "post_analyses")
+        result = _global_extension_client.store.get(namespace, cache_key)
+        return result.value if result else None
+    except Exception as e:
+        print(f"⚠️  Cache retrieval failed: {e}")
+        return None
+
+
+def save_to_cache(cache_key: str, analysis: dict, thinking: str, user_id: str = None, action_taken: str = "pending"):
+    """Save analysis to cache with extended thinking reasoning"""
+    if not user_id or not hasattr(_global_extension_client, 'store') or _global_extension_client.store is None:
+        return
+
+    try:
+        namespace = (user_id, "post_analyses")
+        cache_data = {
+            "analysis": analysis,
+            "thinking_content": thinking,
+            "cached_at": datetime.now().isoformat(),
+            "action_taken": action_taken,
+            "outcome": None  # Will be updated later
+        }
+        _global_extension_client.store.put(namespace, cache_key, cache_data)
+        print(f"✅ Cached analysis: {cache_key[:20]}... (action: {action_taken})")
+    except Exception as e:
+        print(f"⚠️  Cache save failed: {e}")
+
+
+def is_recent(cached_data: dict, hours: int = 24) -> bool:
+    """Check if cached data is recent enough to use"""
+    try:
+        cached_at = datetime.fromisoformat(cached_data.get("cached_at", "2000-01-01"))
+        age = datetime.now() - cached_at
+        return age.total_seconds() < (hours * 3600)
+    except Exception:
+        return False
 
 
 def create_async_extension_tools():
@@ -689,6 +756,259 @@ Common issues:
         except Exception as e:
             return f"❌ Extension tool failed: {str(e)}"
 
+    @tool
+    async def analyze_post_tone_and_intent(
+        post_text: str,
+        author_handle: str,
+        engagement_metrics: str = None,
+        post_age: str = "unknown",
+        thread_context: str = None
+    ) -> str:
+        """
+        Deeply analyze a post's tone, intent, and engagement-worthiness using Claude's extended thinking.
+
+        This tool uses extended thinking to reason about:
+        - Tone (sarcastic, serious, humorous, inspirational, angry, neutral)
+        - Intent (educational, viral bait, meme, promotion, etc.)
+        - Quality and originality
+        - Whether the post is worth engaging with
+
+        Args:
+            post_text: The post content to analyze
+            author_handle: Twitter handle of the author
+            engagement_metrics: Optional engagement data
+            post_age: How long ago the post was made
+            thread_context: Optional thread context
+
+        Returns JSON with structured analysis including thinking summary.
+        """
+        try:
+            import time
+            start_time = time.time()
+
+            # Get user_id from runtime if available (for caching)
+            user_id = None
+            if hasattr(_global_extension_client, 'store') and _global_extension_client.store:
+                # Try to extract user_id from store namespace
+                user_id = "default"  # Fallback
+
+            # Check cache first
+            cache_key = f"{author_handle}_{hashlib.md5(post_text.encode()).hexdigest()[:16]}"
+            cached = get_cached_analysis(cache_key, user_id)
+
+            if cached and is_recent(cached, hours=24):
+                print(f"✅ Using cached analysis for {author_handle} (saved API call)")
+                duration = time.time() - start_time
+                print(f"⏱️  Cache retrieval: {duration:.2f}s")
+                return json.dumps(cached["analysis"], indent=2)
+
+            # Initialize model with extended thinking (LangGraph way)
+            print(f"🧠 Analyzing post from @{author_handle} with extended thinking...")
+
+            model = init_chat_model(
+                "claude-sonnet-4-5-20250929",
+                model_provider="anthropic",
+                temperature=1.0,  # Required when thinking is enabled
+                model_kwargs={
+                    "thinking": {
+                        "type": "enabled",
+                        "budget_tokens": 1500
+                    }
+                }
+            )
+
+            # Build analysis prompt
+            analysis_prompt = f"""Analyze this X (Twitter) post deeply to determine if it's worth engaging with.
+
+POST CONTENT:
+"{post_text}"
+
+AUTHOR: @{author_handle}
+ENGAGEMENT: {engagement_metrics or 'Unknown'}
+POSTED: {post_age}
+{f"THREAD CONTEXT: {thread_context}" if thread_context else ""}
+
+ANALYZE DEEPLY:
+
+1. TONE: Is this sarcastic, serious, humorous, inspirational, angry, or neutral?
+   - What emotional undertone exists?
+   - Is the author being genuine or performative?
+
+2. INTENT: What is the author trying to achieve?
+   - Educational: Teaching something valuable
+   - Viral Bait: Designed for engagement/outrage
+   - Personal Story: Sharing experience
+   - Hot Take: Controversial opinion
+   - Promotion: Selling something
+   - Meme: Joke/humor
+   - Conversation Starter: Genuine question
+   - Question: Asking for help/input
+
+3. QUALITY: Is this original content or spam?
+   - Does it provide value or noise?
+   - Thoughtful or low-effort?
+   - Original insight or derivative?
+
+4. ENGAGEMENT DECISION: Should we engage?
+   - If yes, what type of comment is appropriate?
+   - If no, why not?
+
+Think deeply about nuances, context, subtext, and what's NOT said. Consider cultural context, memes, and online communication patterns.
+
+OUTPUT ONLY VALID JSON in this exact format (no markdown, no code blocks):
+{{
+    "tone": "sarcastic" | "serious" | "humorous" | "inspirational" | "angry" | "neutral",
+    "tone_confidence": 0.0-1.0,
+    "intent": "educational" | "viral_bait" | "personal_story" | "hot_take" | "promotion" | "meme" | "conversation_starter" | "question",
+    "intent_confidence": 0.0-1.0,
+    "quality_score": 0-100,
+    "originality_score": 0-100,
+    "engagement_worthy": true | false,
+    "recommended_response_type": "thoughtful_comment" | "quick_reaction" | "question" | "skip",
+    "reasoning": "2-3 sentence explanation of your analysis",
+    "confidence": 0.0-1.0
+}}"""
+
+            # Invoke model with extended thinking
+            response = model.invoke(analysis_prompt)
+
+            # Extract thinking + analysis
+            thinking_content = ""
+            analysis_text = ""
+
+            # Access content_blocks for extended thinking
+            if hasattr(response, 'content'):
+                # Handle different response formats
+                if isinstance(response.content, list):
+                    for block in response.content:
+                        if isinstance(block, dict):
+                            if block.get("type") == "thinking":
+                                thinking_content = block.get("thinking", "")
+                            elif block.get("type") == "text":
+                                analysis_text = block.get("text", "")
+                        else:
+                            # Handle AIMessageChunk or similar
+                            if hasattr(block, 'type') and block.type == "thinking":
+                                thinking_content = getattr(block, 'thinking', '')
+                            elif hasattr(block, 'type') and block.type == "text":
+                                analysis_text = getattr(block, 'text', '')
+                elif isinstance(response.content, str):
+                    analysis_text = response.content
+
+            # Fallback: if no analysis_text, try to get from response directly
+            if not analysis_text and hasattr(response, 'content'):
+                if isinstance(response.content, str):
+                    analysis_text = response.content
+
+            # Parse JSON response
+            try:
+                # Clean up any markdown code blocks if present
+                if "```json" in analysis_text:
+                    analysis_text = analysis_text.split("```json")[1].split("```")[0].strip()
+                elif "```" in analysis_text:
+                    analysis_text = analysis_text.split("```")[1].split("```")[0].strip()
+
+                analysis = json.loads(analysis_text)
+                analysis["thinking_summary"] = thinking_content[:500] if thinking_content else "Extended thinking not available"
+
+                # Validate required fields
+                required_fields = ["tone", "intent", "engagement_worthy", "confidence", "reasoning"]
+                for field in required_fields:
+                    if field not in analysis:
+                        raise ValueError(f"Missing required field: {field}")
+
+            except (json.JSONDecodeError, ValueError) as e:
+                print(f"⚠️  JSON parsing failed: {e}")
+                print(f"Raw response: {analysis_text[:200]}...")
+                # Fallback heuristic analysis
+                analysis = fallback_heuristic_analysis(post_text, thinking_content)
+
+            # Log analysis duration
+            duration = time.time() - start_time
+            print(f"✅ Analysis complete: {duration:.2f}s")
+            print(f"   Tone: {analysis.get('tone')} (confidence: {analysis.get('tone_confidence', 0):.2f})")
+            print(f"   Intent: {analysis.get('intent')} (confidence: {analysis.get('intent_confidence', 0):.2f})")
+            print(f"   Engagement worthy: {analysis.get('engagement_worthy')}")
+            print(f"   Reasoning: {analysis.get('reasoning', '')[:100]}...")
+
+            # Cache result
+            save_to_cache(cache_key, analysis, thinking_content, user_id, action_taken="analyzed")
+
+            return json.dumps(analysis, indent=2)
+
+        except Exception as e:
+            print(f"❌ analyze_post_tone_and_intent failed: {e}")
+            import traceback
+            traceback.print_exc()
+
+            # Return fallback analysis
+            fallback = {
+                "tone": "neutral",
+                "tone_confidence": 0.3,
+                "intent": "conversation_starter",
+                "intent_confidence": 0.3,
+                "quality_score": 50,
+                "originality_score": 50,
+                "engagement_worthy": True,
+                "recommended_response_type": "thoughtful_comment",
+                "reasoning": f"Analysis failed with error: {str(e)}. Defaulting to neutral, low-confidence assessment.",
+                "confidence": 0.3,
+                "thinking_summary": "Error during analysis"
+            }
+            return json.dumps(fallback, indent=2)
+
+    # Helper function for fallback heuristic analysis
+    def fallback_heuristic_analysis(post_text: str, thinking_content: str = "") -> dict:
+        """Simple rule-based analysis if extended thinking fails"""
+        text_lower = post_text.lower()
+
+        # Detect obvious spam/promotion
+        if any(keyword in text_lower for keyword in ["link in bio", "dm me", "check out", "buy now", "limited time"]):
+            return {
+                "tone": "neutral",
+                "tone_confidence": 0.7,
+                "intent": "promotion",
+                "intent_confidence": 0.8,
+                "quality_score": 20,
+                "originality_score": 10,
+                "engagement_worthy": False,
+                "recommended_response_type": "skip",
+                "reasoning": "Detected promotional language - likely spam or self-promotion",
+                "confidence": 0.7,
+                "thinking_summary": thinking_content[:500] if thinking_content else "Fallback heuristic used"
+            }
+
+        # Detect questions
+        if "?" in post_text and len(post_text) < 280:
+            return {
+                "tone": "serious",
+                "tone_confidence": 0.6,
+                "intent": "question",
+                "intent_confidence": 0.7,
+                "quality_score": 60,
+                "originality_score": 50,
+                "engagement_worthy": True,
+                "recommended_response_type": "thoughtful_comment",
+                "reasoning": "Question detected - likely seeking genuine input",
+                "confidence": 0.6,
+                "thinking_summary": thinking_content[:500] if thinking_content else "Fallback heuristic used"
+            }
+
+        # Default: neutral, moderate confidence
+        return {
+            "tone": "neutral",
+            "tone_confidence": 0.5,
+            "intent": "conversation_starter",
+            "intent_confidence": 0.5,
+            "quality_score": 50,
+            "originality_score": 50,
+            "engagement_worthy": True,
+            "recommended_response_type": "thoughtful_comment",
+            "reasoning": "Fallback analysis - no strong signals detected. Defaulting to cautious engagement.",
+            "confidence": 0.5,
+            "thinking_summary": thinking_content[:500] if thinking_content else "Fallback heuristic used"
+        }
+
     # Return all extension tools
     return [
         extract_post_engagement_data,
@@ -702,7 +1022,8 @@ Common issues:
         get_trending_topics,
         find_high_engagement_posts,
         comment_on_post_via_extension,
-        create_post_via_extension
+        create_post_via_extension,
+        analyze_post_tone_and_intent  # NEW: Issue #16 - Post tone analysis with extended thinking
     ]
 
 
