@@ -12,8 +12,16 @@ Available Workflows:
 5. dm_outreach_workflow - Send DMs to potential connections
 """
 
-from typing import Dict, List, Any
+from typing import Dict, List, Any, Optional
 from dataclasses import dataclass
+
+# Import JSON workflow loader
+try:
+    from json_workflow_loader import get_json_workflow_prompt, list_json_workflows
+    JSON_WORKFLOWS_AVAILABLE = True
+except ImportError:
+    print("⚠️  JSON workflow loader not available")
+    JSON_WORKFLOWS_AVAILABLE = False
 
 
 @dataclass
@@ -373,16 +381,49 @@ def list_workflows() -> List[str]:
 def get_workflow_prompt(goal: str, **kwargs) -> str:
     """
     Get the full prompt for a workflow with parameters
-    
+
+    Checks for JSON workflows first (e.g., 'reply_guy_strategy', 'follower_farming'),
+    then falls back to Python workflows (e.g., 'engagement', 'content_posting').
+
     Args:
-        goal: The workflow goal (e.g., 'engagement')
+        goal: The workflow goal/ID (e.g., 'reply_guy_strategy' or 'engagement')
         **kwargs: Parameters for the workflow (e.g., keywords='AI agents', target_user='@elonmusk')
-    
+
     Returns:
         Full prompt for the DeepAgent
     """
+    # PRIORITY 1: Check for JSON workflows first
+    if JSON_WORKFLOWS_AVAILABLE:
+        json_prompt = get_json_workflow_prompt(goal)
+        if json_prompt:
+            print(f"✅ Using JSON workflow: {goal}")
+
+            # Add parameters section if any were provided
+            if kwargs:
+                param_section = "\n## Additional Parameters\n"
+                for key, value in kwargs.items():
+                    param_section += f"- **{key.replace('_', ' ').title()}:** {value}\n"
+                json_prompt += param_section
+
+            # Add execution rules footer
+            json_prompt += """
+
+## Execution Rules
+1. Use your autonomous judgment to accomplish the objective
+2. Use task() to delegate atomic actions to subagents
+3. Take screenshots frequently with get_comprehensive_context
+4. Check action_history.json before engaging to avoid duplicates
+5. NEVER engage with same post/user twice in 24 hours
+6. Track daily limits: 50 likes, 20 comments, 10 DMs
+7. Be authentic - no spam, no generic comments
+
+START EXECUTION NOW.
+"""
+            return json_prompt
+
+    # PRIORITY 2: Fall back to Python workflows
     workflow = get_workflow(goal)
-    
+
     prompt = f"""
 🎯 EXECUTE WORKFLOW: {workflow.name}
 
@@ -392,9 +433,9 @@ PARAMETERS:
 """
     for key, value in kwargs.items():
         prompt += f"- {key}: {value}\n"
-    
+
     prompt += workflow.to_prompt()
-    
+
     prompt += """
 
 EXECUTION RULES:
@@ -414,7 +455,7 @@ MEMORY CHECKS:
 
 START EXECUTION NOW.
 """
-    
+
     return prompt
 
 
