@@ -43,7 +43,7 @@ import uuid
 
 # Database imports
 from database.database import SessionLocal, get_db
-from database.models import ScheduledPost, XAccount
+from database.models import ScheduledPost, XAccount, CronJob, CronJobRun
 from sqlalchemy.orm import Session
 from fastapi import Depends
 
@@ -114,6 +114,16 @@ async def lifespan(app: FastAPI):
         print(f"✅ Scheduled post executor initialized with {len(executor.get_scheduled_posts())} pending posts")
     except Exception as e:
         print(f"❌ Failed to initialize scheduled post executor: {e}")
+        import traceback
+        traceback.print_exc()
+
+    # Initialize cron job executor
+    try:
+        from cron_job_executor import get_cron_executor
+        cron_executor = await get_cron_executor()
+        print(f"✅ Cron job executor initialized with {len(cron_executor.scheduled_jobs)} active jobs")
+    except Exception as e:
+        print(f"❌ Failed to initialize cron executor: {e}")
         import traceback
         traceback.print_exc()
 
@@ -3764,6 +3774,165 @@ async def generate_ai_content(
         print(f"❌ Error generating AI content: {e}")
         import traceback
         traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================================================
+# CRON JOBS API - Recurring Workflow Automation
+# ============================================================================
+
+@app.post("/api/cron-jobs")
+async def create_cron_job(
+    request: dict,
+    user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Create a new recurring cron job for workflow automation
+
+    Body:
+    {
+        "name": "Daily Reply Guy Strategy",
+        "schedule": "0 9 * * *",  # Cron expression
+        "workflow_id": "reply_guy_strategy",  # Optional
+        "custom_prompt": "...",  # Optional (if no workflow)
+        "input_config": {}  # Optional additional params
+    }
+    """
+    try:
+        from cron_job_executor import get_cron_executor
+
+        # Create cron job in database
+        cron_job = CronJob(
+            user_id=user["clerk_user_id"],
+            name=request["name"],
+            schedule=request["schedule"],
+            workflow_id=request.get("workflow_id"),
+            custom_prompt=request.get("custom_prompt"),
+            input_config=request.get("input_config", {}),
+            is_active=True
+        )
+        db.add(cron_job)
+        db.commit()
+        db.refresh(cron_job)
+
+        # Schedule with APScheduler
+        executor = await get_cron_executor()
+        executor.schedule_cron_job(cron_job)
+
+        return {
+            "cron_job_id": cron_job.id,
+            "message": "Cron job created successfully"
+        }
+    except Exception as e:
+        logger.error(f"Error creating cron job: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/cron-jobs")
+async def list_cron_jobs(
+    user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Get all cron jobs for authenticated user"""
+    try:
+        cron_jobs = db.query(CronJob).filter(
+            CronJob.user_id == user["clerk_user_id"]
+        ).order_by(CronJob.created_at.desc()).all()
+
+        return {
+            "cron_jobs": [
+                {
+                    "id": job.id,
+                    "name": job.name,
+                    "schedule": job.schedule,
+                    "workflow_id": job.workflow_id,
+                    "is_active": job.is_active,
+                    "last_run_at": job.last_run_at.isoformat() if job.last_run_at else None,
+                    "created_at": job.created_at.isoformat()
+                }
+                for job in cron_jobs
+            ]
+        }
+    except Exception as e:
+        logger.error(f"Error listing cron jobs: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/api/cron-jobs/{cron_job_id}")
+async def delete_cron_job(
+    cron_job_id: int,
+    user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Delete a cron job"""
+    try:
+        from cron_job_executor import get_cron_executor
+
+        cron_job = db.query(CronJob).filter(
+            CronJob.id == cron_job_id,
+            CronJob.user_id == user["clerk_user_id"]
+        ).first()
+
+        if not cron_job:
+            raise HTTPException(status_code=404, detail="Cron job not found")
+
+        # Cancel from scheduler
+        executor = await get_cron_executor()
+        executor.cancel_cron_job(cron_job_id)
+
+        # Delete from database
+        db.delete(cron_job)
+        db.commit()
+
+        return {"message": "Cron job deleted successfully"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error deleting cron job: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/cron-jobs/{cron_job_id}/runs")
+async def get_cron_job_runs(
+    cron_job_id: int,
+    user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db),
+    limit: int = 20
+):
+    """Get execution history for a cron job"""
+    try:
+        # Verify ownership
+        cron_job = db.query(CronJob).filter(
+            CronJob.id == cron_job_id,
+            CronJob.user_id == user["clerk_user_id"]
+        ).first()
+
+        if not cron_job:
+            raise HTTPException(status_code=404, detail="Cron job not found")
+
+        # Get runs
+        runs = db.query(CronJobRun).filter(
+            CronJobRun.cron_job_id == cron_job_id
+        ).order_by(CronJobRun.started_at.desc()).limit(limit).all()
+
+        return {
+            "runs": [
+                {
+                    "id": run.id,
+                    "started_at": run.started_at.isoformat(),
+                    "completed_at": run.completed_at.isoformat() if run.completed_at else None,
+                    "status": run.status,
+                    "thread_id": run.thread_id,
+                    "error_message": run.error_message
+                }
+                for run in runs
+            ]
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting cron job runs: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
