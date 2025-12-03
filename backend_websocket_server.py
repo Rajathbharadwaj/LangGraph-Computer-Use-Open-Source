@@ -3784,7 +3784,7 @@ async def generate_ai_content(
 @app.post("/api/cron-jobs")
 async def create_cron_job(
     request: dict,
-    user: dict = Depends(get_current_user),
+    user_id: str = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """
@@ -3804,7 +3804,7 @@ async def create_cron_job(
 
         # Create cron job in database
         cron_job = CronJob(
-            user_id=user["clerk_user_id"],
+            user_id=user_id,
             name=request["name"],
             schedule=request["schedule"],
             workflow_id=request.get("workflow_id"),
@@ -3831,13 +3831,13 @@ async def create_cron_job(
 
 @app.get("/api/cron-jobs")
 async def list_cron_jobs(
-    user: dict = Depends(get_current_user),
+    user_id: str = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """Get all cron jobs for authenticated user"""
     try:
         cron_jobs = db.query(CronJob).filter(
-            CronJob.user_id == user["clerk_user_id"]
+            CronJob.user_id == user_id
         ).order_by(CronJob.created_at.desc()).all()
 
         return {
@@ -3855,14 +3855,14 @@ async def list_cron_jobs(
             ]
         }
     except Exception as e:
-        logger.error(f"Error listing cron jobs: {e}")
+        print(f"Error listing cron jobs: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.delete("/api/cron-jobs/{cron_job_id}")
 async def delete_cron_job(
     cron_job_id: int,
-    user: dict = Depends(get_current_user),
+    user_id: str = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """Delete a cron job"""
@@ -3871,7 +3871,7 @@ async def delete_cron_job(
 
         cron_job = db.query(CronJob).filter(
             CronJob.id == cron_job_id,
-            CronJob.user_id == user["clerk_user_id"]
+            CronJob.user_id == user_id
         ).first()
 
         if not cron_job:
@@ -3896,7 +3896,7 @@ async def delete_cron_job(
 @app.get("/api/cron-jobs/{cron_job_id}/runs")
 async def get_cron_job_runs(
     cron_job_id: int,
-    user: dict = Depends(get_current_user),
+    user_id: str = Depends(get_current_user),
     db: Session = Depends(get_db),
     limit: int = 20
 ):
@@ -3905,7 +3905,7 @@ async def get_cron_job_runs(
         # Verify ownership
         cron_job = db.query(CronJob).filter(
             CronJob.id == cron_job_id,
-            CronJob.user_id == user["clerk_user_id"]
+            CronJob.user_id == user_id
         ).first()
 
         if not cron_job:
