@@ -43,7 +43,7 @@ import uuid
 
 # Database imports
 from database.database import SessionLocal, get_db
-from database.models import ScheduledPost, XAccount
+from database.models import ScheduledPost, XAccount, CronJob, CronJobRun, User
 from sqlalchemy.orm import Session
 from fastapi import Depends
 
@@ -114,6 +114,16 @@ async def lifespan(app: FastAPI):
         print(f"✅ Scheduled post executor initialized with {len(executor.get_scheduled_posts())} pending posts")
     except Exception as e:
         print(f"❌ Failed to initialize scheduled post executor: {e}")
+        import traceback
+        traceback.print_exc()
+
+    # Initialize cron job executor
+    try:
+        from cron_job_executor import get_cron_executor
+        cron_executor = await get_cron_executor()
+        print(f"✅ Cron job executor initialized with {len(cron_executor.scheduled_jobs)} active jobs")
+    except Exception as e:
+        print(f"❌ Failed to initialize cron executor: {e}")
         import traceback
         traceback.print_exc()
 
@@ -3767,6 +3777,217 @@ async def generate_ai_content(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# ============================================================================
+# CRON JOBS API - Recurring Workflow Automation
+# ============================================================================
+
+@app.post("/api/cron-jobs")
+async def create_cron_job(
+    request: dict,
+    user_id: str = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Create a new recurring cron job for workflow automation
+
+    Body:
+    {
+        "name": "Daily Reply Guy Strategy",
+        "schedule": "0 9 * * *",  # Cron expression
+        "workflow_id": "reply_guy_strategy",  # Optional
+        "custom_prompt": "...",  # Optional (if no workflow)
+        "input_config": {}  # Optional additional params
+    }
+    """
+    try:
+        from cron_job_executor import get_cron_executor
+
+        # Ensure user exists in database (in case webhook hasn't run yet)
+        user = db.query(User).filter(User.id == user_id).first()
+        if not user:
+            # Get email from JWT token payload
+            from clerk_auth import verify_clerk_token
+            from fastapi import Header
+            # Create user on the fly if they don't exist
+            user = User(
+                id=user_id,
+                email=f"{user_id}@temp.com"  # Temporary email, will be updated by webhook
+            )
+            db.add(user)
+            db.commit()
+            print(f"✅ Created user {user_id} in database")
+
+        # Create cron job in database
+        cron_job = CronJob(
+            user_id=user_id,
+            name=request["name"],
+            schedule=request["schedule"],
+            workflow_id=request.get("workflow_id"),
+            custom_prompt=request.get("custom_prompt"),
+            input_config=request.get("input_config", {}),
+            is_active=True
+        )
+        db.add(cron_job)
+        db.commit()
+        db.refresh(cron_job)
+
+        # Schedule with APScheduler
+        executor = await get_cron_executor()
+        executor.schedule_cron_job(cron_job)
+
+        return {
+            "cron_job_id": cron_job.id,
+            "message": "Cron job created successfully"
+        }
+    except Exception as e:
+        print(f"Error creating cron job: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/cron-jobs")
+async def list_cron_jobs(
+    user_id: str = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Get all cron jobs for authenticated user"""
+    try:
+        cron_jobs = db.query(CronJob).filter(
+            CronJob.user_id == user_id
+        ).order_by(CronJob.created_at.desc()).all()
+
+        return {
+            "cron_jobs": [
+                {
+                    "id": job.id,
+                    "name": job.name,
+                    "schedule": job.schedule,
+                    "workflow_id": job.workflow_id,
+                    "is_active": job.is_active,
+                    "last_run_at": job.last_run_at.isoformat() if job.last_run_at else None,
+                    "created_at": job.created_at.isoformat()
+                }
+                for job in cron_jobs
+            ]
+        }
+    except Exception as e:
+        print(f"Error listing cron jobs: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/api/cron-jobs/{cron_job_id}")
+async def delete_cron_job(
+    cron_job_id: int,
+    user_id: str = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Delete a cron job"""
+    try:
+        from cron_job_executor import get_cron_executor
+
+        cron_job = db.query(CronJob).filter(
+            CronJob.id == cron_job_id,
+            CronJob.user_id == user_id
+        ).first()
+
+        if not cron_job:
+            raise HTTPException(status_code=404, detail="Cron job not found")
+
+        # Cancel from scheduler
+        executor = await get_cron_executor()
+        executor.cancel_cron_job(cron_job_id)
+
+        # Delete from database
+        db.delete(cron_job)
+        db.commit()
+
+        return {"message": "Cron job deleted successfully"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error deleting cron job: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/cron-jobs/{cron_job_id}/runs")
+async def get_cron_job_runs(
+    cron_job_id: int,
+    user_id: str = Depends(get_current_user),
+    db: Session = Depends(get_db),
+    limit: int = 20
+):
+    """Get execution history for a cron job"""
+    try:
+        # Verify ownership
+        cron_job = db.query(CronJob).filter(
+            CronJob.id == cron_job_id,
+            CronJob.user_id == user_id
+        ).first()
+
+        if not cron_job:
+            raise HTTPException(status_code=404, detail="Cron job not found")
+
+        # Get runs
+        runs = db.query(CronJobRun).filter(
+            CronJobRun.cron_job_id == cron_job_id
+        ).order_by(CronJobRun.started_at.desc()).limit(limit).all()
+
+        return {
+            "runs": [
+                {
+                    "id": run.id,
+                    "started_at": run.started_at.isoformat(),
+                    "completed_at": run.completed_at.isoformat() if run.completed_at else None,
+                    "status": run.status,
+                    "thread_id": run.thread_id,
+                    "error_message": run.error_message
+                }
+                for run in runs
+            ]
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error getting cron job runs: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/cron-jobs/debug/scheduler-status")
+async def get_scheduler_status(user_id: str = Depends(get_current_user)):
+    """Debug endpoint to check APScheduler status for current user's jobs"""
+    try:
+        from cron_job_executor import get_cron_executor
+        executor = await get_cron_executor()
+
+        # Filter jobs to only show current user's jobs
+        user_jobs = {}
+        for job_id, info in executor.scheduled_jobs.items():
+            cron_job_id = info["cron_job_id"]
+
+            # Look up the cron job in database to check user_id
+            db = SessionLocal()
+            try:
+                cron_job = db.query(CronJob).filter(CronJob.id == cron_job_id).first()
+                if cron_job and cron_job.user_id == user_id:
+                    user_jobs[job_id] = {
+                        "cron_job_id": info["cron_job_id"],
+                        "name": info["name"],
+                        "schedule": info["schedule"]
+                    }
+            finally:
+                db.close()
+
+        return {
+            "scheduler_running": executor.is_running,
+            "total_scheduled_jobs": len(user_jobs),
+            "scheduled_jobs": user_jobs
+        }
+    except Exception as e:
+        return {
+            "error": str(e),
+            "scheduler_running": False,
+            "total_scheduled_jobs": 0
+        }
+
+
 @app.get("/api/scheduled-posts/ai-drafts")
 async def get_ai_drafts(
     user_id: str,
@@ -4789,47 +5010,38 @@ async def execute_workflow_stream_endpoint(websocket: WebSocket):
 
         # Stream execution via LangGraph Platform - automatic PostgreSQL checkpointing!
         # NOTE: thread_id and assistant_id MUST be positional arguments (not keyword args)
-        # stream_mode="messages" returns tuples of (message_chunk, metadata)
+        # stream_mode="events" returns event objects - we only send tool execution updates
         async for chunk in langgraph_client.runs.stream(
             workflow_thread_id,  # Positional: thread_id (managed by PostgreSQL)
             "x_growth_deep_agent",  # Positional: assistant_id (from langgraph.json)
             input=input_data,
             config=config,
-            stream_mode="messages"  # Stream LLM tokens + metadata
+            stream_mode="events"  # Stream all events including tool calls
         ):
-            # chunk is a tuple: (message_chunk, metadata)
-            if isinstance(chunk, tuple) and len(chunk) == 2:
-                msg, metadata = chunk
+            # Handle event-based streaming - ONLY send tool updates to frontend
+            if isinstance(chunk, dict):
+                event_type = chunk.get("event")
+                data = chunk.get("data", {})
 
-                # Only send AI messages (agent responses) to the user
-                # Skip tool calls, tool messages, and system messages
-                if hasattr(msg, 'type'):
-                    msg_type = msg.type if hasattr(msg.type, '__call__') else msg.type
+                # Stream tool calls (when agent decides to use a tool)
+                if event_type == "on_tool_start":
+                    tool_name = data.get("name", "unknown_tool")
+                    tool_input = data.get("input", {})
+                    print(f"   🔧 Tool starting: {tool_name}")
+                    await websocket.send_json({
+                        "type": "tool_start",
+                        "tool_name": tool_name,
+                        "tool_input": tool_input
+                    })
 
-                    # Debug logging
-                    print(f"📨 Message type: {msg_type}")
-                    if hasattr(msg, 'content'):
-                        content_preview = str(msg.content)[:100] if msg.content else "None"
-                        print(f"   Content preview: {content_preview}")
-                    if hasattr(msg, 'tool_calls'):
-                        print(f"   Has tool_calls: {bool(msg.tool_calls)}")
-
-                    # Only stream AI messages (the agent's responses)
-                    # BUT filter out messages that contain tool calls
-                    if msg_type == 'ai' and hasattr(msg, 'content') and msg.content:
-                        # Check if this is a tool call message (AI invoking a tool)
-                        has_tool_calls = hasattr(msg, 'tool_calls') and msg.tool_calls
-
-                        if not has_tool_calls:
-                            # Only send AI messages without tool calls (pure responses)
-                            print(f"   ✅ Sending AI message to frontend")
-                            await websocket.send_json({
-                                "type": "chunk",
-                                "data": msg.content
-                            })
-                        else:
-                            print(f"   ⏭️  Skipping AI message with tool calls")
-                    # Skip tool messages, tool calls, human messages, etc.
+                # Stream tool results (when tool execution completes)
+                elif event_type == "on_tool_end":
+                    tool_name = data.get("name", "unknown_tool")
+                    print(f"   ✅ Tool completed: {tool_name}")
+                    await websocket.send_json({
+                        "type": "tool_end",
+                        "tool_name": tool_name
+                    })
 
             # Handle interrupts (Human-in-Loop)
             elif hasattr(chunk, 'event') and chunk.event == 'interrupt':

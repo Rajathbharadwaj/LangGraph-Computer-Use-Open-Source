@@ -24,6 +24,7 @@ class User(Base):
     # Relationships
     x_accounts = relationship("XAccount", back_populates="user", cascade="all, delete-orphan")
     api_usage = relationship("APIUsage", back_populates="user", cascade="all, delete-orphan")
+    cron_jobs = relationship("CronJob", back_populates="user", cascade="all, delete-orphan")
 
 
 class XAccount(Base):
@@ -155,4 +156,64 @@ class ScheduledPost(Base):
 
     # Relationships
     x_account = relationship("XAccount")
+
+
+class CronJob(Base):
+    """
+    Recurring workflow executions (cron jobs for agent automation)
+    """
+    __tablename__ = "cron_jobs"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(String, ForeignKey("users.id"), nullable=False)
+
+    # Configuration
+    name = Column(String, nullable=False)  # "Daily Reply Guy Strategy"
+    assistant_id = Column(String, default="x_growth_deep_agent")
+
+    # Scheduling
+    schedule = Column(String, nullable=False)  # Cron expression "0 9 * * *"
+    timezone = Column(String, default="UTC")
+    next_run_at = Column(DateTime, nullable=True)  # Calculated from schedule
+
+    # Workflow/Input
+    workflow_id = Column(String, nullable=True)  # Optional: "reply_guy_strategy"
+    custom_prompt = Column(Text, nullable=True)  # Optional: custom instructions
+    input_config = Column(JSON, default={})  # Additional parameters
+
+    # Status
+    is_active = Column(Boolean, default=True)
+
+    # Timestamps
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    last_run_at = Column(DateTime, nullable=True)
+
+    # Relationships
+    user = relationship("User", back_populates="cron_jobs")
+    runs = relationship("CronJobRun", back_populates="cron_job", cascade="all, delete-orphan")
+
+
+class CronJobRun(Base):
+    """
+    Execution history for cron jobs
+    """
+    __tablename__ = "cron_job_runs"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    cron_job_id = Column(Integer, ForeignKey("cron_jobs.id"), nullable=False)
+
+    # Execution details
+    started_at = Column(DateTime, default=datetime.utcnow)
+    completed_at = Column(DateTime, nullable=True)
+    status = Column(String, default="running")  # running, completed, failed
+
+    # LangGraph execution
+    thread_id = Column(String, nullable=True)  # LangGraph thread ID
+
+    # Error handling
+    error_message = Column(Text, nullable=True)
+
+    # Relationships
+    cron_job = relationship("CronJob", back_populates="runs")
 
