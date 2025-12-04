@@ -5010,47 +5010,38 @@ async def execute_workflow_stream_endpoint(websocket: WebSocket):
 
         # Stream execution via LangGraph Platform - automatic PostgreSQL checkpointing!
         # NOTE: thread_id and assistant_id MUST be positional arguments (not keyword args)
-        # stream_mode="messages" returns tuples of (message_chunk, metadata)
+        # stream_mode="events" returns event objects - we only send tool execution updates
         async for chunk in langgraph_client.runs.stream(
             workflow_thread_id,  # Positional: thread_id (managed by PostgreSQL)
             "x_growth_deep_agent",  # Positional: assistant_id (from langgraph.json)
             input=input_data,
             config=config,
-            stream_mode="messages"  # Stream LLM tokens + metadata
+            stream_mode="events"  # Stream all events including tool calls
         ):
-            # chunk is a tuple: (message_chunk, metadata)
-            if isinstance(chunk, tuple) and len(chunk) == 2:
-                msg, metadata = chunk
+            # Handle event-based streaming - ONLY send tool updates to frontend
+            if isinstance(chunk, dict):
+                event_type = chunk.get("event")
+                data = chunk.get("data", {})
 
-                # Only send AI messages (agent responses) to the user
-                # Skip tool calls, tool messages, and system messages
-                if hasattr(msg, 'type'):
-                    msg_type = msg.type if hasattr(msg.type, '__call__') else msg.type
+                # Stream tool calls (when agent decides to use a tool)
+                if event_type == "on_tool_start":
+                    tool_name = data.get("name", "unknown_tool")
+                    tool_input = data.get("input", {})
+                    print(f"   🔧 Tool starting: {tool_name}")
+                    await websocket.send_json({
+                        "type": "tool_start",
+                        "tool_name": tool_name,
+                        "tool_input": tool_input
+                    })
 
-                    # Debug logging
-                    print(f"📨 Message type: {msg_type}")
-                    if hasattr(msg, 'content'):
-                        content_preview = str(msg.content)[:100] if msg.content else "None"
-                        print(f"   Content preview: {content_preview}")
-                    if hasattr(msg, 'tool_calls'):
-                        print(f"   Has tool_calls: {bool(msg.tool_calls)}")
-
-                    # Only stream AI messages (the agent's responses)
-                    # BUT filter out messages that contain tool calls
-                    if msg_type == 'ai' and hasattr(msg, 'content') and msg.content:
-                        # Check if this is a tool call message (AI invoking a tool)
-                        has_tool_calls = hasattr(msg, 'tool_calls') and msg.tool_calls
-
-                        if not has_tool_calls:
-                            # Only send AI messages without tool calls (pure responses)
-                            print(f"   ✅ Sending AI message to frontend")
-                            await websocket.send_json({
-                                "type": "chunk",
-                                "data": msg.content
-                            })
-                        else:
-                            print(f"   ⏭️  Skipping AI message with tool calls")
-                    # Skip tool messages, tool calls, human messages, etc.
+                # Stream tool results (when tool execution completes)
+                elif event_type == "on_tool_end":
+                    tool_name = data.get("name", "unknown_tool")
+                    print(f"   ✅ Tool completed: {tool_name}")
+                    await websocket.send_json({
+                        "type": "tool_end",
+                        "tool_name": tool_name
+                    })
 
             # Handle interrupts (Human-in-Loop)
             elif hasattr(chunk, 'event') and chunk.event == 'interrupt':
