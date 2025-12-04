@@ -3951,6 +3951,33 @@ async def get_cron_job_runs(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.get("/api/cron-jobs/debug/scheduler-status")
+async def get_scheduler_status():
+    """Debug endpoint to check APScheduler status"""
+    try:
+        from cron_job_executor import get_cron_executor
+        executor = await get_cron_executor()
+
+        return {
+            "scheduler_running": executor.is_running,
+            "total_scheduled_jobs": len(executor.scheduled_jobs),
+            "scheduled_jobs": {
+                job_id: {
+                    "cron_job_id": info["cron_job_id"],
+                    "name": info["name"],
+                    "schedule": info["schedule"]
+                }
+                for job_id, info in executor.scheduled_jobs.items()
+            }
+        }
+    except Exception as e:
+        return {
+            "error": str(e),
+            "scheduler_running": False,
+            "total_scheduled_jobs": 0
+        }
+
+
 @app.get("/api/scheduled-posts/ai-drafts")
 async def get_ai_drafts(
     user_id: str,
