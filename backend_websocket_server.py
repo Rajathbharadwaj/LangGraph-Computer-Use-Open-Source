@@ -3950,25 +3950,35 @@ async def get_cron_job_runs(
         print(f"Error getting cron job runs: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-
 @app.get("/api/cron-jobs/debug/scheduler-status")
-async def get_scheduler_status():
-    """Debug endpoint to check APScheduler status"""
+async def get_scheduler_status(user_id: str = Depends(get_current_user)):
+    """Debug endpoint to check APScheduler status for current user's jobs"""
     try:
         from cron_job_executor import get_cron_executor
         executor = await get_cron_executor()
 
+        # Filter jobs to only show current user's jobs
+        user_jobs = {}
+        for job_id, info in executor.scheduled_jobs.items():
+            cron_job_id = info["cron_job_id"]
+
+            # Look up the cron job in database to check user_id
+            db = SessionLocal()
+            try:
+                cron_job = db.query(CronJob).filter(CronJob.id == cron_job_id).first()
+                if cron_job and cron_job.user_id == user_id:
+                    user_jobs[job_id] = {
+                        "cron_job_id": info["cron_job_id"],
+                        "name": info["name"],
+                        "schedule": info["schedule"]
+                    }
+            finally:
+                db.close()
+
         return {
             "scheduler_running": executor.is_running,
-            "total_scheduled_jobs": len(executor.scheduled_jobs),
-            "scheduled_jobs": {
-                job_id: {
-                    "cron_job_id": info["cron_job_id"],
-                    "name": info["name"],
-                    "schedule": info["schedule"]
-                }
-                for job_id, info in executor.scheduled_jobs.items()
-            }
+            "total_scheduled_jobs": len(user_jobs),
+            "scheduled_jobs": user_jobs
         }
     except Exception as e:
         return {
