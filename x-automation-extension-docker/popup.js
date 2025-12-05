@@ -47,20 +47,28 @@ function checkStatus() {
   // Check X login status and premium status
   chrome.tabs.query({ url: ['https://x.com/*', 'https://twitter.com/*'] }, (tabs) => {
     if (tabs.length > 0) {
-      chrome.tabs.sendMessage(tabs[0].id, { action: 'CHECK_LOGIN' }, (response) => {
-        if (response && response.loggedIn) {
-          const statusDiv = document.getElementById('status');
-          const currentHTML = statusDiv.innerHTML;
-          statusDiv.innerHTML = currentHTML + `
-            <div style="margin-top: 10px; font-size: 12px;">
-              X Account: <strong>@${response.username}</strong>
-            </div>
-          `;
+      // Wait a bit for content script to be ready, then try
+      setTimeout(() => {
+        chrome.tabs.sendMessage(tabs[0].id, { action: 'CHECK_LOGIN' }, (response) => {
+          if (chrome.runtime.lastError) {
+            console.log('Could not check login status:', chrome.runtime.lastError.message);
+            return;
+          }
 
-          // Check premium status
-          checkPremiumStatus(tabs[0].id);
-        }
-      });
+          if (response && response.loggedIn) {
+            const statusDiv = document.getElementById('status');
+            const currentHTML = statusDiv.innerHTML;
+            statusDiv.innerHTML = currentHTML + `
+              <div style="margin-top: 10px; font-size: 12px;">
+                X Account: <strong>@${response.username}</strong>
+              </div>
+            `;
+
+            // Check premium status
+            checkPremiumStatus(tabs[0].id);
+          }
+        });
+      }, 100); // Give content script 100ms to load
     }
   });
 }
@@ -72,10 +80,19 @@ function checkPremiumStatus(tabId) {
     const premiumText = document.getElementById('premiumText');
     const charLimit = document.getElementById('charLimit');
 
+    // Check for errors
+    if (chrome.runtime.lastError) {
+      console.log('Error sending message:', chrome.runtime.lastError.message);
+      premiumDiv.style.display = 'none';
+      return;
+    }
+
     if (response && response.success) {
       const isPremium = response.is_premium;
       const limit = response.character_limit;
       const method = response.detection_method;
+
+      console.log('Premium status received:', isPremium, limit, method);
 
       if (isPremium) {
         premiumDiv.className = 'premium-status premium';
@@ -93,6 +110,7 @@ function checkPremiumStatus(tabId) {
       premiumDiv.title = `Detected via: ${method}`;
     } else {
       // Could not detect - hide the status
+      console.log('No valid response from content script');
       premiumDiv.style.display = 'none';
     }
   });

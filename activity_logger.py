@@ -67,13 +67,21 @@ class ActivityLogger:
         }
 
         # Save to store
-        self.store.put(
-            self.namespace,
-            activity_id,
-            activity_data
-        )
+        print(f"🔍 [ActivityLogger] Storing to namespace={self.namespace}, key={activity_id}")
+        print(f"🔍 [ActivityLogger] Data: {activity_data}")
+        try:
+            self.store.put(
+                self.namespace,
+                activity_id,
+                activity_data
+            )
+            print(f"✅ [ActivityLogger] Successfully stored to database: {action_type} - {status}")
+        except Exception as e:
+            print(f"❌ [ActivityLogger] FAILED to store activity: {e}")
+            import traceback
+            traceback.print_exc()
+            raise
 
-        print(f"📝 Logged activity: {action_type} - {status}")
         return activity_id
 
     def log_post(self, content: str, status: str, post_url: Optional[str] = None, error: Optional[str] = None):

@@ -13,6 +13,7 @@ import os
 import hashlib
 from datetime import datetime, timedelta
 from langchain_core.tools import tool
+from youtube_transcript_tool import detect_youtube_urls
 from pydantic import BaseModel, Field
 from langchain.chat_models import init_chat_model
 
@@ -240,6 +241,21 @@ Last check: {status.get('last_check', 'Just now')}"""
             
             if result.get("success"):
                 context = result.get("context", {})
+
+                # Detect YouTube videos in post
+                full_text = context.get('full_text', '')
+                youtube_urls = detect_youtube_urls(full_text)
+
+                youtube_section = ""
+                if youtube_urls:
+                    youtube_section = f"""
+
+🎬 YOUTUBE VIDEO DETECTED: Yes ✅
+   YouTube URLs: {', '.join(youtube_urls)}
+   ⚠️ ACTION REQUIRED: Use analyze_youtube_video subagent to get video summary before commenting!"""
+                else:
+                    youtube_section = "\n\n🎬 YOUTUBE VIDEO DETECTED: No ❌"
+
                 return f"""📊 Post Context:
 
 CONTENT:
@@ -265,12 +281,55 @@ THREAD:
 
 TIMING:
 - Posted: {context.get('timestamp', 'N/A')}
-- Age: {context.get('age', 'N/A')}"""
+- Age: {context.get('age', 'N/A')}{youtube_section}"""
             else:
                 return f"❌ Failed to get post context: {result.get('error', 'Unknown error')}"
         except Exception as e:
             return f"❌ Extension tool failed: {str(e)}"
-    
+
+    @tool
+    async def get_post_url(
+        post_identifier: str,
+        runtime: ToolRuntime = None
+    ) -> str:
+        """
+        Extract the URL of a specific post to navigate to its detail page.
+
+        This enables viewing the full thread including all replies, which is critical
+        for detecting YouTube links that might be in thread conversations.
+
+        Args:
+            post_identifier: Author name/handle or unique post text to identify the post
+
+        Returns:
+            Post URL (e.g., https://x.com/username/status/1234567890) or error message
+        """
+        print(f"🔗 [Extension] Extracting URL for post: {post_identifier[:50]}...")
+
+        try:
+            cua_url = get_cua_url_from_runtime(runtime)
+
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    f"{cua_url}/extension/get_post_url",
+                    json={"identifier": post_identifier},
+                    timeout=aiohttp.ClientTimeout(total=10)
+                ) as response:
+                    if response.status == 200:
+                        data = await response.json()
+                        post_url = data.get("post_url")
+                        if post_url:
+                            print(f"✅ [Extension] Found post URL: {post_url}")
+                            return f"✅ Post URL extracted: {post_url}"
+                        else:
+                            return "❌ Could not find post URL"
+                    else:
+                        return f"❌ Extension request failed: {response.status}"
+
+        except Exception as e:
+            print(f"❌ [Extension] get_post_url error: {e}")
+            return f"❌ Error extracting post URL: {str(e)}"
+
     @tool
     async def human_like_click(element_description: str) -> str:
         """
@@ -1014,6 +1073,7 @@ OUTPUT ONLY VALID JSON in this exact format (no markdown, no code blocks):
         extract_post_engagement_data,
         check_rate_limit_status,
         get_post_context,
+        get_post_url,  # NEW: Extract post URL for thread navigation
         human_like_click,
         monitor_action_result,
         extract_account_insights,

@@ -43,7 +43,7 @@ import uuid
 
 # Database imports
 from database.database import SessionLocal, get_db
-from database.models import ScheduledPost, XAccount, CronJob, CronJobRun, User
+from database.models import ScheduledPost, XAccount, CronJob, CronJobRun, User, WorkflowExecution
 from sqlalchemy.orm import Session
 from fastapi import Depends
 
@@ -988,10 +988,11 @@ async def extension_disconnect(user_id: str):
 @app.get("/api/activity/recent/{user_id}")
 async def get_recent_activity(user_id: str, limit: int = 50):
     """
-    Get recent activity logs for a user from /memories/action_history.json.
+    Get recent activity logs for a user from BOTH ActivityLogger and /memories/action_history.json.
 
-    This retrieves activity logs (posts, comments, likes, etc.) stored by the agent
-    in the DeepAgents persistent memory system for display on the dashboard's "Recent Activity" section.
+    Checks TWO sources:
+    1. ActivityLogger namespace (user_id, "activity") - structured activity logs
+    2. /memories/action_history.json in (user_id, "filesystem") - file-based history
 
     Args:
         user_id: User ID to get activity for
@@ -1004,53 +1005,180 @@ async def get_recent_activity(user_id: str, limit: int = 50):
         if not store:
             return {"success": False, "error": "Store not initialized", "activities": [], "count": 0}
 
-        # Read from DeepAgents persistent memory: /action_history.json
-        # StoreBackend uses namespace (assistant_id, "filesystem")
-        # We now pass user_id as assistant_id when invoking the agent
-        namespace = (user_id, "filesystem")
+        all_activities = []
 
-        print(f"🔍 [Activity API] Looking for action_history.json")
-        print(f"🔍 [Activity API] Namespace: {namespace}")
-        print(f"🔍 [Activity API] Key: /action_history.json")
+        # SOURCE 1: ActivityLogger namespace (user_id, "activity")
+        activity_namespace = (user_id, "activity")
+        print(f"🔍 [Activity API] Checking ActivityLogger namespace: {activity_namespace}")
 
-        # Get the action_history.json file directly by key
-        item = store.get(namespace, "/action_history.json")
+        try:
+            items = list(store.search(activity_namespace, limit=limit))
+            print(f"  ✓ Found {len(items)} items from ActivityLogger")
 
-        print(f"🔍 [Activity API] Item found: {item is not None}")
-        if item:
-            print(f"🔍 [Activity API] Item value type: {type(item.value)}")
-            print(f"🔍 [Activity API] Item value keys: {item.value.keys() if isinstance(item.value, dict) else 'not a dict'}")
+            if items:
+                print(f"  📋 Sample activity item: {items[0].value if items else 'none'}")
 
-        if not item:
-            # No action history yet for this user
-            print(f"⚠️  [Activity API] No action_history.json found for user {user_id}")
+            for item in items:
+                # ActivityLogger format: { id, timestamp, action_type, status, details, target }
+                all_activities.append(item.value)
+        except Exception as e:
+            print(f"  ⚠️ ActivityLogger error: {e}")
+            import traceback
+            traceback.print_exc()
+
+        # SOURCE 2: /memories/action_history.json in filesystem namespace
+        filesystem_namespace = (user_id, "filesystem")
+        print(f"🔍 [Activity API] Checking /memories/action_history.json in namespace: {filesystem_namespace}")
+
+        try:
+            item = store.get(filesystem_namespace, "/memories/action_history.json")
+
+            if item and item.value:
+                print(f"  ✓ Found /memories/action_history.json")
+                action_history = item.value
+
+                # Extract actions from file format
+                actions = []
+                if isinstance(action_history, dict):
+                    if "content" in action_history:
+                        import json
+                        content = action_history["content"]
+                        if isinstance(content, list):
+                            content_str = "\n".join(content)
+                            history_data = json.loads(content_str)
+                        elif isinstance(content, str):
+                            history_data = json.loads(content)
+                        else:
+                            history_data = content
+                    else:
+                        history_data = action_history
+
+                    if isinstance(history_data, dict) and "actions" in history_data:
+                        actions = history_data["actions"]
+                    elif isinstance(history_data, list):
+                        actions = history_data
+
+                print(f"  ✓ Extracted {len(actions)} actions from file")
+
+                # Convert to ActivityLogger format
+                for idx, action in enumerate(actions):
+                    timestamp = action.get("timestamp", "")
+                    action_type = action.get("action", "unknown")
+
+                    normalized = {
+                        "id": f"file_{action_type}_{timestamp}_{idx}",
+                        "timestamp": timestamp,
+                        "action_type": action_type,
+                        "status": "success",
+                        "target": action.get("post_author", ""),
+                        "details": {
+                            "content": action.get("post_content_snippet", ""),
+                            "post_url": action.get("post_url", ""),
+                        }
+                    }
+                    all_activities.append(normalized)
+            else:
+                print(f"  ⚠️ No /memories/action_history.json found")
+        except Exception as e:
+            print(f"  ⚠️ Filesystem read error: {e}")
+
+        # Combine and sort all activities
+        if not all_activities:
+            print(f"⚠️  [Activity API] No activities found from any source for user {user_id}")
             return {
                 "success": True,
                 "activities": [],
                 "count": 0
             }
 
-        # Get the file content
-        action_history = item.value
+        # Sort by timestamp (newest first)
+        all_activities.sort(
+            key=lambda x: x.get("timestamp", ""),
+            reverse=True
+        )
 
-        # The agent stores action history in this format:
-        # {
-        #   "date": "2025-11-01",
-        #   "actions": [
-        #     {"timestamp": "...", "action": "liked", "post_author": "@user", ...},
-        #     ...
-        #   ],
-        #   "daily_stats": {...}
-        # }
+        # Limit results
+        limited_activities = all_activities[:limit]
+
+        print(f"✅ [Activity API] Returning {len(limited_activities)} activities from {len(all_activities)} total")
+
+        return {
+            "success": True,
+            "activities": limited_activities,
+            "count": len(limited_activities)
+        }
+
+    except Exception as e:
+        print(f"❌ [Activity API] Error fetching recent activity: {e}")
+        import traceback
+        traceback.print_exc()
+        return {
+            "success": False,
+            "error": str(e),
+            "activities": [],
+            "count": 0
+        }
+
+
+# WebSocket endpoint for real-time activity updates
+@app.websocket("/ws/activity/{user_id}")
+async def activity_websocket(websocket: WebSocket, user_id: str):
+    """
+    WebSocket endpoint for streaming real-time activity updates
+    """
+    await websocket.accept()
+
+    try:
+        # Keep connection alive and send updates when activities change
+        # For now, just keep connection open - frontend can poll or we can add pub/sub later
+        while True:
+            # Wait for ping from client
+            try:
+                data = await asyncio.wait_for(websocket.receive_text(), timeout=30.0)
+                if data == "ping":
+                    await websocket.send_text("pong")
+            except asyncio.TimeoutError:
+                # Send keepalive
+                await websocket.send_text("keepalive")
+    except WebSocketDisconnect:
+        print(f"🔌 [Activity WS] Client {user_id} disconnected")
+    except Exception as e:
+        print(f"❌ [Activity WS] Error: {e}")
+
+
+# LEGACY ENDPOINT - For backwards compatibility with /memories/action_history.json format
+@app.get("/api/activity/legacy/{user_id}")
+async def get_legacy_activity(user_id: str, limit: int = 50):
+    """
+    LEGACY: Get activity from /memories/action_history.json (old format)
+
+    This is kept for backwards compatibility but should not be used for new code.
+    Use /api/activity/recent/{user_id} instead which reads from ActivityLogger namespace.
+    """
+    try:
+        if not store:
+            return {"success": False, "error": "Store not initialized", "activities": [], "count": 0}
+
+        # Read from old location
+        namespace = (user_id, "filesystem")
+        item = store.get(namespace, "/memories/action_history.json")
+
+        if not item:
+            return {
+                "success": True,
+                "activities": [],
+                "count": 0
+            }
+
+        action_history = item.value
 
         # Extract actions from the stored format
         activities = []
         if isinstance(action_history, dict):
-            # Check if it's a file object with content field (from StoreBackend)
+            # Check if it's a file object with content field
             if "content" in action_history:
                 import json
                 content = action_history["content"]
-                # content is a list of strings (lines of the JSON file)
                 if isinstance(content, list):
                     content_str = "\n".join(content)
                     history_data = json.loads(content_str)
@@ -1061,7 +1189,6 @@ async def get_recent_activity(user_id: str, limit: int = 50):
             else:
                 history_data = action_history
 
-            # Extract actions array
             if isinstance(history_data, dict) and "actions" in history_data:
                 activities = history_data["actions"]
             elif isinstance(history_data, list):
@@ -4933,6 +5060,32 @@ async def execute_workflow_stream_endpoint(websocket: WebSocket):
             "prompt": prompt
         })
 
+        # Create workflow execution record in database for persistence
+        db = SessionLocal()
+        workflow_execution = None
+        try:
+            workflow_steps = workflow_json.get("steps", [])
+            workflow_execution = WorkflowExecution(
+                id=execution_id,
+                user_id=user_id,
+                workflow_id=workflow_id,
+                workflow_name=workflow_name,
+                thread_id=thread_id or workflow_thread_id,
+                status="running",
+                total_steps=len(workflow_steps),
+                current_step=0,
+                completed_steps=[]
+            )
+            db.add(workflow_execution)
+            db.commit()
+            db.refresh(workflow_execution)
+            print(f"✅ Created workflow execution record: {execution_id}")
+        except Exception as e:
+            print(f"⚠️ Failed to create workflow execution record: {e}")
+            # Continue even if database fails
+        finally:
+            db.close()
+
         # Get user's VNC session URL for the agent to use
         vnc_url = None
         if user_id:
@@ -5011,6 +5164,24 @@ async def execute_workflow_stream_endpoint(websocket: WebSocket):
         # Stream execution via LangGraph Platform - automatic PostgreSQL checkpointing!
         # NOTE: thread_id and assistant_id MUST be positional arguments (not keyword args)
         # stream_mode="events" returns event objects - we only send tool execution updates
+
+        # Step tracking for workflow progress
+        workflow_steps = workflow_json.get("steps", [])
+        total_steps = len(workflow_steps)
+        current_step_index = 0
+
+        # Tools that typically indicate step completion (customize per workflow type)
+        step_completing_tools = [
+            "navigate_to_url",      # Navigation step done
+            "search_posts",         # Research step done
+            "create_post",          # Action step done
+            "save_memory",          # Memory step done
+            "comment_on_post",      # Comment action done
+            "follow_account",       # Follow action done
+            "analyze_post",         # Analysis step done
+            "filter_posts"          # Filter step done
+        ]
+
         async for chunk in langgraph_client.runs.stream(
             workflow_thread_id,  # Positional: thread_id (managed by PostgreSQL)
             "x_growth_deep_agent",  # Positional: assistant_id (from langgraph.json)
@@ -5042,6 +5213,45 @@ async def execute_workflow_stream_endpoint(websocket: WebSocket):
                         "type": "tool_end",
                         "tool_name": tool_name
                     })
+
+                    # Check if this tool completion should advance the step
+                    if tool_name in step_completing_tools and current_step_index < total_steps:
+                        # Send step_complete event for current step
+                        await websocket.send_json({
+                            "type": "step_complete",
+                            "step_index": current_step_index,
+                            "step_id": workflow_steps[current_step_index]["id"] if current_step_index < total_steps else None,
+                            "total_steps": total_steps
+                        })
+                        print(f"   ✅ Step {current_step_index + 1}/{total_steps} completed")
+
+                        # Update database with step progress
+                        try:
+                            db = SessionLocal()
+                            exec_record = db.query(WorkflowExecution).filter(WorkflowExecution.id == execution_id).first()
+                            if exec_record:
+                                exec_record.current_step = current_step_index
+                                if workflow_steps[current_step_index]["id"] not in exec_record.completed_steps:
+                                    exec_record.completed_steps.append(workflow_steps[current_step_index]["id"])
+                                db.commit()
+                            db.close()
+                        except Exception as e:
+                            print(f"⚠️ Failed to update step progress in database: {e}")
+
+                        # Advance to next step
+                        current_step_index += 1
+
+                        # Send step_start event for next step if exists
+                        if current_step_index < total_steps:
+                            next_step = workflow_steps[current_step_index]
+                            await websocket.send_json({
+                                "type": "step_start",
+                                "step_index": current_step_index,
+                                "step_id": next_step["id"],
+                                "description": next_step.get("description", next_step.get("action", "")),
+                                "total_steps": total_steps
+                            })
+                            print(f"   ▶️ Step {current_step_index + 1}/{total_steps} started: {next_step.get('description', '')}")
 
             # Handle interrupts (Human-in-Loop)
             elif hasattr(chunk, 'event') and chunk.event == 'interrupt':
@@ -5080,8 +5290,33 @@ async def execute_workflow_stream_endpoint(websocket: WebSocket):
             "completed_at": datetime.utcnow().isoformat()
         })
 
+        # Mark execution as completed in database
+        try:
+            db = SessionLocal()
+            exec_record = db.query(WorkflowExecution).filter(WorkflowExecution.id == execution_id).first()
+            if exec_record:
+                exec_record.status = "completed"
+                exec_record.completed_at = datetime.utcnow()
+                db.commit()
+            db.close()
+            print(f"✅ Marked workflow execution {execution_id} as completed")
+        except Exception as e:
+            print(f"⚠️ Failed to mark execution as completed in database: {e}")
+
     except WebSocketDisconnect:
         print("Client disconnected")
+        # Mark execution as failed if disconnected mid-execution
+        try:
+            db = SessionLocal()
+            exec_record = db.query(WorkflowExecution).filter(WorkflowExecution.id == execution_id).first()
+            if exec_record and exec_record.status == "running":
+                exec_record.status = "failed"
+                exec_record.error_message = "Client disconnected"
+                exec_record.completed_at = datetime.utcnow()
+                db.commit()
+            db.close()
+        except Exception as e:
+            print(f"⚠️ Failed to update execution status after disconnect: {e}")
     except Exception as e:
         print(f"❌ Workflow execution error: {e}")
         import traceback
@@ -5090,7 +5325,103 @@ async def execute_workflow_stream_endpoint(websocket: WebSocket):
             "type": "error",
             "error": str(e)
         })
+
+        # Mark execution as failed in database
+        try:
+            db = SessionLocal()
+            exec_record = db.query(WorkflowExecution).filter(WorkflowExecution.id == execution_id).first()
+            if exec_record:
+                exec_record.status = "failed"
+                exec_record.error_message = str(e)
+                exec_record.completed_at = datetime.utcnow()
+                db.commit()
+            db.close()
+            print(f"✅ Marked workflow execution {execution_id} as failed")
+        except Exception as db_error:
+            print(f"⚠️ Failed to mark execution as failed in database: {db_error}")
+
         await websocket.close()
+
+
+# ============================================================================
+# WORKFLOW EXECUTION STATUS & HISTORY ENDPOINTS
+# ============================================================================
+
+@app.get("/api/workflow/execution/{execution_id}/status")
+async def get_workflow_execution_status(execution_id: str):
+    """
+    Get the status of a workflow execution.
+    Enables frontend to check execution state and reconnect if needed.
+
+    Returns:
+        - status: 'running', 'completed', or 'failed'
+        - thread_id: LangGraph thread ID
+        - current_step: Current step index
+        - completed_steps: Array of completed step IDs
+        - started_at, completed_at: Timestamps
+    """
+    try:
+        db = SessionLocal()
+        execution = db.query(WorkflowExecution).filter(WorkflowExecution.id == execution_id).first()
+        db.close()
+
+        if not execution:
+            raise HTTPException(status_code=404, detail=f"Execution {execution_id} not found")
+
+        return {
+            "execution_id": execution.id,
+            "thread_id": execution.thread_id,
+            "workflow_id": execution.workflow_id,
+            "workflow_name": execution.workflow_name,
+            "status": execution.status,
+            "current_step": execution.current_step,
+            "total_steps": execution.total_steps,
+            "completed_steps": execution.completed_steps,
+            "started_at": execution.started_at.isoformat() if execution.started_at else None,
+            "completed_at": execution.completed_at.isoformat() if execution.completed_at else None,
+            "error_message": execution.error_message
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"❌ Error fetching execution status: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/workflow/execution/{execution_id}")
+async def get_workflow_execution(execution_id: str):
+    """
+    Get full workflow execution details including logs (if stored).
+    Enables frontend to restore execution history.
+    """
+    try:
+        db = SessionLocal()
+        execution = db.query(WorkflowExecution).filter(WorkflowExecution.id == execution_id).first()
+        db.close()
+
+        if not execution:
+            raise HTTPException(status_code=404, detail=f"Execution {execution_id} not found")
+
+        return {
+            "id": execution.id,
+            "user_id": execution.user_id,
+            "thread_id": execution.thread_id,
+            "workflow_id": execution.workflow_id,
+            "workflow_name": execution.workflow_name,
+            "status": execution.status,
+            "current_step": execution.current_step,
+            "total_steps": execution.total_steps,
+            "completed_steps": execution.completed_steps,
+            "logs": execution.logs if execution.logs else [],
+            "error_message": execution.error_message,
+            "started_at": execution.started_at.isoformat() if execution.started_at else None,
+            "completed_at": execution.completed_at.isoformat() if execution.completed_at else None
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"❌ Error fetching execution: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # ============================================================================

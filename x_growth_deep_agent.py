@@ -83,6 +83,9 @@ from async_extension_tools import get_async_extension_tools
 # Import workflows
 from x_growth_workflows import get_workflow_prompt, list_workflows, WORKFLOWS
 
+# Import YouTube transcript tools
+from youtube_transcript_tool import analyze_youtube_transcript
+
 
 # ============================================================================
 # WEB SEARCH TOOL (Tavily)
@@ -472,40 +475,146 @@ def get_atomic_subagents(store=None, user_id=None, model=None):
         print(f"✅ Added user data tools to subagents: get_my_profile, get_my_posts, get_high_performing_competitor_posts")
 
     # WRAP comment_on_post and create_post_on_x with AUTOMATIC style transfer + activity logging
+    print(f"🔍 [Activity Logging] Checking prerequisites: store={store is not None}, user_id={user_id}, model={model is not None}")
     if store and user_id and model:
+        from langchain.tools import ToolRuntime
         from x_writing_style_learner import XWritingStyleManager
         from activity_logger import ActivityLogger
 
         # Initialize activity logger
         activity_logger = ActivityLogger(store, user_id)
+        print(f"✅ [Activity Logging] ActivityLogger initialized for user {user_id} with namespace {activity_logger.namespace}")
 
         # Get the original tools
         original_comment_tool = tool_dict["comment_on_post"]
         original_post_tool = tool_dict["create_post_on_x"]
 
+        # Helper function for quality generic prompts
+        def generate_quality_generic_prompt(context: str, content_type: str) -> str:
+            """
+            Generate high-quality generic prompt when no user style data available.
+            Better than falling back to "Interesting post!"
+            """
+            return f"""Generate a thoughtful, authentic {content_type} about: {context}
+
+REQUIREMENTS:
+- Be specific and contextual (reference the actual content)
+- Add value to the conversation (insight, question, or perspective)
+- Sound natural and human (avoid generic phrases like "Great point!")
+- Keep it concise (~40-80 characters for comments)
+- Match the tone of the post (professional → thoughtful, casual → friendly)
+- NO emojis unless the context clearly warrants it
+
+Generate a {content_type} that someone would genuinely write if they found this content interesting:"""
+
         # Create wrapper that auto-generates content in user's style
         @tool
-        async def _styled_comment_on_post(author_or_content: str, post_content_for_style: str = "") -> str:
+        async def _styled_comment_on_post(
+            author_or_content: str,
+            post_content_for_style: str = "",
+            runtime: ToolRuntime = None
+        ) -> str:
             """
             Comment on a post. AUTOMATICALLY generates the comment in YOUR writing style!
 
             Args:
                 author_or_content: The author name or unique text to identify the post
                 post_content_for_style: The post content to match style against (optional, uses author_or_content if not provided)
+                runtime: Tool runtime context (injected by LangGraph)
             """
-            # Step 1: Auto-generate comment in user's style
-            context = post_content_for_style if post_content_for_style else author_or_content
-            print(f"🎨 Auto-generating comment in your style for: {context[:100]}...")
+            # Step 1: Enhanced context with full post details
+            context = f"""POST TO COMMENT ON:
+Author: {author_or_content}
+Content: {post_content_for_style or 'See post identifier'}
+
+Generate a thoughtful comment that:
+1. Matches MY writing style (tone, length, vocabulary)
+2. Responds authentically to the post's specific content
+3. Adds value to the conversation
+""" if post_content_for_style else author_or_content
+
+            print(f"🎨 Auto-generating comment in your style for: {(post_content_for_style or author_or_content)[:100]}...")
 
             generated_comment = "Interesting post!"
+            few_shot_prompt = None
+
             try:
                 style_manager = XWritingStyleManager(store, user_id)
-                few_shot_prompt = style_manager.generate_few_shot_prompt(context, "comment", num_examples=10)
-                response = model.invoke(few_shot_prompt)
-                generated_comment = response.content.strip()
-                print(f"✍️ Generated comment using 10 examples: {generated_comment}")
+
+                # ✅ NEW: 3-Tier Fallback Strategy
+                samples = await store.asearch((user_id, "writing_samples"))
+                sample_count = len(samples) if samples else 0
+
+                if sample_count == 0:
+                    print("⚠️  WARNING: No writing samples found! Checking alternatives...")
+
+                    # Tier 1: Try fetching user's posts on-demand
+                    try:
+                        my_posts_tool = tool_dict["get_my_posts"]
+                        my_posts_result = await my_posts_tool.ainvoke({"limit": 20, "runtime": runtime})
+                        print(f"📥 Attempted to fetch user posts: {my_posts_result[:200]}")
+
+                        # Verify samples were imported
+                        samples_after = await store.asearch((user_id, "writing_samples"))
+                        if len(samples_after) > 0:
+                            print(f"✅ Successfully imported {len(samples_after)} writing samples")
+                            few_shot_prompt = style_manager.generate_few_shot_prompt(context, "comment", num_examples=10)
+                        else:
+                            # Tier 2: No posts exist - try profile description
+                            print("⚠️  User has no posts on X. Checking profile description...")
+                            try:
+                                profile_data = await store.asearch((user_id, "social_graph"), filter={"type": "profile"})
+                                if profile_data and len(profile_data) > 0:
+                                    profile_description = profile_data[0].get("value", {}).get("description", "")
+                                    if profile_description:
+                                        print(f"✅ Using profile description for style: {profile_description[:100]}")
+                                        few_shot_prompt = style_manager.generate_style_from_description(
+                                            description=profile_description,
+                                            context=context,
+                                            content_type="comment"
+                                        )
+                                    else:
+                                        # Tier 3: Generic fallback
+                                        print("⚠️  No profile description found. Using quality generic style.")
+                                        few_shot_prompt = generate_quality_generic_prompt(context, "comment")
+                                else:
+                                    # Tier 3: Generic fallback
+                                    print("⚠️  No profile data found. Using quality generic style.")
+                                    few_shot_prompt = generate_quality_generic_prompt(context, "comment")
+                            except Exception as profile_error:
+                                print(f"❌ Failed to fetch profile: {profile_error}. Using generic style.")
+                                few_shot_prompt = generate_quality_generic_prompt(context, "comment")
+                    except Exception as fetch_error:
+                        print(f"❌ Failed to fetch posts: {fetch_error}. Using generic style.")
+                        few_shot_prompt = generate_quality_generic_prompt(context, "comment")
+                else:
+                    print(f"✅ Found {sample_count} writing samples in store")
+                    few_shot_prompt = style_manager.generate_few_shot_prompt(context, "comment", num_examples=10)
+
+                # Generate comment using the appropriate prompt
+                if few_shot_prompt:
+                    response = model.invoke(few_shot_prompt)
+                    generated_comment = response.content.strip()
+
+                    # ✅ NEW: Quality checks
+                    if len(generated_comment) < 10:
+                        print(f"⚠️  Comment too short ({len(generated_comment)} chars), regenerating...")
+                        response = model.invoke(few_shot_prompt + "\n\nIMPORTANT: Make the comment at least 20 characters and add specific value.")
+                        generated_comment = response.content.strip()
+
+                    if "interesting post" in generated_comment.lower() and len(generated_comment) < 30:
+                        print("⚠️  Generic comment detected, enhancing...")
+                        response = model.invoke(few_shot_prompt + "\n\nIMPORTANT: Avoid generic phrases. Be specific about what's interesting in the post.")
+                        generated_comment = response.content.strip()
+
+                    print(f"✍️ Generated comment ({len(generated_comment)} chars): {generated_comment}")
+                else:
+                    print("❌ No prompt generated, using fallback")
+
             except Exception as e:
                 print(f"❌ Style generation failed: {e}")
+                import traceback
+                traceback.print_exc()
 
             # Step 2: Post using original tool
             result = await original_comment_tool.ainvoke({
@@ -516,12 +625,19 @@ def get_atomic_subagents(store=None, user_id=None, model=None):
             # Step 3: Log activity
             status = "success" if ("successfully" in result.lower() or "✅" in result) else "failed"
             error_msg = result if status == "failed" else None
-            activity_logger.log_comment(
-                target=author_or_content,
-                content=generated_comment,
-                status=status,
-                error=error_msg
-            )
+            print(f"📝 [Activity Logging] Logging comment: target={author_or_content}, status={status}")
+            try:
+                activity_id = activity_logger.log_comment(
+                    target=author_or_content,
+                    content=generated_comment,
+                    status=status,
+                    error=error_msg
+                )
+                print(f"✅ [Activity Logging] Comment logged successfully with ID: {activity_id}")
+            except Exception as e:
+                print(f"❌ [Activity Logging] FAILED to log comment: {e}")
+                import traceback
+                traceback.print_exc()
 
             return result
 
@@ -560,12 +676,19 @@ def get_atomic_subagents(store=None, user_id=None, model=None):
                 if url_match:
                     post_url = url_match.group(0)
 
-            activity_logger.log_post(
-                content=generated_post,
-                status=status,
-                post_url=post_url,
-                error=error_msg
-            )
+            print(f"📝 [Activity Logging] Logging post: status={status}, url={post_url}")
+            try:
+                activity_id = activity_logger.log_post(
+                    content=generated_post,
+                    status=status,
+                    post_url=post_url,
+                    error=error_msg
+                )
+                print(f"✅ [Activity Logging] Post logged successfully with ID: {activity_id}")
+            except Exception as e:
+                print(f"❌ [Activity Logging] FAILED to log post: {e}")
+                import traceback
+                traceback.print_exc()
 
             return result
 
@@ -590,7 +713,30 @@ Steps:
 That's it. Do NOT do anything else.""",
             "tools": [tool_dict["navigate_to_url"]] + user_data_tools
         },
-        
+
+        {
+            "name": "view_post_detail",
+            "description": "Navigate to a post's detail page to see the full thread including all replies (critical for detecting YouTube links in thread conversations)",
+            "system_prompt": """You are a post navigation specialist.
+
+Your ONLY job: Navigate to the post's detail page so we can see the full thread with all replies.
+
+Steps:
+1. Call get_post_url with the post identifier to get the status URL
+2. Extract the URL from the response (look for "https://x.com/...")
+3. Call navigate_to_url with the extracted post URL
+4. Wait for page to load
+5. Return success
+
+This enables viewing YouTube links that might be in thread replies!
+
+CRITICAL:
+- Do NOT engage with posts - ONLY navigate to view them
+- The post identifier can be author name or unique post text
+- After navigation, the full thread with all replies will be visible""",
+            "tools": [tool_dict["get_post_url"], tool_dict["navigate_to_url"]] + user_data_tools
+        },
+
         {
             "name": "analyze_page",
             "description": "Analyze the current page comprehensively - get visual content (OmniParser), DOM elements, and text. Use this to see what posts, buttons, and content are visible.",
@@ -713,19 +859,39 @@ Your ONLY job: Deeply analyze a post's tone and intent, then like + comment ONLY
 
 Steps:
 1. Call get_post_context to get full post metadata (text, author, metrics)
-2. Call analyze_post_tone_and_intent to DEEPLY understand the post using extended thinking
-3. Parse the analysis JSON and evaluate:
+
+2. YOUTUBE VIDEO HANDLING (NEW):
+   - Check if post_context shows "🎬 YOUTUBE VIDEO DETECTED: Yes ✅"
+   - IF YES:
+     a. Extract the YouTube URL from post_context
+     b. Call analyze_youtube_video with the YouTube URL (this returns video summary)
+     c. Store the comprehensive video summary to reference in your comment later
+     d. Your comment will automatically use this context to write authentically about the video
+   - IF NO or transcript unavailable: Continue normally without video context
+
+3. Call analyze_post_tone_and_intent to DEEPLY understand the post using extended thinking
+
+4. Parse the analysis JSON and evaluate:
    - IF engagement_worthy == false: STOP - report "Post not engagement-worthy" and skip
    - IF confidence < 0.7: STOP - report "Analysis confidence too low" and skip
    - IF intent is "promotion" or "viral_bait": STOP - report "Promotional/viral bait content" and skip
    - IF tone is "sarcastic" AND confidence < 0.9: STOP - report "Risky sarcasm detected" and skip
-4. If ALL checks pass (engagement-worthy, high confidence, not spam, safe tone):
+
+5. If ALL checks pass (engagement-worthy, high confidence, not spam, safe tone):
    a. Call get_comprehensive_context to see current state
    b. Call like_post with the post identifier
    c. Call get_comprehensive_context to verify like succeeded
-   d. Call comment_on_post with a tone-appropriate comment (consider the detected tone)
-   e. Call get_comprehensive_context to verify comment appeared
-   f. Return success with analysis summary
+
+   d. WRITING STYLE AUTO-LOADING:
+      - comment_on_post will automatically check if writing samples are loaded
+      - If samples missing, it will fetch them automatically using get_my_posts
+      - If no posts exist on your profile, it will use your profile description for style
+      - If neither exist, it will generate high-quality contextual comments
+      - You don't need to do anything - just call comment_on_post normally
+
+   e. Call comment_on_post with a tone-appropriate comment (if you got a YouTube summary, it will automatically be included in the comment context)
+   f. Call get_comprehensive_context to verify comment appeared
+   g. Return success with analysis summary
 
 CRITICAL RULES:
 - ALWAYS analyze BEFORE engaging - NO exceptions
@@ -741,10 +907,12 @@ ANALYSIS THRESHOLDS (STRICTLY ENFORCE):
 - Auto-skip intents: "promotion", "viral_bait"
 - engagement_worthy must be true
 
-NOTE: The comment_on_post tool AUTOMATICALLY generates comments in the user's writing style.""",
+NOTE: The comment_on_post tool AUTOMATICALLY generates comments in the user's writing style.
+NOTE: If you analyzed a YouTube video, the summary is already in your context - just reference it naturally in the comment.""",
             "tools": [
                 tool_dict["get_post_context"],
                 tool_dict["analyze_post_tone_and_intent"],
+                analyze_youtube_transcript,  # For analyzing YouTube videos in posts
                 tool_dict["like_post"],
                 tool_dict["comment_on_post"],
                 tool_dict["get_comprehensive_context"]
@@ -967,6 +1135,44 @@ Use this to:
 Keep your summary under 300 words for clean context.""",
             "tools": [create_web_search_tool()] if create_web_search_tool() else []
         },
+
+        # ========================================================================
+        # YOUTUBE TRANSCRIPT ANALYZER SUBAGENT
+        # Analyzes YouTube videos to enable authentic commenting on video posts
+        # ========================================================================
+        {
+            "name": "analyze_youtube_video",
+            "description": "Extract and analyze YouTube video transcripts to generate comprehensive summaries for authentic commenting",
+            "system_prompt": """You are a YouTube video analysis specialist.
+
+Your ONLY job: Analyze YouTube videos by extracting their transcripts and generating comprehensive summaries.
+
+Steps:
+1. Identify the YouTube URL from the post content or context
+2. Call analyze_youtube_transcript with the YouTube URL
+3. Read and analyze the transcript thoroughly
+4. Generate a comprehensive summary including:
+   - Main topic and key points discussed
+   - Important insights or takeaways
+   - Specific examples, data, or facts mentioned
+   - Overall tone and style of the content
+   - Practical applications or implications
+
+Return a detailed summary that would enable someone to:
+- Write an authentic, informed comment as if they watched the video
+- Reference specific points from the video naturally
+- Match the tone and depth of the content
+
+CRITICAL RULES:
+- YouTube URLs can be in formats: youtube.com/watch?v=ID, youtu.be/ID, youtube.com/embed/ID
+- If no transcript is available, report this clearly
+- Summarize objectively - do NOT inject personal opinions
+- Keep summaries focused and relevant for commenting purposes
+- If video is very long, prioritize the most important/unique insights
+
+This tool enables the comment agent to write authentic comments on posts sharing YouTube videos.""",
+            "tools": [analyze_youtube_transcript] + user_data_tools
+        },
     ]
 
 
@@ -1018,6 +1224,7 @@ DO NOT:
 
 🤖 YOUR SUBAGENTS (call via task() tool):
 - navigate: Go to a URL
+- view_post_detail: Navigate to post detail page to see full thread (critical for YouTube links in replies)
 - analyze_page: Get comprehensive page analysis (visual + DOM + text) to see what's visible
 - type_text: Type into a field
 - click: Click at coordinates
@@ -1028,8 +1235,24 @@ DO NOT:
 - create_post: Create a post (AUTOMATICALLY generates post in your style!)
 - enter_credentials: Enter username/password
 - research_topic: Research a topic using web search (Tavily) to get current information and trends
+- analyze_youtube_video: Extract and analyze YouTube video transcripts to write authentic comments on video posts
 
 NOTE: comment_on_post, like_and_comment, and create_post AUTOMATICALLY use your writing style - no extra steps needed!
+
+📹 YOUTUBE VIDEO POSTS - AUTOMATIC DETECTION:
+The system AUTOMATICALLY detects YouTube links in posts:
+- get_post_context will show "🎬 YOUTUBE VIDEO DETECTED: Yes ✅" if a YouTube link is found
+- like_and_comment subagent has built-in YouTube handling (just delegate to it)
+- The subagent will automatically call analyze_youtube_video to get the transcript summary
+- Comments will automatically reference specific video content naturally
+
+Manual YouTube analysis (if needed):
+1. When you see "🎬 YOUTUBE VIDEO DETECTED: Yes ✅" in post_context
+2. Extract the YouTube URL from the context
+3. Call analyze_youtube_video subagent with the URL (returns comprehensive summary)
+4. Use the summary when writing comments (reference specific points from the video)
+
+This makes comments authentic - as if you actually watched the video!
 
 📋 AVAILABLE WORKFLOWS:
 1. engagement - Find and engage with posts (likes + comments)
@@ -1039,6 +1262,28 @@ NOTE: comment_on_post, like_and_comment, and create_post AUTOMATICALLY use your 
 5. dm_outreach - Send DMs to connections
 
 📋 WORKFLOW EXECUTION:
+
+🔧 INITIALIZATION (START OF EVERY SESSION):
+Before executing any engagement workflows, ensure your writing style is loaded:
+
+1. Call get_my_posts() to import your writing samples (limit=20)
+   - This loads your past posts into the style learning system
+   - Enables authentic comment generation that sounds like YOU
+
+2. Verify samples loaded successfully:
+   - Check for "Total posts analyzed: X" in the response
+   - If samples < 5: Warn user "Only X writing samples found - comments may be less personalized"
+   - If samples = 0: Inform user "No posts found - will use profile description for style guidance"
+
+3. Sample status affects comment quality:
+   - ✅ 10+ samples: High-quality style mimicry
+   - ⚠️ 5-9 samples: Good style mimicry
+   - ⚠️ 1-4 samples: Basic style guidance
+   - 🔄 0 samples: Will fall back to profile description or quality generic style
+
+NOTE: This is done ONCE per session. All subsequent comments will use the cached samples.
+
+📝 WORKFLOW STEPS:
 1. User provides goal (e.g., "engagement")
 2. FIRST: Call get_comprehensive_context to see what's currently on the page
 3. You receive the workflow steps

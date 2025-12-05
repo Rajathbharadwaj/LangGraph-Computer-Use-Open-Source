@@ -497,17 +497,36 @@ async function checkPremiumStatus() {
     }
   }
 
-  // Method 3: Check for "Premium" or "Blue" text in navigation/profile
+  // Method 3: Check for "Premium" in navigation sidebar (most reliable)
   if (!isPremium) {
-    const navItems = document.querySelectorAll('[role="link"], [role="menuitem"]');
-    for (const item of navItems) {
-      const text = item.innerText?.toLowerCase() || '';
-      if (text.includes('premium') || text.includes('blue')) {
+    // Check sidebar navigation
+    const sidebar = document.querySelector('[data-testid="SideNav_AccountSwitcher_Button"]')?.closest('nav') ||
+                   document.querySelector('nav[aria-label="Primary"]');
+
+    if (sidebar) {
+      const sidebarText = sidebar.innerText?.toLowerCase() || '';
+      if (sidebarText.includes('premium') && !sidebarText.includes('upgrade to premium')) {
+        // Has "Premium" in sidebar (and it's not just the upgrade prompt)
         isPremium = true;
-        detectionMethod = 'navigation_text';
+        detectionMethod = 'sidebar_premium_link';
         characterLimit = 25000;
-        console.log('✅ Premium detected via navigation text');
-        break;
+        console.log('✅ Premium detected via sidebar Premium link');
+      }
+    }
+
+    // Also check all navigation links as fallback
+    if (!isPremium) {
+      const navItems = document.querySelectorAll('[role="link"], [role="menuitem"], a');
+      for (const item of navItems) {
+        const text = item.innerText?.toLowerCase() || '';
+        // Look for standalone "Premium" text (not "Upgrade to Premium")
+        if (text === 'premium' || (text.includes('premium') && !text.includes('upgrade'))) {
+          isPremium = true;
+          detectionMethod = 'navigation_premium_link';
+          characterLimit = 25000;
+          console.log('✅ Premium detected via Premium navigation link');
+          break;
+        }
       }
     }
   }
@@ -700,6 +719,68 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         error: error.message
       });
     });
+    return true; // Keep the message channel open for async response
+  }
+
+  if (message.action === 'GET_POST_URL') {
+    // Extract post URL for navigating to thread view
+    try {
+      const identifier = message.identifier;
+      console.log('🔗 Extracting post URL for:', identifier);
+
+      // Find the post article element
+      const posts = document.querySelectorAll('article[data-testid="tweet"]');
+      let targetPost = null;
+
+      for (const post of posts) {
+        const textElement = post.querySelector('[data-testid="tweetText"]');
+        const authorElement = post.querySelector('[data-testid="User-Name"]');
+
+        const text = textElement?.innerText || '';
+        const author = authorElement?.innerText || '';
+
+        if (text.includes(identifier) || author.includes(identifier)) {
+          targetPost = post;
+          break;
+        }
+      }
+
+      if (!targetPost) {
+        chrome.runtime.sendMessage({
+          type: 'EXTENSION_RESPONSE',
+          requestId: message.requestId,
+          data: { error: 'Post not found' }
+        });
+        return true;
+      }
+
+      // Extract URL from time element (most reliable method)
+      const timeElement = targetPost.querySelector('time');
+      if (timeElement && timeElement.parentElement) {
+        const postUrl = timeElement.parentElement.href;
+        console.log('✅ Post URL extracted:', postUrl);
+
+        chrome.runtime.sendMessage({
+          type: 'EXTENSION_RESPONSE',
+          requestId: message.requestId,
+          data: { post_url: postUrl }
+        });
+      } else {
+        chrome.runtime.sendMessage({
+          type: 'EXTENSION_RESPONSE',
+          requestId: message.requestId,
+          data: { error: 'Could not extract URL from post' }
+        });
+      }
+
+    } catch (error) {
+      console.error('❌ GET_POST_URL error:', error);
+      chrome.runtime.sendMessage({
+        type: 'EXTENSION_RESPONSE',
+        requestId: message.requestId,
+        data: { error: error.message }
+      });
+    }
     return true; // Keep the message channel open for async response
   }
 
