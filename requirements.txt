@@ -60,3 +60,6 @@ PyJWT>=2.8.0
 cryptography>=41.0.0
 svix>=1.9.0
 
+# YouTube transcript extraction
+youtube-transcript-api>=0.6.2
+

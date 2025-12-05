@@ -925,6 +925,7 @@ def create_async_playwright_tools():
             try:
                 import os
                 omniparser_url = os.getenv('OMNIPARSER_URL', 'http://localhost:8003')
+                print(f"🔍 [OmniParser] Using URL: {omniparser_url}")
                 async with aiohttp.ClientSession() as session:
                     async with session.post(
                         f"{omniparser_url.rstrip('/')}/parse/",
@@ -939,6 +940,7 @@ def create_async_playwright_tools():
                             annotated_image = omni_data.get("som_image_base64", "")
                             latency = omni_data.get("latency", 0)
                             
+                            print(f"✅ [OmniParser] Successfully connected to {omniparser_url}")
                             print(f"🎯 OmniParser detected {len(omni_elements)} visual elements")
                             
                             omni_context = f"\\n🔍 OMNIPARSER VISUAL ANALYSIS ({len(omni_elements)} elements):\\n"
@@ -957,6 +959,8 @@ def create_async_playwright_tools():
             
             except Exception as e:
                 print(f"⚠️ OmniParser error: {e}")
+                import traceback
+                traceback.print_exc()
                 omni_context = f"⚠️ OmniParser error: {str(e)}\\n"
             
             # Step 3: Get Playwright DOM analysis  

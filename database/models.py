@@ -217,3 +217,35 @@ class CronJobRun(Base):
     # Relationships
     cron_job = relationship("CronJob", back_populates="runs")
 
+
+class WorkflowExecution(Base):
+    """
+    Workflow execution history for tracking progress and enabling resume/reconnection
+    """
+    __tablename__ = "workflow_executions"
+
+    id = Column(String, primary_key=True)  # execution_id (UUID)
+    user_id = Column(String, ForeignKey("users.id"), nullable=True)  # Optional: may be null for test executions
+
+    # Workflow info
+    workflow_id = Column(String, nullable=False)
+    workflow_name = Column(String)
+    thread_id = Column(String, nullable=False)  # LangGraph thread ID
+
+    # Execution state
+    status = Column(String, default="running")  # running, completed, failed
+    started_at = Column(DateTime, default=datetime.utcnow)
+    completed_at = Column(DateTime, nullable=True)
+
+    # Progress tracking
+    current_step = Column(Integer, default=0)
+    total_steps = Column(Integer)
+    completed_steps = Column(JSON, default=[])  # Array of step IDs/indices
+
+    # Execution logs (optional - can be large, may want to limit size)
+    logs = Column(JSON, default=[])  # Array of log entries
+    error_message = Column(Text, nullable=True)
+
+    # Relationships
+    user = relationship("User")
+

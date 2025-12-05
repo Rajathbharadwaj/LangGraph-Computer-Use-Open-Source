@@ -77,6 +77,8 @@ ENV_VARS="$ENV_VARS,POSTGRES_URI=$POSTGRES_URI"
 ENV_VARS="$ENV_VARS,REDIS_URI=redis://10.110.183.147:6379"
 ENV_VARS="$ENV_VARS,REDIS_HOST=10.110.183.147"
 ENV_VARS="$ENV_VARS,GCP_PROJECT_ID=$PROJECT_ID"
+ENV_VARS="$ENV_VARS,EXTENSION_BACKEND_URL=https://extension-backend-service-bw5qfm5d5a-uc.a.run.app"
+ENV_VARS="$ENV_VARS,OMNIPARSER_URL=https://omniparser-service-644185288504.us-central1.run.app"
 
 gcloud run deploy "$SERVICE_NAME" \
   --image="$IMAGE_TAG" \

@@ -403,7 +403,24 @@ async def post_context(request: PostContextRequest):
         "type": "GET_POST_CONTEXT",
         "post_identifier": request.post_identifier
     }
-    
+
+    response = await send_to_extension(request.user_id, command)
+    return response
+
+
+class PostUrlRequest(BaseModel):
+    identifier: str
+    user_id: str = "default"
+
+@app.post("/extension/get_post_url")
+async def get_post_url(request: PostUrlRequest):
+    """Extract URL of a specific post to navigate to thread view"""
+    command = {
+        "action": "GET_POST_URL",
+        "identifier": request.identifier,
+        "requestId": f"get_post_url_{request.identifier[:20]}"
+    }
+
     response = await send_to_extension(request.user_id, command)
     return response
 

@@ -532,7 +532,59 @@ DO NOT:
 Your {content_type} (write ONLY the content, nothing else):"""
         
         return prompt
-    
+
+    def generate_style_from_description(
+        self,
+        description: str,
+        context: str,
+        content_type: str = "comment"
+    ) -> str:
+        """
+        Generate content based on user's style description when no writing samples exist.
+
+        This is a fallback method for users who don't have imported posts yet but have
+        described their desired tone/style in their profile description.
+
+        Args:
+            description: User's profile/style description text
+            context: The post/content to respond to
+            content_type: Type of content to generate ("post" or "comment")
+
+        Returns:
+            Prompt for LLM to generate content in the described style
+
+        Example:
+            >>> manager = XWritingStyleManager(store, user_id)
+            >>> description = "I like to write in a casual, friendly tone with occasional humor"
+            >>> prompt = manager.generate_style_from_description(description, "Post about AI", "comment")
+        """
+        # Determine appropriate length based on content type
+        length_guidance = "~50 characters for comment, ~200 for post"
+        if content_type == "comment":
+            length_guidance = "Keep it short and concise (~40-80 characters)"
+        elif content_type == "post":
+            length_guidance = "Keep it engaging but not too long (~150-250 characters)"
+
+        return f"""Generate a {content_type} about: {context}
+
+USER'S STYLE DESCRIPTION:
+{description}
+
+INSTRUCTIONS:
+- Follow the style guidelines provided by the user EXACTLY
+- Match the tone, formality, and approach they described
+- {length_guidance}
+- Sound authentic and natural, not robotic
+- If style is unclear, use a professional but friendly tone
+- DO NOT use hashtags (X penalizes them)
+- Avoid generic AI-like phrases
+
+CRITICAL: The user described their style above. Honor their preferences precisely.
+If they said "casual", be casual. If they said "professional", be professional.
+If they mentioned humor, add subtle wit. If they said formal, stay formal.
+
+Your {content_type} (write ONLY the content, nothing else):"""
+
     # ========================================================================
     # GENERATE CONTENT WITH STRUCTURED OUTPUT
     # ========================================================================

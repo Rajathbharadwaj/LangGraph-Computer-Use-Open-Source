@@ -348,11 +348,11 @@ class SocialGraphScraper:
                 continue
             seen_texts.add(text_sig)
 
-            # Filter out obvious junk
+            # Filter out obvious junk AND reposts (we only want original content)
             text_lower = post["text"].lower()
             if any(junk in text_lower for junk in [
                 "followed by", "you might like", "show this thread",
-                "trending in", "live on x"
+                "trending in", "live on x", "reposted"
             ]):
                 continue
 
