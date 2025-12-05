@@ -12,3 +12,4 @@ logs/
 
 # Extension build artifacts
 *.zip
+cloud_run_services_config.md

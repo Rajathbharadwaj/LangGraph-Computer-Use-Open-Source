@@ -3898,10 +3898,14 @@ async def generate_ai_content(
         }
 
     except Exception as e:
-        print(f"❌ Error generating AI content: {e}")
+        error_msg = str(e) or repr(e) or "Unknown error occurred"
+        print(f"❌ Error generating AI content: {error_msg}")
         import traceback
         traceback.print_exc()
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to generate AI content: {error_msg}"
+        )
 
 
 # ============================================================================
