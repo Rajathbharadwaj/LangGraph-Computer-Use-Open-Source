@@ -92,9 +92,10 @@ async def analyze_user_profile(state: ContentGeneratorState) -> ContentGenerator
 
     user_id = state["user_id"]
 
-    # Get store connection
-    conn_string = os.getenv("POSTGRES_CONNECTION_STRING",
-                            "postgresql://postgres:password@localhost:5433/xgrowth")
+    # Get store connection (check POSTGRES_URI first for Cloud Run, then DATABASE_URL for local)
+    conn_string = (os.getenv("POSTGRES_URI") or
+                   os.getenv("DATABASE_URL") or
+                   "postgresql://postgres:password@localhost:5433/xgrowth")
 
     with PostgresStore.from_conn_string(conn_string) as store:
         # Load user's imported posts
@@ -190,9 +191,10 @@ async def analyze_competitors(state: ContentGeneratorState) -> ContentGeneratorS
 
     user_id = state["user_id"]
 
-    # Get store connection
-    conn_string = os.getenv("POSTGRES_CONNECTION_STRING",
-                            "postgresql://postgres:password@localhost:5433/xgrowth")
+    # Get store connection (check POSTGRES_URI first for Cloud Run, then DATABASE_URL for local)
+    conn_string = (os.getenv("POSTGRES_URI") or
+                   os.getenv("DATABASE_URL") or
+                   "postgresql://postgres:password@localhost:5433/xgrowth")
 
     with PostgresStore.from_conn_string(conn_string) as store:
         # Load social graph
@@ -714,7 +716,8 @@ async def generate_weekly_content(user_id: str, user_handle: str) -> List[Dict[s
     final_state = await app.ainvoke(initial_state)
 
     if final_state.get("error"):
-        raise Exception(final_state["error"])
+        error_msg = final_state["error"] or "Content generation failed with unknown error"
+        raise Exception(error_msg)
 
     print("\n" + "=" * 60)
     print(f"✅ Content Generation Complete!")
