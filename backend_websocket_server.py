@@ -278,7 +278,7 @@ async def root():
     }
 
 @app.post("/api/generate-preview")
-async def generate_preview(data: dict):
+async def generate_preview(data: dict, user_id: str = Depends(get_current_user)):
     """
     Generate a preview post/comment in the user's style
     
@@ -340,7 +340,7 @@ async def generate_preview(data: dict):
 
 
 @app.post("/api/save-feedback")
-async def save_feedback(data: dict):
+async def save_feedback(data: dict, user_id: str = Depends(get_current_user)):
     """
     Save user feedback about generated content for style refinement
     
@@ -394,7 +394,7 @@ async def save_feedback(data: dict):
 
 
 @app.post("/api/agent/create-post")
-async def agent_create_post(data: dict):
+async def agent_create_post(data: dict, user_id: str = Depends(get_current_user)):
     """
     Generate a styled post and publish it to X via the Docker VNC extension.
     
@@ -674,8 +674,8 @@ async def destroy_vnc_session(session_id: str, user_id: str = Depends(get_curren
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.post("/api/posts/cleanup-duplicates/{user_id}")
-async def cleanup_duplicate_posts(user_id: str):
+@app.post("/api/posts/cleanup-duplicates")
+async def cleanup_duplicate_posts(user_id: str = Depends(get_current_user)):
     """Remove duplicate posts from both LangGraph Store and database"""
     try:
         # Clean up LangGraph Store
@@ -716,8 +716,8 @@ async def cleanup_duplicate_posts(user_id: str):
             "error": str(e)
         }
 
-@app.get("/api/vnc/session/{user_id}")
-async def get_vnc_session_by_user_id(user_id: str):
+@app.get("/api/vnc/session")
+async def get_vnc_session_by_user_id(user_id: str = Depends(get_current_user)):
     """
     Internal endpoint for LangGraph middleware to get VNC session URL by user ID.
     No authentication required for internal service-to-service calls.
@@ -761,7 +761,7 @@ async def get_vnc_session_by_user_id(user_id: str):
         return {"success": False, "error": str(e)}
 
 @app.get("/api/posts/count/{username}")
-async def get_posts_count(username: str):
+async def get_posts_count(username: str, user_id: str = Depends(get_current_user)):
     """Get total count of imported posts from database"""
     try:
         from database.models import UserPost, XAccount
@@ -798,9 +798,9 @@ async def get_posts_count(username: str):
             "count": 0
         }
 
-@app.get("/api/posts/{user_id}")
-async def get_user_posts(user_id: str):
-    """Get stored posts for a user (from PostgreSQL database)"""
+@app.get("/api/posts")
+async def get_user_posts(user_id: str = Depends(get_current_user)):
+    """Get stored posts for authenticated user (from PostgreSQL database)"""
     try:
         # First try PostgreSQL database (most reliable source)
         from database.models import UserPost, XAccount
@@ -808,8 +808,8 @@ async def get_user_posts(user_id: str):
 
         db = SessionLocal()
         try:
-            # Get the user's X account by clerk_user_id
-            x_account = db.query(XAccount).filter(XAccount.clerk_user_id == user_id).first()
+            # Get the user's X account by user_id (correct column name)
+            x_account = db.query(XAccount).filter(XAccount.user_id == user_id).first()
 
             if x_account:
                 # Get all posts for this X account
@@ -904,7 +904,7 @@ async def get_user_posts(user_id: str):
         }
 
 @app.get("/api/extension/status")
-async def extension_status(user_id: Optional[str] = None):
+async def extension_status(user_id: str = Depends(get_current_user)):
     """
     Check if any extensions are connected
 
@@ -955,7 +955,7 @@ async def extension_status(user_id: Optional[str] = None):
 
 
 @app.delete("/api/extension/disconnect/{user_id}")
-async def extension_disconnect(user_id: str):
+async def extension_disconnect(user_id: str, auth_user_id: str = Depends(get_current_user)):
     """
     Disconnect a user's X account by clearing their cookies from the extension backend.
     This proxies the request to the extension backend service.
@@ -963,6 +963,10 @@ async def extension_disconnect(user_id: str):
     Args:
         user_id: Clerk user ID to disconnect
     """
+    # SECURITY: Verify path user_id matches authenticated user
+    if user_id != auth_user_id:
+        raise HTTPException(status_code=403, detail="Access denied")
+
     import aiohttp
 
     try:
@@ -985,8 +989,8 @@ async def extension_disconnect(user_id: str):
         }
 
 
-@app.get("/api/activity/recent/{user_id}")
-async def get_recent_activity(user_id: str, limit: int = 50):
+@app.get("/api/activity/recent")
+async def get_recent_activity(user_id: str = Depends(get_current_user), limit: int = 50):
     """
     Get recent activity logs for a user from BOTH ActivityLogger and /memories/action_history.json.
 
@@ -1147,8 +1151,8 @@ async def activity_websocket(websocket: WebSocket, user_id: str):
 
 
 # LEGACY ENDPOINT - For backwards compatibility with /memories/action_history.json format
-@app.get("/api/activity/legacy/{user_id}")
-async def get_legacy_activity(user_id: str, limit: int = 50):
+@app.get("/api/activity/legacy")
+async def get_legacy_activity(user_id: str = Depends(get_current_user), limit: int = 50):
     """
     LEGACY: Get activity from /memories/action_history.json (old format)
 
@@ -1250,8 +1254,8 @@ async def get_legacy_activity(user_id: str, limit: int = 50):
 # SOCIAL GRAPH ENDPOINTS
 # ============================================================================
 
-@app.post("/api/social-graph/validate/{user_id}")
-async def validate_discovery_ready(user_id: str):
+@app.post("/api/social-graph/validate")
+async def validate_discovery_ready(user_id: str = Depends(get_current_user)):
     """
     Pre-flight validation before discovery.
     Checks authentication and returns actionable errors.
@@ -1300,7 +1304,7 @@ async def validate_discovery_ready(user_id: str):
 
 
 @app.post("/api/social-graph/smart-discover/{user_id}")
-async def smart_discover_competitors(user_id: str):
+async def smart_discover_competitors(user_id: str, auth_user_id: str = Depends(get_current_user)):
     """
     PRODUCTION-READY smart discovery with automatic fallback and validation.
 
@@ -1311,6 +1315,10 @@ async def smart_discover_competitors(user_id: str):
     4. Run optimized discovery if we have candidate pool
     5. Fall back to standard discovery if needed
     """
+    # SECURITY: Verify path user_id matches authenticated user
+    if user_id != auth_user_id:
+        raise HTTPException(status_code=403, detail="Access denied")
+
     try:
         from social_graph_scraper import SocialGraphBuilder
         from social_graph_scraper_v2 import OptimizedSocialGraphBuilder
@@ -1467,8 +1475,12 @@ async def smart_discover_competitors(user_id: str):
 
 
 @app.post("/api/social-graph/cancel/{user_id}")
-async def cancel_discovery(user_id: str):
+async def cancel_discovery(user_id: str, auth_user_id: str = Depends(get_current_user)):
     """Cancel ongoing discovery and save partial results"""
+    # SECURITY: Verify path user_id matches authenticated user
+    if user_id != auth_user_id:
+        raise HTTPException(status_code=403, detail="Access denied")
+
     try:
         # Set cancellation flag in store
         cancel_namespace = (user_id, "discovery_control")
@@ -1480,8 +1492,12 @@ async def cancel_discovery(user_id: str):
 
 
 @app.get("/api/social-graph/progress/{user_id}")
-async def get_discovery_progress(user_id: str):
+async def get_discovery_progress(user_id: str, auth_user_id: str = Depends(get_current_user)):
     """Get current discovery progress"""
+    # SECURITY: Verify path user_id matches authenticated user
+    if user_id != auth_user_id:
+        raise HTTPException(status_code=403, detail="Access denied")
+
     try:
         if not store:
             return {"success": False, "error": "Store not initialized", "progress": None}
@@ -1503,8 +1519,8 @@ async def get_discovery_progress(user_id: str):
         return {"success": False, "error": str(e)}
 
 
-@app.post("/api/social-graph/reset-progress/{user_id}")
-async def reset_discovery_progress(user_id: str):
+@app.post("/api/social-graph/reset-progress")
+async def reset_discovery_progress(user_id: str = Depends(get_current_user)):
     """Reset/clear the discovery progress state (clears stuck locks)"""
     try:
         if not store:
@@ -1532,8 +1548,8 @@ async def reset_discovery_progress(user_id: str):
         return {"success": False, "error": str(e)}
 
 
-@app.post("/api/social-graph/discover-optimized/{user_id}")
-async def discover_competitors_optimized(user_id: str, user_handle: str):
+@app.post("/api/social-graph/discover-optimized")
+async def discover_competitors_optimized(user_handle: str, user_id: str = Depends(get_current_user)):
     """
     OPTIMIZED competitor discovery using direct following comparison.
 
@@ -1584,8 +1600,8 @@ async def discover_competitors_optimized(user_id: str, user_handle: str):
         }
 
 
-@app.post("/api/social-graph/discover-followers/{user_id}")
-async def discover_competitors_from_followers(user_id: str, user_handle: str):
+@app.post("/api/social-graph/discover-followers")
+async def discover_competitors_from_followers(user_handle: str, user_id: str = Depends(get_current_user)):
     """
     FOLLOWER-BASED competitor discovery - analyzes YOUR followers instead of who you follow.
 
@@ -1664,8 +1680,8 @@ async def discover_competitors_from_followers(user_id: str, user_handle: str):
         }
 
 
-@app.post("/api/social-graph/discover-native/{user_id}")
-async def discover_competitors_native(user_id: str, user_handle: str):
+@app.post("/api/social-graph/discover-native")
+async def discover_competitors_native(user_handle: str, user_id: str = Depends(get_current_user)):
     """
     X NATIVE competitor discovery - uses X's "Followed by" feature.
 
@@ -1763,8 +1779,8 @@ async def discover_competitors_native(user_id: str, user_handle: str):
         }
 
 
-@app.post("/api/social-graph/discover/{user_id}")
-async def discover_competitors(user_id: str, user_handle: str):
+@app.post("/api/social-graph/discover")
+async def discover_competitors(user_handle: str, user_id: str = Depends(get_current_user)):
     """Standard competitor discovery with cancellation support"""
 
     # CRITICAL: Fail early if store is not available - prevents data loss!
@@ -1847,8 +1863,8 @@ async def discover_competitors(user_id: str, user_handle: str):
         }
 
 
-@app.post("/api/social-graph/analyze-content/{user_id}")
-async def analyze_competitor_content(user_id: str):
+@app.post("/api/social-graph/analyze-content")
+async def analyze_competitor_content(user_id: str = Depends(get_current_user)):
     """
     Scrape and analyze content from discovered competitors.
     This adds topic clustering to the social graph.
@@ -1910,7 +1926,8 @@ async def _release_redis_lock(redis_client, lock_key: str, request_id: str, user
 async def scrape_competitor_posts(
     user_id: str,
     force_rescrape: bool = Query(False),
-    request: Request = None
+    request: Request = None,
+    auth_user_id: str = Depends(get_current_user)
 ):
     """
     Scrape posts for all competitors that don't have posts yet.
@@ -1923,6 +1940,10 @@ async def scrape_competitor_posts(
     Returns:
         Updated graph with posts scraped
     """
+    # SECURITY: Verify path user_id matches authenticated user
+    if user_id != auth_user_id:
+        raise HTTPException(status_code=403, detail="Access denied")
+
     try:
         print(f"🔍 force_rescrape parameter value: {force_rescrape}")
 
@@ -2169,8 +2190,8 @@ async def scrape_competitor_posts(
         }
 
 
-@app.post("/api/social-graph/refilter/{user_id}")
-async def refilter_competitors(user_id: str, min_threshold: int = 50):
+@app.post("/api/social-graph/refilter")
+async def refilter_competitors(min_threshold: int = 50, user_id: str = Depends(get_current_user)):
     """
     Re-filter existing graph data with a new threshold.
     No re-scraping needed!
@@ -2235,7 +2256,7 @@ async def refilter_competitors(user_id: str, min_threshold: int = 50):
 
 
 @app.post("/api/social-graph/insights/{user_id}")
-async def generate_content_insights(user_id: str):
+async def generate_content_insights(user_id: str, auth_user_id: str = Depends(get_current_user)):
     """
     Analyze competitor posts to extract patterns and generate content suggestions.
 
@@ -2251,6 +2272,10 @@ async def generate_content_insights(user_id: str):
     Returns:
         Content insights with patterns, suggestions, and benchmarks
     """
+    # SECURITY: Verify path user_id matches authenticated user
+    if user_id != auth_user_id:
+        raise HTTPException(status_code=403, detail="Access denied")
+
     try:
         from content_insights_analyzer import ContentInsightsAnalyzer
         from social_graph_scraper import SocialGraphBuilder
@@ -2309,7 +2334,7 @@ async def generate_content_insights(user_id: str):
 
 
 @app.get("/api/social-graph/insights/{user_id}")
-async def get_content_insights(user_id: str):
+async def get_content_insights(user_id: str, auth_user_id: str = Depends(get_current_user)):
     """
     Get cached content insights if available.
 
@@ -2319,6 +2344,10 @@ async def get_content_insights(user_id: str):
     Returns:
         Cached content insights or null
     """
+    # SECURITY: Verify path user_id matches authenticated user
+    if user_id != auth_user_id:
+        raise HTTPException(status_code=403, detail="Access denied")
+
     try:
         if not store:
             return {"success": False, "insights": None, "error": "Store not initialized"}
@@ -2349,6 +2378,7 @@ async def get_content_insights(user_id: str):
 async def calculate_relevancy_scores(
     user_id: str,
     user_handle: str,
+    auth_user_id: str = Depends(get_current_user),
     batch_size: int = 20,
     overlap_weight: float = 0.4,
     relevancy_weight: float = 0.6
@@ -2366,6 +2396,10 @@ async def calculate_relevancy_scores(
     Returns:
         Updated graph data with relevancy_score, quality_score, and progress info
     """
+    # SECURITY: Verify path user_id matches authenticated user
+    if user_id != auth_user_id:
+        raise HTTPException(status_code=403, detail="Access denied")
+
     try:
         from competitor_relevancy_scorer import add_relevancy_scores
         from social_graph_scraper import SocialGraphBuilder
@@ -2443,8 +2477,12 @@ async def calculate_relevancy_scores(
 
 
 @app.post("/api/social-graph/reset-relevancy/{user_id}")
-async def reset_relevancy_analysis(user_id: str):
+async def reset_relevancy_analysis(user_id: str, auth_user_id: str = Depends(get_current_user)):
     """Reset relevancy analysis state to re-analyze all competitors from scratch"""
+    # SECURITY: Verify path user_id matches authenticated user
+    if user_id != auth_user_id:
+        raise HTTPException(status_code=403, detail="Access denied")
+
     try:
         from competitor_relevancy_scorer import CompetitorRelevancyScorer
 
@@ -2472,8 +2510,8 @@ async def reset_relevancy_analysis(user_id: str):
         }
 
 
-@app.get("/api/social-graph/{user_id}")
-async def get_social_graph(user_id: str):
+@app.get("/api/social-graph")
+async def get_social_graph(user_id: str = Depends(get_current_user)):
     """
     Get the stored social graph for a user.
 
@@ -2516,8 +2554,8 @@ async def get_social_graph(user_id: str):
         }
 
 
-@app.get("/api/competitors/{user_id}")
-async def list_competitors(user_id: str, limit: int = 50):
+@app.get("/api/competitors")
+async def list_competitors(limit: int = 50, user_id: str = Depends(get_current_user)):
     """
     List all discovered competitors for a user.
 
@@ -2549,8 +2587,8 @@ async def list_competitors(user_id: str, limit: int = 50):
         }
 
 
-@app.get("/api/competitor/{user_id}/{username}")
-async def get_competitor(user_id: str, username: str):
+@app.get("/api/competitor/{username}")
+async def get_competitor(username: str, user_id: str = Depends(get_current_user)):
     """
     Get details for a specific competitor.
 
@@ -2954,20 +2992,21 @@ async def extension_websocket(websocket: WebSocket, user_id: str):
             del active_connections[user_id]
 
 @app.post("/api/scrape-posts-docker")
-async def scrape_posts_docker(data: dict):
+async def scrape_posts_docker(
+    data: dict,
+    clerk_user_id: str = Depends(get_current_user)
+):
     """
-    Use Docker VNC browser to scrape user's X posts (doesn't disturb user)
+    Use Docker VNC browser to scrape authenticated user's X posts (doesn't disturb user)
     Optimized: Only scrapes if new posts are available
     """
     import aiohttp
-    
-    user_id = data.get("user_id", "default_user")  # Extension/Docker user ID
-    clerk_user_id = data.get("clerk_user_id", user_id)  # Clerk user ID for WebSocket and Store
+
+    # SECURITY: Use ONLY authenticated Clerk user ID, ignore any user_id from request body
     target_count = data.get("targetCount", 50)
     min_posts_threshold = 30  # Minimum posts we want to have
-    
-    print(f"🔍 Scraping for extension user_id: {user_id}")
-    print(f"📡 WebSocket/Store user_id (Clerk): {clerk_user_id}")
+
+    print(f"🔍 Scraping for authenticated Clerk user: {clerk_user_id}")
     print(f"📊 Active WebSocket connections: {list(active_connections.keys())}")
     
     # Check existing posts in store using CLERK user ID (consistent with where posts are saved)
@@ -3151,11 +3190,7 @@ async def scrape_posts_docker(data: dict):
                     # Send progress update to user's WebSocket if connected
                     # Use clerk_user_id for WebSocket connection
                     websocket = active_connections.get(clerk_user_id)
-                    if not websocket and active_connections:
-                        # Fallback: use the first connected user (likely the current user)
-                        websocket = list(active_connections.values())[0]
-                        print(f"   ⚠️ Using fallback WebSocket (user_id mismatch)")
-                    
+
                     if websocket:
                         try:
                             await websocket.send_json({
@@ -3168,7 +3203,7 @@ async def scrape_posts_docker(data: dict):
                         except Exception as ws_err:
                             print(f"   ⚠️ Failed to send WebSocket update: {ws_err}")
                     else:
-                        print(f"   ⚠️ No WebSocket connection found for user {user_id}")
+                        print(f"   ⚠️ No WebSocket connection found for user {clerk_user_id}")
                     
                     # Check if we're stuck (no new posts)
                     if unique_count == last_count:
@@ -3231,15 +3266,15 @@ async def scrape_posts_docker(data: dict):
         # Check against LangGraph Store (more reliable than in-memory)
         existing_store_contents = {p.get("content") for p in existing_posts}
         new_posts = [p for p in posts if p.get("content") not in existing_store_contents]
-        
-        # Also update in-memory cache
-        if user_id not in user_posts:
-            user_posts[user_id] = []
-        
-        existing_contents = {p.get("content") for p in user_posts[user_id]}
+
+        # Also update in-memory cache (using clerk_user_id)
+        if clerk_user_id not in user_posts:
+            user_posts[clerk_user_id] = []
+
+        existing_contents = {p.get("content") for p in user_posts[clerk_user_id]}
         for post in new_posts:
             if post.get("content") not in existing_contents:
-                user_posts[user_id].append(post)
+                user_posts[clerk_user_id].append(post)
         
         print(f"✅ Found {len(new_posts)} new posts out of {len(posts)} scraped for @{username}")
         
@@ -3254,17 +3289,17 @@ async def scrape_posts_docker(data: dict):
                     await websocket.send_json({
                         "type": "IMPORT_COMPLETE",
                         "imported": 0,
-                        "total": len(user_posts[user_id]),
+                        "total": len(user_posts[clerk_user_id]),
                         "username": username,
                         "message": "Already up to date! No new posts found."
                     })
                 except Exception as ws_err:
                     print(f"   ⚠️ Failed to send message: {ws_err}")
-            
+
             return {
                 "success": True,
                 "imported": 0,
-                "total": len(user_posts[user_id]),
+                "total": len(user_posts[clerk_user_id]),
                 "username": username,
                 "message": "Already up to date"
             }
@@ -3338,26 +3373,23 @@ async def scrape_posts_docker(data: dict):
         
         # Send completion message to user's WebSocket
         websocket = active_connections.get(clerk_user_id)
-        if not websocket and active_connections:
-            websocket = list(active_connections.values())[0]
-            print(f"   ⚠️ Using fallback WebSocket for completion message")
-        
+
         if websocket:
             try:
                 await websocket.send_json({
                     "type": "IMPORT_COMPLETE",
                     "imported": len(new_posts),
-                    "total": len(user_posts[user_id]),
+                    "total": len(user_posts[clerk_user_id]),
                     "username": username
                 })
                 print(f"   📤 Sent completion message")
             except Exception as ws_err:
                 print(f"   ⚠️ Failed to send completion message: {ws_err}")
-        
+
         return {
             "success": True,
             "imported": len(new_posts),
-            "total": len(user_posts[user_id]),
+            "total": len(user_posts[clerk_user_id]),
             "username": username
         }
         
@@ -3382,11 +3414,14 @@ async def scrape_posts_docker(data: dict):
         }
 
 @app.post("/api/import-posts")
-async def import_posts(data: dict):
+async def import_posts(
+    data: dict,
+    user_id: str = Depends(get_current_user)
+):
     """
-    Import user's X posts for writing style learning
+    Import authenticated user's X posts for writing style learning
     """
-    user_id = data.get("user_id", "default_user")
+    # Use authenticated user_id instead of untrusted data
     posts = data.get("posts", [])
     
     if not posts:
@@ -3443,14 +3478,13 @@ async def import_posts(data: dict):
     }
 
 @app.post("/api/automate/like-post")
-async def like_post(data: dict):
+async def like_post(data: dict, user_id: str = Depends(get_current_user)):
     """
     Endpoint called by your dashboard
     Forwards command to extension
     """
-    user_id = data.get("user_id")
     post_url = data.get("post_url")
-    
+
     if user_id not in active_connections:
         return {
             "success": False,
@@ -3472,11 +3506,10 @@ async def like_post(data: dict):
     }
 
 @app.post("/api/automate/follow-user")
-async def follow_user(data: dict):
+async def follow_user(data: dict, user_id: str = Depends(get_current_user)):
     """Follow a user"""
-    user_id = data.get("user_id")
     username = data.get("username")
-    
+
     if user_id not in active_connections:
         return {"success": False, "error": "Extension not connected"}
     
@@ -3489,9 +3522,8 @@ async def follow_user(data: dict):
     return {"success": True, "message": "Command sent to extension"}
 
 @app.post("/api/automate/comment-on-post")
-async def comment_on_post(data: dict):
+async def comment_on_post(data: dict, user_id: str = Depends(get_current_user)):
     """Comment on a post"""
-    user_id = data.get("user_id")
     post_url = data.get("post_url")
     comment_text = data.get("comment_text")
     
@@ -3527,7 +3559,7 @@ class UpdateScheduledPostRequest(BaseModel):
 
 @app.get("/api/scheduled-posts")
 async def get_scheduled_posts(
-    user_id: str,
+    user_id: str = Depends(get_current_user),
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
     db: Session = Depends(get_db)
@@ -3586,13 +3618,15 @@ async def get_scheduled_posts(
 @app.post("/api/scheduled-posts")
 async def create_scheduled_post(
     request: CreateScheduledPostRequest,
+    user_id: str = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """Create a new scheduled post"""
     try:
+        # SECURITY: Use authenticated user_id instead of request
         # Get user's primary X account
         x_account = db.query(XAccount).filter(
-            XAccount.user_id == request.user_id,
+            XAccount.user_id == user_id,
             XAccount.is_connected == True
         ).first()
 
@@ -3636,14 +3670,27 @@ async def create_scheduled_post(
 async def update_scheduled_post(
     post_id: int,
     request: UpdateScheduledPostRequest,
+    user_id: str = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """Update an existing scheduled post"""
     try:
-        post = db.query(ScheduledPost).filter(ScheduledPost.id == post_id).first()
+        # SECURITY: Verify post belongs to user before allowing update
+        post = (
+            db.query(ScheduledPost)
+            .join(XAccount, ScheduledPost.x_account_id == XAccount.id)
+            .filter(
+                ScheduledPost.id == post_id,
+                XAccount.user_id == user_id  # CRITICAL: Verify ownership
+            )
+            .first()
+        )
 
         if not post:
-            raise HTTPException(status_code=404, detail="Post not found")
+            raise HTTPException(
+                status_code=404,
+                detail="Post not found or access denied"  # Don't reveal if post exists
+            )
 
         old_status = post.status
         needs_rescheduling = False
@@ -3730,14 +3777,27 @@ async def update_scheduled_post(
 @app.delete("/api/scheduled-posts/{post_id}")
 async def delete_scheduled_post(
     post_id: int,
+    user_id: str = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """Delete a scheduled post"""
     try:
-        post = db.query(ScheduledPost).filter(ScheduledPost.id == post_id).first()
+        # SECURITY: Verify post belongs to user before allowing deletion
+        post = (
+            db.query(ScheduledPost)
+            .join(XAccount, ScheduledPost.x_account_id == XAccount.id)
+            .filter(
+                ScheduledPost.id == post_id,
+                XAccount.user_id == user_id  # CRITICAL: Verify ownership
+            )
+            .first()
+        )
 
         if not post:
-            raise HTTPException(status_code=404, detail="Post not found")
+            raise HTTPException(
+                status_code=404,
+                detail="Post not found or access denied"  # Don't reveal if post exists
+            )
 
         # Cancel scheduled job if post was scheduled
         if post.status == "scheduled":
@@ -3759,7 +3819,8 @@ async def delete_scheduled_post(
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/upload")
-async def upload_media(file: UploadFile = File(...)):
+async def upload_media(
+    user_id: str = Depends(get_current_user),file: UploadFile = File(...)):
     """
     Upload media file (image/video) for scheduled post
     Saves to local uploads directory (in production would use S3/Cloudinary)
@@ -3799,7 +3860,7 @@ async def upload_media(file: UploadFile = File(...)):
 
 @app.post("/api/scheduled-posts/generate-ai")
 async def generate_ai_content(
-    user_id: str,
+    user_id: str = Depends(get_current_user),
     count: int = 7,  # Always generate 7 for the week
     db: Session = Depends(get_db)
 ):
@@ -3828,8 +3889,8 @@ async def generate_ai_content(
         else:
             # Fallback: Try to get username from social graph data
             print("⚠️  No X account found, trying to get username from social graph...")
-            conn_string = os.getenv("POSTGRES_CONNECTION_STRING",
-                                   "postgresql://postgres:password@localhost:5433/xgrowth")
+            # Use same DB_URI as main store connection (POSTGRES_URI or DATABASE_URL)
+            conn_string = os.environ.get("POSTGRES_URI") or os.environ.get("DATABASE_URL") or "postgresql://postgres:password@localhost:5433/xgrowth"
 
             with PostgresStore.from_conn_string(conn_string) as store:
                 graph_namespace = (user_id, "social_graph")
@@ -3858,6 +3919,17 @@ async def generate_ai_content(
 
         # Get or create x_account
         if not x_account:
+            # Ensure user exists in database (in case webhook hasn't run yet)
+            user = db.query(User).filter(User.id == user_id).first()
+            if not user:
+                user = User(
+                    id=user_id,
+                    email=f"{user_id}@temp.com"  # Temporary email, will be updated by webhook
+                )
+                db.add(user)
+                db.commit()
+                print(f"✅ Created user {user_id} in database")
+
             # Create a temporary x_account entry if it doesn't exist
             x_account = XAccount(
                 user_id=user_id,
@@ -3948,13 +4020,23 @@ async def create_cron_job(
             db.commit()
             print(f"✅ Created user {user_id} in database")
 
+        # Validate that at least workflow_id OR custom_prompt is provided
+        workflow_id = request.get("workflow_id")
+        custom_prompt = request.get("custom_prompt")
+
+        if not workflow_id and not custom_prompt:
+            raise HTTPException(
+                status_code=400,
+                detail="Either 'workflow_id' or 'custom_prompt' must be provided"
+            )
+
         # Create cron job in database
         cron_job = CronJob(
             user_id=user_id,
             name=request["name"],
             schedule=request["schedule"],
-            workflow_id=request.get("workflow_id"),
-            custom_prompt=request.get("custom_prompt"),
+            workflow_id=workflow_id,
+            custom_prompt=custom_prompt,
             input_config=request.get("input_config", {}),
             is_active=True
         )
@@ -4121,7 +4203,7 @@ async def get_scheduler_status(user_id: str = Depends(get_current_user)):
 
 @app.get("/api/scheduled-posts/ai-drafts")
 async def get_ai_drafts(
-    user_id: str,
+    user_id: str = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """
@@ -4172,7 +4254,7 @@ async def get_ai_drafts(
 # ============================================================================
 
 @app.post("/api/agent/run")
-async def run_agent(data: dict):
+async def run_agent(data: dict, user_id: str = Depends(get_current_user)):
     """
     Run the X Growth Deep Agent with streaming updates
     
@@ -4503,8 +4585,8 @@ async def stream_agent_execution(user_id: str, thread_id: str, task: str, use_ro
 # Just send a new message while agent is running and it will automatically
 # use multitask_strategy="rollback" to cancel the previous run
 
-@app.get("/api/agent/status/{user_id}")
-async def get_agent_status(user_id: str):
+@app.get("/api/agent/status")
+async def get_agent_status(user_id: str = Depends(get_current_user)):
     """
     Check if an agent is currently running for a user
     """
@@ -4525,7 +4607,7 @@ async def get_agent_status(user_id: str):
         return {"success": False, "error": str(e)}
 
 @app.get("/api/agent/history/{thread_id}")
-async def get_agent_history(thread_id: str):
+async def get_agent_history(thread_id: str, user_id: str = Depends(get_current_user)):
     """
     Get agent execution history for a thread
     """
@@ -4550,7 +4632,7 @@ async def get_agent_history(thread_id: str):
         return {"success": False, "error": str(e)}
 
 @app.get("/api/agent/state/{thread_id}")
-async def get_agent_state(thread_id: str):
+async def get_agent_state(thread_id: str, user_id: str = Depends(get_current_user)):
     """
     Get current state of an agent thread
     """
@@ -4569,15 +4651,11 @@ async def get_agent_state(thread_id: str):
         return {"success": False, "error": str(e)}
 
 @app.post("/api/agent/threads/new")
-async def create_new_thread(data: dict):
+async def create_new_thread(data: dict, user_id: str = Depends(get_current_user)):
     """
     Create a new thread for a user (starts fresh conversation)
     """
-    user_id = data.get("user_id")
     title = data.get("title", "New Chat")
-    
-    if not user_id:
-        return {"success": False, "error": "user_id is required"}
     
     try:
         # Create new thread with metadata
@@ -4613,8 +4691,8 @@ async def create_new_thread(data: dict):
         traceback.print_exc()
         return {"success": False, "error": str(e)}
 
-@app.get("/api/agent/threads/list/{user_id}")
-async def list_user_threads(user_id: str):
+@app.get("/api/agent/threads/list")
+async def list_user_threads(user_id: str = Depends(get_current_user)):
     """
     List all threads for a user using LangGraph SDK
     """
@@ -4733,8 +4811,8 @@ async def list_user_threads(user_id: str):
         traceback.print_exc()
         return {"success": False, "error": str(e)}
 
-@app.get("/api/agent/threads/{user_id}")
-async def get_user_thread(user_id: str):
+@app.get("/api/agent/threads")
+async def get_user_thread(user_id: str = Depends(get_current_user)):
     """
     Get the current active thread ID for a user
     """
@@ -4753,7 +4831,7 @@ async def get_user_thread(user_id: str):
     }
 
 @app.get("/api/agent/threads/{thread_id}/messages")
-async def get_thread_messages(thread_id: str):
+async def get_thread_messages(thread_id: str, user_id: str = Depends(get_current_user)):
     """
     Fetch all messages for a specific thread from LangGraph's PostgreSQL store
     """
@@ -4842,7 +4920,7 @@ workflow_executions: dict[str, dict[str, any]] = {}
 
 
 @app.get("/api/workflows")
-async def list_workflows_endpoint():
+async def list_workflows_endpoint(user_id: str = Depends(get_current_user)):
     """List all available workflow templates"""
     try:
         workflows = list_available_workflows()
@@ -4855,7 +4933,7 @@ async def list_workflows_endpoint():
 
 
 @app.get("/api/workflows/{workflow_id}")
-async def get_workflow_endpoint(workflow_id: str):
+async def get_workflow_endpoint(workflow_id: str, user_id: str = Depends(get_current_user)):
     """Get a specific workflow template"""
     try:
         workflows = list_available_workflows()
@@ -4875,7 +4953,7 @@ async def get_workflow_endpoint(workflow_id: str):
 
 
 @app.post("/api/workflow/execute")
-async def execute_workflow_endpoint(workflow_json: dict, user_id: Optional[str] = None, thread_id: Optional[str] = None):
+async def execute_workflow_endpoint(workflow_json: dict, user_id: str = Depends(get_current_user), thread_id: Optional[str] = None):
     """
     Execute a workflow (non-streaming) via LangGraph Platform
 
@@ -5004,7 +5082,7 @@ async def execute_workflow_endpoint(workflow_json: dict, user_id: Optional[str] 
 
 
 @app.get("/api/workflow/execution/{execution_id}")
-async def get_execution_status_endpoint(execution_id: str):
+async def get_execution_status_endpoint(execution_id: str, user_id: str = Depends(get_current_user)):
     """Get status of a workflow execution"""
     if execution_id not in workflow_executions:
         raise HTTPException(status_code=404, detail=f"Execution {execution_id} not found")
@@ -5352,7 +5430,7 @@ async def execute_workflow_stream_endpoint(websocket: WebSocket):
 # ============================================================================
 
 @app.get("/api/workflow/execution/{execution_id}/status")
-async def get_workflow_execution_status(execution_id: str):
+async def get_workflow_execution_status(execution_id: str, user_id: str = Depends(get_current_user)):
     """
     Get the status of a workflow execution.
     Enables frontend to check execution state and reconnect if needed.
@@ -5393,7 +5471,7 @@ async def get_workflow_execution_status(execution_id: str):
 
 
 @app.get("/api/workflow/execution/{execution_id}")
-async def get_workflow_execution(execution_id: str):
+async def get_workflow_execution(execution_id: str, user_id: str = Depends(get_current_user)):
     """
     Get full workflow execution details including logs (if stored).
     Enables frontend to restore execution history.
@@ -5433,7 +5511,7 @@ async def get_workflow_execution(execution_id: str):
 # ============================================================================
 
 @app.post("/api/migrate-posts-to-langgraph")
-async def migrate_posts_to_langgraph(data: dict):
+async def migrate_posts_to_langgraph(data: dict, user_id: str = Depends(get_current_user)):
     """
     Migrate user posts from PostgreSQL to LangGraph Store for style learning.
 
