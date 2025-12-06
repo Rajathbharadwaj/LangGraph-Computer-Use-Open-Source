@@ -3860,6 +3860,7 @@ async def upload_media(
 
 @app.post("/api/scheduled-posts/generate-ai")
 async def generate_ai_content(
+    request: Request,
     clerk_user_id: str = Depends(get_current_user),
     count: int = 7,  # Always generate 7 for the week
     db: Session = Depends(get_db)
@@ -3877,6 +3878,17 @@ async def generate_ai_content(
     5. Generate 7 posts for next week
     """
     try:
+        # ==================== SECURITY AUDIT LOGGING ====================
+        print("=" * 80)
+        print("🔒 SECURITY AUDIT: AI Content Generation Request")
+        print("=" * 80)
+        print(f"📋 Request URL: {request.url}")
+        print(f"📋 Query Params: {dict(request.query_params)}")
+        print(f"🔐 Authenticated clerk_user_id from JWT: {clerk_user_id}")
+        print(f"📊 Count parameter: {count}")
+        print("=" * 80)
+        # ================================================================
+
         from weekly_content_generator import generate_weekly_content
         from langgraph.store.postgres import PostgresStore
 
@@ -3888,14 +3900,16 @@ async def generate_ai_content(
 
         if x_account:
             user_handle = x_account.username
+            print(f"✅ Found X account in database: @{user_handle} for clerk_user_id: {clerk_user_id}")
         else:
             # Fallback: Try to get username from social graph data
-            print("⚠️  No X account found, trying to get username from social graph...")
+            print(f"⚠️  No X account found for clerk_user_id: {clerk_user_id}, trying social graph...")
             # Use same DB_URI as main store connection (POSTGRES_URI or DATABASE_URL)
             conn_string = os.environ.get("POSTGRES_URI") or os.environ.get("DATABASE_URL") or "postgresql://postgres:password@localhost:5433/xgrowth"
 
             with PostgresStore.from_conn_string(conn_string) as store:
                 graph_namespace = (clerk_user_id, "social_graph")
+                print(f"🔍 Looking up social graph with namespace: {graph_namespace}")
                 graph_item = (store.get(graph_namespace, "graph_data") or
                             store.get(graph_namespace, "latest") or
                             store.get(graph_namespace, "current"))
@@ -3904,9 +3918,11 @@ async def generate_ai_content(
                     user_handle = graph_item.value.get("user_handle")
                     print(f"✅ Found username from social graph: @{user_handle}")
                 else:
+                    print(f"❌ Could not find user_handle in social graph for clerk_user_id: {clerk_user_id}")
                     raise HTTPException(status_code=404, detail="Could not determine user's X handle")
 
-        print(f"🚀 Generating weekly content for authenticated user: {clerk_user_id} (@{user_handle})...")
+        print(f"🚀 GENERATING CONTENT - clerk_user_id: {clerk_user_id}, user_handle: @{user_handle}")
+        print(f"📝 This will use posts from @{user_handle}'s imported X posts ONLY")
 
         # Run the weekly content generator agent with AUTHENTICATED user_id
         generated_posts = await generate_weekly_content(
