@@ -3442,33 +3442,102 @@ async def debug_check_stored_posts(
             ]
         }
 
-@app.post("/api/import-posts")
-async def import_posts(
-    data: dict,
+@app.delete("/api/debug/delete-all-posts")
+async def debug_delete_all_posts(
     user_id: str = Depends(get_current_user)
 ):
     """
+    DEBUG: Delete ALL posts stored for the authenticated user
+    WARNING: This is irreversible!
+    """
+    from langgraph.store.postgres import PostgresStore
+
+    conn_string = os.environ.get("POSTGRES_URI") or os.environ.get("DATABASE_URL") or "postgresql://postgres:password@localhost:5433/xgrowth"
+
+    with PostgresStore.from_conn_string(conn_string) as store:
+        posts_namespace = (user_id, "writing_samples")
+
+        # Get all posts
+        all_posts = list(store.search(posts_namespace))
+
+        # Delete each one
+        deleted_count = 0
+        for post in all_posts:
+            store.delete(posts_namespace, post.key)
+            deleted_count += 1
+
+        print(f"🗑️ Deleted {deleted_count} posts for user_id: {user_id}")
+
+        return {
+            "success": True,
+            "clerk_user_id": user_id,
+            "deleted_count": deleted_count,
+            "message": f"Deleted all {deleted_count} posts for user {user_id}"
+        }
+
+@app.post("/api/import-posts")
+async def import_posts(
+    data: dict,
+    user_id: str = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
     Import authenticated user's X posts for writing style learning
+
+    SECURITY: Validates that posts being imported match the user's connected X account
     """
     # Use authenticated user_id instead of untrusted data
     posts = data.get("posts", [])
-    
+    x_handle_from_request = data.get("x_handle")  # X handle from the extension
+
     if not posts:
         return {
             "success": False,
             "error": "No posts provided"
         }
-    
+
+    # ==================== SECURITY CHECK ====================
+    # Verify that the X handle matches the authenticated user's connected account
+    x_account = db.query(XAccount).filter(
+        XAccount.user_id == user_id,
+        XAccount.is_connected == True
+    ).first()
+
+    if x_account:
+        # User has a connected X account - verify it matches
+        if x_handle_from_request and x_handle_from_request.lower() != x_account.username.lower():
+            print(f"⚠️ SECURITY ALERT: User {user_id} attempted to import posts from @{x_handle_from_request}")
+            print(f"   But their connected X account is @{x_account.username}")
+            return {
+                "success": False,
+                "error": f"Security Error: You are trying to import posts from @{x_handle_from_request}, but your connected account is @{x_account.username}. Please import posts from your own account only."
+            }
+        print(f"✅ Security check passed: Importing posts for @{x_account.username} (user_id: {user_id})")
+    else:
+        # No X account in database yet - this might be first import
+        # Store the handle for future reference
+        if x_handle_from_request:
+            print(f"⚠️ No X account found for user {user_id}, importing posts for @{x_handle_from_request}")
+            print(f"   Creating X account entry...")
+            x_account = XAccount(
+                user_id=user_id,
+                username=x_handle_from_request,
+                is_connected=True
+            )
+            db.add(x_account)
+            db.commit()
+    # ========================================================
+
     # Store posts for this user
     if user_id not in user_posts:
         user_posts[user_id] = []
-    
+
     # Add new posts (avoid duplicates by content)
     existing_contents = {p.get("content") for p in user_posts[user_id]}
     new_posts = [p for p in posts if p.get("content") not in existing_contents]
     user_posts[user_id].extend(new_posts)
-    
-    print(f"✅ Imported {len(new_posts)} posts for user {user_id}")
+
+    print(f"✅ Imported {len(new_posts)} posts for user {user_id} (@{x_handle_from_request or 'unknown'})")
     print(f"📊 Total posts for {user_id}: {len(user_posts[user_id])}")
     
     # Store in LangGraph Store with embeddings for persistent memory
