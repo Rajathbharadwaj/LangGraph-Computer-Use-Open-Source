@@ -278,34 +278,33 @@ async def root():
     }
 
 @app.post("/api/generate-preview")
-async def generate_preview(data: dict, user_id: str = Depends(get_current_user)):
+async def generate_preview(data: dict, clerk_user_id: str = Depends(get_current_user)):
     """
     Generate a preview post/comment in the user's style
-    
+
+    IMPORTANT: Uses authenticated clerk_user_id from JWT token for multi-tenancy isolation
+
     Request body:
     {
-        "user_id": "user_xxx",
-        "clerk_user_id": "user_yyy",
         "content_type": "post" or "comment",
         "context": "What to write about or reply to",
         "feedback": "Optional previous feedback to incorporate"
     }
     """
     try:
-        user_id = data.get("user_id")
-        clerk_user_id = data.get("clerk_user_id")
         content_type = data.get("content_type", "post")
         context = data.get("context", "")
         feedback = data.get("feedback", "")
-        
-        if not user_id or not context:
-            return {"success": False, "error": "Missing user_id or context"}
-        
-        print(f"🎨 Generating {content_type} preview for user: {user_id}")
-        
-        # Initialize style manager
+
+        if not clerk_user_id or not context:
+            return {"success": False, "error": "Missing authentication or context"}
+
+        print(f"🎨 Generating {content_type} preview for authenticated user: {clerk_user_id}")
+
+        # Initialize style manager with AUTHENTICATED clerk_user_id from JWT
+        # This ensures users can only generate content based on THEIR OWN posts
         from x_writing_style_learner import XWritingStyleManager
-        style_manager = XWritingStyleManager(store, user_id)
+        style_manager = XWritingStyleManager(store, clerk_user_id)
         
         # If there's feedback, append it to the context
         if feedback:
@@ -340,36 +339,36 @@ async def generate_preview(data: dict, user_id: str = Depends(get_current_user))
 
 
 @app.post("/api/save-feedback")
-async def save_feedback(data: dict, user_id: str = Depends(get_current_user)):
+async def save_feedback(data: dict, clerk_user_id: str = Depends(get_current_user)):
     """
     Save user feedback about generated content for style refinement
-    
+
+    IMPORTANT: Uses authenticated clerk_user_id from JWT token for multi-tenancy isolation
+
     Request body:
     {
-        "user_id": "user_xxx",
         "feedback": "Make it more casual",
         "original_content": "The generated content",
         "context": "What it was about"
     }
     """
     try:
-        user_id = data.get("user_id")
         feedback_text = data.get("feedback", "")
         original_content = data.get("original_content", "")
         context = data.get("context", "")
-        
-        if not user_id or not feedback_text:
-            return {"success": False, "error": "Missing user_id or feedback"}
-        
-        print(f"💬 Saving feedback for user: {user_id}")
-        
-        # Store feedback in the store
-        namespace = (user_id, "style_feedback")
+
+        if not clerk_user_id or not feedback_text:
+            return {"success": False, "error": "Missing authentication or feedback"}
+
+        print(f"💬 Saving feedback for authenticated user: {clerk_user_id}")
+
+        # Store feedback in the store using AUTHENTICATED clerk_user_id
+        namespace = (clerk_user_id, "style_feedback")
         feedback_id = str(uuid.uuid4())
-        
+
         feedback_data = {
             "feedback_id": feedback_id,
-            "user_id": user_id,
+            "user_id": clerk_user_id,
             "feedback": feedback_text,
             "original_content": original_content,
             "context": context,
@@ -394,42 +393,43 @@ async def save_feedback(data: dict, user_id: str = Depends(get_current_user)):
 
 
 @app.post("/api/agent/create-post")
-async def agent_create_post(data: dict, user_id: str = Depends(get_current_user)):
+async def agent_create_post(data: dict, clerk_user_id: str = Depends(get_current_user)):
     """
     Generate a styled post and publish it to X via the Docker VNC extension.
-    
+
+    IMPORTANT: Uses authenticated clerk_user_id from JWT for style generation and user isolation
+
     Request body:
     {
-        "user_id": "user_xxx",  // Extension user ID (for scraping/posting)
-        "clerk_user_id": "user_yyy",  // Clerk user ID (for style/memory)
+        "user_id": "user_xxx",  // Extension user ID (for posting via extension)
         "context": "What to write about",
         "post_text": "Optional: pre-generated text to post directly"
     }
-    
+
     If post_text is provided, it will be posted directly.
-    Otherwise, content will be generated using the user's writing style.
+    Otherwise, content will be generated using the AUTHENTICATED user's writing style.
     """
     try:
-        user_id = data.get("user_id")  # Extension user ID
-        clerk_user_id = data.get("clerk_user_id")  # Clerk user ID
+        extension_user_id = data.get("user_id")  # Extension user ID for posting
         context = data.get("context", "")
         post_text = data.get("post_text", "")
-        
-        if not user_id:
-            return {"success": False, "error": "Missing user_id"}
-        
-        print(f"📝 Creating post for user: {user_id}")
-        
-        # If no post_text provided, generate it
+
+        if not extension_user_id:
+            return {"success": False, "error": "Missing extension user_id"}
+
+        print(f"📝 Creating post for authenticated user: {clerk_user_id}, extension_id: {extension_user_id}")
+
+        # If no post_text provided, generate it using AUTHENTICATED user's style
         if not post_text:
             if not context:
                 return {"success": False, "error": "Missing context or post_text"}
-            
-            print(f"🎨 Generating styled post...")
-            
-            # Initialize style manager
+
+            print(f"🎨 Generating styled post for authenticated user: {clerk_user_id}")
+
+            # Initialize style manager with AUTHENTICATED clerk_user_id
+            # This ensures content is generated based on THIS user's posts only
             from x_writing_style_learner import XWritingStyleManager
-            style_manager = XWritingStyleManager(store, user_id)
+            style_manager = XWritingStyleManager(store, clerk_user_id)
             
             # Generate content
             generated = await style_manager.generate_content(
@@ -448,14 +448,14 @@ async def agent_create_post(data: dict, user_id: str = Depends(get_current_user)
             }
         
         # Call extension backend to create post
-        print(f"📤 Sending post to extension backend...")
+        print(f"📤 Sending post to extension backend for extension user: {extension_user_id}")
 
         import requests
         response = requests.post(
             f"{EXTENSION_BACKEND_URL}/extension/create-post",
             json={
                 "post_text": post_text,
-                "user_id": user_id
+                "user_id": extension_user_id
             },
             timeout=20
         )
