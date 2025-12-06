@@ -3413,6 +3413,35 @@ async def scrape_posts_docker(
             "error": str(e)
         }
 
+@app.get("/api/debug/check-stored-posts")
+async def debug_check_stored_posts(
+    user_id: str = Depends(get_current_user)
+):
+    """
+    DEBUG: Check what posts are stored for the authenticated user
+    """
+    from langgraph.store.postgres import PostgresStore
+
+    conn_string = os.environ.get("POSTGRES_URI") or os.environ.get("DATABASE_URL") or "postgresql://postgres:password@localhost:5433/xgrowth"
+
+    with PostgresStore.from_conn_string(conn_string) as store:
+        posts_namespace = (user_id, "writing_samples")
+        stored_posts = list(store.search(posts_namespace, limit=10))
+
+        return {
+            "success": True,
+            "clerk_user_id": user_id,
+            "total_posts_found": len(stored_posts),
+            "sample_posts": [
+                {
+                    "content": p.value.get("content", "")[:200],
+                    "user_id": p.value.get("user_id"),
+                    "timestamp": p.value.get("timestamp")
+                }
+                for p in stored_posts[:5]
+            ]
+        }
+
 @app.post("/api/import-posts")
 async def import_posts(
     data: dict,

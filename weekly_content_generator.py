@@ -92,6 +92,14 @@ async def analyze_user_profile(state: ContentGeneratorState) -> ContentGenerator
 
     user_id = state["user_id"]
 
+    # ==================== SECURITY AUDIT LOGGING ====================
+    print("=" * 80)
+    print("🔍 LOADING USER POSTS FROM STORE")
+    print(f"🔐 user_id: {user_id}")
+    print(f"📋 Looking up namespace: ({user_id}, 'writing_samples')")
+    print("=" * 80)
+    # ================================================================
+
     # Get store connection (check POSTGRES_URI first for Cloud Run, then DATABASE_URL for local)
     conn_string = (os.getenv("POSTGRES_URI") or
                    os.getenv("DATABASE_URL") or
@@ -102,7 +110,14 @@ async def analyze_user_profile(state: ContentGeneratorState) -> ContentGenerator
         posts_namespace = (user_id, "writing_samples")
         stored_posts = list(store.search(posts_namespace))
 
+        print(f"📦 Found {len(stored_posts)} posts in store for user_id: {user_id}")
+        if stored_posts and len(stored_posts) > 0:
+            # Show first post as sample
+            first_post_content = stored_posts[0].value.get("content", "")[:100]
+            print(f"📝 Sample post (first 100 chars): {first_post_content}...")
+
         if not stored_posts:
+            print(f"❌ ERROR: No imported posts found for user_id: {user_id}")
             state["error"] = "No imported posts found for user"
             return state
 
