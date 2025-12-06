@@ -278,33 +278,34 @@ async def root():
     }
 
 @app.post("/api/generate-preview")
-async def generate_preview(data: dict, clerk_user_id: str = Depends(get_current_user)):
+async def generate_preview(data: dict):
     """
     Generate a preview post/comment in the user's style
-
-    IMPORTANT: Uses authenticated clerk_user_id from JWT token for multi-tenancy isolation
-
+    
     Request body:
     {
+        "user_id": "user_xxx",
+        "clerk_user_id": "user_yyy",
         "content_type": "post" or "comment",
         "context": "What to write about or reply to",
         "feedback": "Optional previous feedback to incorporate"
     }
     """
     try:
+        user_id = data.get("user_id")
+        clerk_user_id = data.get("clerk_user_id")
         content_type = data.get("content_type", "post")
         context = data.get("context", "")
         feedback = data.get("feedback", "")
-
-        if not clerk_user_id or not context:
-            return {"success": False, "error": "Missing authentication or context"}
-
-        print(f"🎨 Generating {content_type} preview for authenticated user: {clerk_user_id}")
-
-        # Initialize style manager with AUTHENTICATED clerk_user_id from JWT
-        # This ensures users can only generate content based on THEIR OWN posts
+        
+        if not user_id or not context:
+            return {"success": False, "error": "Missing user_id or context"}
+        
+        print(f"🎨 Generating {content_type} preview for user: {user_id}")
+        
+        # Initialize style manager
         from x_writing_style_learner import XWritingStyleManager
-        style_manager = XWritingStyleManager(store, clerk_user_id)
+        style_manager = XWritingStyleManager(store, user_id)
         
         # If there's feedback, append it to the context
         if feedback:
@@ -339,36 +340,36 @@ async def generate_preview(data: dict, clerk_user_id: str = Depends(get_current_
 
 
 @app.post("/api/save-feedback")
-async def save_feedback(data: dict, clerk_user_id: str = Depends(get_current_user)):
+async def save_feedback(data: dict):
     """
     Save user feedback about generated content for style refinement
-
-    IMPORTANT: Uses authenticated clerk_user_id from JWT token for multi-tenancy isolation
-
+    
     Request body:
     {
+        "user_id": "user_xxx",
         "feedback": "Make it more casual",
         "original_content": "The generated content",
         "context": "What it was about"
     }
     """
     try:
+        user_id = data.get("user_id")
         feedback_text = data.get("feedback", "")
         original_content = data.get("original_content", "")
         context = data.get("context", "")
-
-        if not clerk_user_id or not feedback_text:
-            return {"success": False, "error": "Missing authentication or feedback"}
-
-        print(f"💬 Saving feedback for authenticated user: {clerk_user_id}")
-
-        # Store feedback in the store using AUTHENTICATED clerk_user_id
-        namespace = (clerk_user_id, "style_feedback")
+        
+        if not user_id or not feedback_text:
+            return {"success": False, "error": "Missing user_id or feedback"}
+        
+        print(f"💬 Saving feedback for user: {user_id}")
+        
+        # Store feedback in the store
+        namespace = (user_id, "style_feedback")
         feedback_id = str(uuid.uuid4())
-
+        
         feedback_data = {
             "feedback_id": feedback_id,
-            "user_id": clerk_user_id,
+            "user_id": user_id,
             "feedback": feedback_text,
             "original_content": original_content,
             "context": context,
@@ -393,43 +394,42 @@ async def save_feedback(data: dict, clerk_user_id: str = Depends(get_current_use
 
 
 @app.post("/api/agent/create-post")
-async def agent_create_post(data: dict, clerk_user_id: str = Depends(get_current_user)):
+async def agent_create_post(data: dict):
     """
     Generate a styled post and publish it to X via the Docker VNC extension.
-
-    IMPORTANT: Uses authenticated clerk_user_id from JWT for style generation and user isolation
-
+    
     Request body:
     {
-        "user_id": "user_xxx",  // Extension user ID (for posting via extension)
+        "user_id": "user_xxx",  // Extension user ID (for scraping/posting)
+        "clerk_user_id": "user_yyy",  // Clerk user ID (for style/memory)
         "context": "What to write about",
         "post_text": "Optional: pre-generated text to post directly"
     }
-
+    
     If post_text is provided, it will be posted directly.
-    Otherwise, content will be generated using the AUTHENTICATED user's writing style.
+    Otherwise, content will be generated using the user's writing style.
     """
     try:
-        extension_user_id = data.get("user_id")  # Extension user ID for posting
+        user_id = data.get("user_id")  # Extension user ID
+        clerk_user_id = data.get("clerk_user_id")  # Clerk user ID
         context = data.get("context", "")
         post_text = data.get("post_text", "")
-
-        if not extension_user_id:
-            return {"success": False, "error": "Missing extension user_id"}
-
-        print(f"📝 Creating post for authenticated user: {clerk_user_id}, extension_id: {extension_user_id}")
-
-        # If no post_text provided, generate it using AUTHENTICATED user's style
+        
+        if not user_id:
+            return {"success": False, "error": "Missing user_id"}
+        
+        print(f"📝 Creating post for user: {user_id}")
+        
+        # If no post_text provided, generate it
         if not post_text:
             if not context:
                 return {"success": False, "error": "Missing context or post_text"}
-
-            print(f"🎨 Generating styled post for authenticated user: {clerk_user_id}")
-
-            # Initialize style manager with AUTHENTICATED clerk_user_id
-            # This ensures content is generated based on THIS user's posts only
+            
+            print(f"🎨 Generating styled post...")
+            
+            # Initialize style manager
             from x_writing_style_learner import XWritingStyleManager
-            style_manager = XWritingStyleManager(store, clerk_user_id)
+            style_manager = XWritingStyleManager(store, user_id)
             
             # Generate content
             generated = await style_manager.generate_content(
@@ -448,14 +448,14 @@ async def agent_create_post(data: dict, clerk_user_id: str = Depends(get_current
             }
         
         # Call extension backend to create post
-        print(f"📤 Sending post to extension backend for extension user: {extension_user_id}")
+        print(f"📤 Sending post to extension backend...")
 
         import requests
         response = requests.post(
             f"{EXTENSION_BACKEND_URL}/extension/create-post",
             json={
                 "post_text": post_text,
-                "user_id": extension_user_id
+                "user_id": user_id
             },
             timeout=20
         )
@@ -717,7 +717,7 @@ async def cleanup_duplicate_posts(user_id: str = Depends(get_current_user)):
         }
 
 @app.get("/api/vnc/session")
-async def get_vnc_session_by_user_id(user_id: str = Depends(get_current_user)):
+async def get_vnc_session_by_user_id(user_id: str):
     """
     Internal endpoint for LangGraph middleware to get VNC session URL by user ID.
     No authentication required for internal service-to-service calls.
@@ -761,7 +761,7 @@ async def get_vnc_session_by_user_id(user_id: str = Depends(get_current_user)):
         return {"success": False, "error": str(e)}
 
 @app.get("/api/posts/count/{username}")
-async def get_posts_count(username: str, user_id: str = Depends(get_current_user)):
+async def get_posts_count(username: str):
     """Get total count of imported posts from database"""
     try:
         from database.models import UserPost, XAccount
@@ -904,7 +904,7 @@ async def get_user_posts(user_id: str = Depends(get_current_user)):
         }
 
 @app.get("/api/extension/status")
-async def extension_status(user_id: str = Depends(get_current_user)):
+async def extension_status(user_id: Optional[str] = None):
     """
     Check if any extensions are connected
 
@@ -955,7 +955,7 @@ async def extension_status(user_id: str = Depends(get_current_user)):
 
 
 @app.delete("/api/extension/disconnect/{user_id}")
-async def extension_disconnect(user_id: str, auth_user_id: str = Depends(get_current_user)):
+async def extension_disconnect(user_id: str):
     """
     Disconnect a user's X account by clearing their cookies from the extension backend.
     This proxies the request to the extension backend service.
@@ -963,10 +963,6 @@ async def extension_disconnect(user_id: str, auth_user_id: str = Depends(get_cur
     Args:
         user_id: Clerk user ID to disconnect
     """
-    # SECURITY: Verify path user_id matches authenticated user
-    if user_id != auth_user_id:
-        raise HTTPException(status_code=403, detail="Access denied")
-
     import aiohttp
 
     try:
@@ -990,7 +986,7 @@ async def extension_disconnect(user_id: str, auth_user_id: str = Depends(get_cur
 
 
 @app.get("/api/activity/recent")
-async def get_recent_activity(user_id: str = Depends(get_current_user), limit: int = 50):
+async def get_recent_activity(user_id: str, limit: int = 50):
     """
     Get recent activity logs for a user from BOTH ActivityLogger and /memories/action_history.json.
 
@@ -1152,7 +1148,7 @@ async def activity_websocket(websocket: WebSocket, user_id: str):
 
 # LEGACY ENDPOINT - For backwards compatibility with /memories/action_history.json format
 @app.get("/api/activity/legacy")
-async def get_legacy_activity(user_id: str = Depends(get_current_user), limit: int = 50):
+async def get_legacy_activity(user_id: str, limit: int = 50):
     """
     LEGACY: Get activity from /memories/action_history.json (old format)
 
@@ -3860,14 +3856,12 @@ async def upload_media(
 
 @app.post("/api/scheduled-posts/generate-ai")
 async def generate_ai_content(
-    clerk_user_id: str = Depends(get_current_user),
+    user_id: str,
     count: int = 7,  # Always generate 7 for the week
     db: Session = Depends(get_db)
 ):
     """
     Generate weekly AI content using the Weekly Content Generator Agent
-
-    IMPORTANT: Uses authenticated clerk_user_id from JWT token for multi-tenancy isolation
 
     This uses LangGraph to:
     1. Analyze user's writing style from imported posts
@@ -3882,7 +3876,7 @@ async def generate_ai_content(
 
         # Get user's X account to get username
         x_account = db.query(XAccount).filter(
-            XAccount.user_id == clerk_user_id,
+            XAccount.user_id == user_id,
             XAccount.is_connected == True
         ).first()
 
@@ -3895,7 +3889,7 @@ async def generate_ai_content(
             conn_string = os.environ.get("POSTGRES_URI") or os.environ.get("DATABASE_URL") or "postgresql://postgres:password@localhost:5433/xgrowth"
 
             with PostgresStore.from_conn_string(conn_string) as store:
-                graph_namespace = (clerk_user_id, "social_graph")
+                graph_namespace = (user_id, "social_graph")
                 graph_item = (store.get(graph_namespace, "graph_data") or
                             store.get(graph_namespace, "latest") or
                             store.get(graph_namespace, "current"))
@@ -3906,11 +3900,11 @@ async def generate_ai_content(
                 else:
                     raise HTTPException(status_code=404, detail="Could not determine user's X handle")
 
-        print(f"🚀 Generating weekly content for authenticated user: {clerk_user_id} (@{user_handle})...")
+        print(f"🚀 Generating weekly content for @{user_handle}...")
 
-        # Run the weekly content generator agent with AUTHENTICATED user_id
+        # Run the weekly content generator agent
         generated_posts = await generate_weekly_content(
-            user_id=clerk_user_id,
+            user_id=user_id,
             user_handle=user_handle
         )
 
@@ -3922,19 +3916,19 @@ async def generate_ai_content(
         # Get or create x_account
         if not x_account:
             # Ensure user exists in database (in case webhook hasn't run yet)
-            user = db.query(User).filter(User.id == clerk_user_id).first()
+            user = db.query(User).filter(User.id == user_id).first()
             if not user:
                 user = User(
-                    id=clerk_user_id,
-                    email=f"{clerk_user_id}@temp.com"  # Temporary email, will be updated by webhook
+                    id=user_id,
+                    email=f"{user_id}@temp.com"  # Temporary email, will be updated by webhook
                 )
                 db.add(user)
                 db.commit()
-                print(f"✅ Created user {clerk_user_id} in database")
+                print(f"✅ Created user {user_id} in database")
 
             # Create a temporary x_account entry if it doesn't exist
             x_account = XAccount(
-                user_id=clerk_user_id,
+                user_id=user_id,
                 username=user_handle,
                 is_connected=True
             )
@@ -4256,7 +4250,7 @@ async def get_ai_drafts(
 # ============================================================================
 
 @app.post("/api/agent/run")
-async def run_agent(data: dict, user_id: str = Depends(get_current_user)):
+async def run_agent(data: dict):
     """
     Run the X Growth Deep Agent with streaming updates
     
@@ -4694,7 +4688,7 @@ async def create_new_thread(data: dict, user_id: str = Depends(get_current_user)
         return {"success": False, "error": str(e)}
 
 @app.get("/api/agent/threads/list")
-async def list_user_threads(user_id: str = Depends(get_current_user)):
+async def list_user_threads(user_id: str):
     """
     List all threads for a user using LangGraph SDK
     """
@@ -4814,7 +4808,7 @@ async def list_user_threads(user_id: str = Depends(get_current_user)):
         return {"success": False, "error": str(e)}
 
 @app.get("/api/agent/threads")
-async def get_user_thread(user_id: str = Depends(get_current_user)):
+async def get_user_thread(user_id: str):
     """
     Get the current active thread ID for a user
     """
@@ -4922,7 +4916,7 @@ workflow_executions: dict[str, dict[str, any]] = {}
 
 
 @app.get("/api/workflows")
-async def list_workflows_endpoint(user_id: str = Depends(get_current_user)):
+async def list_workflows_endpoint():
     """List all available workflow templates"""
     try:
         workflows = list_available_workflows()
@@ -4935,7 +4929,7 @@ async def list_workflows_endpoint(user_id: str = Depends(get_current_user)):
 
 
 @app.get("/api/workflows/{workflow_id}")
-async def get_workflow_endpoint(workflow_id: str, user_id: str = Depends(get_current_user)):
+async def get_workflow_endpoint(workflow_id: str):
     """Get a specific workflow template"""
     try:
         workflows = list_available_workflows()
@@ -4955,7 +4949,7 @@ async def get_workflow_endpoint(workflow_id: str, user_id: str = Depends(get_cur
 
 
 @app.post("/api/workflow/execute")
-async def execute_workflow_endpoint(workflow_json: dict, user_id: str = Depends(get_current_user), thread_id: Optional[str] = None):
+async def execute_workflow_endpoint(workflow_json: dict, user_id: Optional[str] = None, thread_id: Optional[str] = None):
     """
     Execute a workflow (non-streaming) via LangGraph Platform
 
@@ -5084,7 +5078,7 @@ async def execute_workflow_endpoint(workflow_json: dict, user_id: str = Depends(
 
 
 @app.get("/api/workflow/execution/{execution_id}")
-async def get_execution_status_endpoint(execution_id: str, user_id: str = Depends(get_current_user)):
+async def get_execution_status_endpoint(execution_id: str):
     """Get status of a workflow execution"""
     if execution_id not in workflow_executions:
         raise HTTPException(status_code=404, detail=f"Execution {execution_id} not found")
@@ -5432,7 +5426,7 @@ async def execute_workflow_stream_endpoint(websocket: WebSocket):
 # ============================================================================
 
 @app.get("/api/workflow/execution/{execution_id}/status")
-async def get_workflow_execution_status(execution_id: str, user_id: str = Depends(get_current_user)):
+async def get_workflow_execution_status(execution_id: str):
     """
     Get the status of a workflow execution.
     Enables frontend to check execution state and reconnect if needed.
@@ -5473,7 +5467,7 @@ async def get_workflow_execution_status(execution_id: str, user_id: str = Depend
 
 
 @app.get("/api/workflow/execution/{execution_id}")
-async def get_workflow_execution(execution_id: str, user_id: str = Depends(get_current_user)):
+async def get_workflow_execution(execution_id: str):
     """
     Get full workflow execution details including logs (if stored).
     Enables frontend to restore execution history.
@@ -5513,7 +5507,7 @@ async def get_workflow_execution(execution_id: str, user_id: str = Depends(get_c
 # ============================================================================
 
 @app.post("/api/migrate-posts-to-langgraph")
-async def migrate_posts_to_langgraph(data: dict, user_id: str = Depends(get_current_user)):
+async def migrate_posts_to_langgraph(data: dict):
     """
     Migrate user posts from PostgreSQL to LangGraph Store for style learning.
 

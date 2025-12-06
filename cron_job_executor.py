@@ -231,6 +231,11 @@ class CronJobExecutor:
                     "content": cron_job.custom_prompt
                 }]
                 logger.info(f"Using custom prompt (length: {len(cron_job.custom_prompt)})")
+            else:
+                # This should NEVER happen due to API validation, but fail loudly if it does
+                error_msg = f"Invalid cron job {cron_job_id}: missing both workflow_id and custom_prompt"
+                logger.error(f"❌ {error_msg}")
+                raise ValueError(error_msg)
 
             # Merge additional config
             if cron_job.input_config:
