@@ -3444,36 +3444,66 @@ async def debug_check_stored_posts(
 
 @app.delete("/api/debug/delete-all-posts")
 async def debug_delete_all_posts(
-    user_id: str = Depends(get_current_user)
+    user_id: str = Depends(get_current_user),
+    db: Session = Depends(get_db)
 ):
     """
-    DEBUG: Delete ALL posts stored for the authenticated user
+    DEBUG: Delete ALL posts stored for the authenticated user from BOTH storage locations
     WARNING: This is irreversible!
+
+    Deletes from:
+    1. LangGraph Store (writing_samples namespace) - used for AI style learning
+    2. Postgres UserPost table - used for post count/metadata
     """
     from langgraph.store.postgres import PostgresStore
+    from database.models import UserPost
 
     conn_string = os.environ.get("POSTGRES_URI") or os.environ.get("DATABASE_URL") or "postgresql://postgres:password@localhost:5433/xgrowth"
 
+    # ============= DELETE FROM LANGGRAPH STORE =============
+    langgraph_deleted = 0
     with PostgresStore.from_conn_string(conn_string) as store:
         posts_namespace = (user_id, "writing_samples")
 
-        # Get all posts
-        all_posts = list(store.search(posts_namespace))
+        # Get ALL posts without limit
+        all_posts = list(store.search(posts_namespace, limit=10000))
 
         # Delete each one
-        deleted_count = 0
         for post in all_posts:
             store.delete(posts_namespace, post.key)
-            deleted_count += 1
+            langgraph_deleted += 1
 
-        print(f"🗑️ Deleted {deleted_count} posts for user_id: {user_id}")
+        print(f"🗑️ Deleted {langgraph_deleted} posts from LangGraph store for user_id: {user_id}")
 
-        return {
-            "success": True,
-            "clerk_user_id": user_id,
-            "deleted_count": deleted_count,
-            "message": f"Deleted all {deleted_count} posts for user {user_id}"
-        }
+    # ============= DELETE FROM POSTGRES DATABASE =============
+    postgres_deleted = 0
+    try:
+        # Get all X accounts for this user
+        x_accounts = db.query(XAccount).filter(XAccount.user_id == user_id).all()
+
+        for x_account in x_accounts:
+            # Delete all UserPosts for this X account
+            posts_to_delete = db.query(UserPost).filter(UserPost.x_account_id == x_account.id).all()
+            postgres_deleted += len(posts_to_delete)
+
+            for post in posts_to_delete:
+                db.delete(post)
+
+            print(f"🗑️ Deleted {len(posts_to_delete)} posts from Postgres for @{x_account.username}")
+
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        print(f"❌ Error deleting from Postgres: {e}")
+
+    return {
+        "success": True,
+        "clerk_user_id": user_id,
+        "langgraph_deleted": langgraph_deleted,
+        "postgres_deleted": postgres_deleted,
+        "total_deleted": langgraph_deleted + postgres_deleted,
+        "message": f"Deleted {langgraph_deleted} from LangGraph + {postgres_deleted} from Postgres = {langgraph_deleted + postgres_deleted} total posts"
+    }
 
 @app.post("/api/import-posts")
 async def import_posts(
