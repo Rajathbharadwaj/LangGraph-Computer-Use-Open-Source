@@ -13,15 +13,23 @@ import logging
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 import os
+import json
+import aiohttp
 import redis.asyncio as aioredis
 
 # LangGraph SDK client
 from langgraph_sdk import get_client
 
+# VNC Session Manager for per-user browser sessions
+from vnc_session_manager import VNCSessionManager, get_vnc_manager
+
 # Database models
 from database.models import CronJob, CronJobRun
 
 logger = logging.getLogger(__name__)
+
+# Extension backend URL for cookie fetching
+EXTENSION_BACKEND_URL = os.environ.get("EXTENSION_BACKEND_URL", "http://127.0.0.1:8001")
 
 # Database setup
 DATABASE_URL = os.getenv("POSTGRES_URI") or os.getenv("DATABASE_URL") or "postgresql://postgres:password@localhost:5433/xgrowth"
@@ -51,6 +59,9 @@ class CronJobExecutor:
             # Initialize LangGraph SDK client
             self.client = get_client(url=self.langgraph_url)
 
+            # Initialize VNC session manager
+            self.vnc_manager = await get_vnc_manager()
+
             # Initialize Redis client for distributed locks
             try:
                 self.redis_client = await aioredis.from_url(
@@ -75,6 +86,113 @@ class CronJobExecutor:
         except Exception as e:
             logger.error(f"❌ Failed to initialize CronJobExecutor: {e}")
             raise
+
+    async def _get_user_vnc_url(self, user_id: str) -> Optional[str]:
+        """
+        Get the VNC URL for a user's browser session.
+        Looks up from Redis first, then Cloud Run if not cached.
+        Will auto-create a session if none exists.
+        """
+        try:
+            session = await self.vnc_manager.get_or_create_session(user_id)
+            if session:
+                vnc_url = session.get("https_url") or session.get("service_url")
+                if vnc_url:
+                    logger.info(f"✅ Got VNC URL for user {user_id}: {vnc_url}")
+                    return vnc_url
+            logger.error(f"❌ Could not get VNC session for user {user_id}")
+            return None
+        except Exception as e:
+            logger.error(f"❌ Failed to get VNC URL for user {user_id}: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return None
+
+    async def _inject_cookies_to_vnc(self, user_id: str, vnc_url: str) -> bool:
+        """
+        Inject user's X/Twitter cookies into their VNC browser session.
+        """
+        try:
+            logger.info(f"🔐 Injecting cookies for user {user_id} to VNC: {vnc_url}")
+
+            # Fetch cookies from extension backend
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    f'{EXTENSION_BACKEND_URL}/cookies/{user_id}',
+                    timeout=aiohttp.ClientTimeout(total=10)
+                ) as resp:
+                    if resp.status != 200:
+                        logger.error(f"❌ Extension backend returned {resp.status}")
+                        return False
+                    ext_data = await resp.json()
+                    if not ext_data.get('success'):
+                        logger.error(f"❌ No cookies found for user {user_id}")
+                        return False
+                    cookies = ext_data.get("cookies", [])
+                    username = ext_data.get("username", "unknown")
+                    logger.info(f"📦 Got {len(cookies)} cookies for @{username}")
+
+            if not cookies:
+                logger.error(f"❌ No cookies to inject for user {user_id}")
+                return False
+
+            # Convert Chrome cookies to Playwright format
+            playwright_cookies = []
+            for cookie in cookies:
+                expires_value = cookie.get("expirationDate", -1)
+                if expires_value and expires_value != -1:
+                    expires_value = int(expires_value)
+                else:
+                    expires_value = -1
+
+                same_site = cookie.get("sameSite", "lax")
+                if same_site:
+                    same_site_lower = same_site.lower()
+                    if same_site_lower == "strict":
+                        same_site = "Strict"
+                    elif same_site_lower == "lax":
+                        same_site = "Lax"
+                    elif same_site_lower in ("none", "no_restriction"):
+                        same_site = "None"
+                    else:
+                        same_site = "Lax"
+                else:
+                    same_site = "Lax"
+
+                pw_cookie = {
+                    "name": cookie["name"],
+                    "value": cookie["value"],
+                    "domain": cookie.get("domain", ".x.com"),
+                    "path": cookie.get("path", "/"),
+                    "expires": expires_value,
+                    "httpOnly": cookie.get("httpOnly", False),
+                    "secure": cookie.get("secure", True),
+                    "sameSite": same_site
+                }
+                playwright_cookies.append(pw_cookie)
+
+            # Inject cookies to VNC
+            inject_url = f"{vnc_url.rstrip('/')}/api/cookies"
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    inject_url,
+                    json={"cookies": playwright_cookies},
+                    timeout=aiohttp.ClientTimeout(total=30)
+                ) as resp:
+                    if resp.status == 200:
+                        result = await resp.json()
+                        logger.info(f"✅ Cookies injected successfully: {result}")
+                        return True
+                    else:
+                        error_text = await resp.text()
+                        logger.error(f"❌ Cookie injection failed ({resp.status}): {error_text}")
+                        return False
+
+        except Exception as e:
+            logger.error(f"❌ Cookie injection error: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return False
 
     async def load_active_cron_jobs(self):
         """Load all active cron jobs from database and schedule them"""
@@ -241,12 +359,58 @@ class CronJobExecutor:
             if cron_job.input_config:
                 agent_input.update(cron_job.input_config)
 
+            # Get or create VNC session for the user
+            logger.info(f"🖥️ Getting VNC session for user {user_id}...")
+            vnc_url = await self._get_user_vnc_url(user_id)
+
+            if not vnc_url:
+                raise Exception(f"Could not get VNC session for user {user_id}")
+
+            logger.info(f"✅ VNC URL: {vnc_url}")
+
+            # Inject cookies to ensure authenticated session
+            logger.info(f"🔐 Injecting cookies for user {user_id}...")
+            cookie_result = await self._inject_cookies_to_vnc(user_id, vnc_url)
+
+            if not cookie_result:
+                logger.warning(f"⚠️ Cookie injection failed, but attempting to continue...")
+
+            # Extract host and port for screenshot middleware
+            cua_host = None
+            cua_port = None
+            if vnc_url and "://" in vnc_url:
+                try:
+                    url_parts = vnc_url.split("://")[1]
+                    if ":" in url_parts:
+                        cua_host = url_parts.split(":")[0]
+                        cua_port = url_parts.split(":")[-1].rstrip("/")
+                    else:
+                        cua_host = url_parts.rstrip("/")
+                        cua_port = "443"
+                except Exception as e:
+                    logger.warning(f"⚠️ Could not parse VNC URL: {e}")
+
+            logger.info(f"🌐 CUA Host: {cua_host}, Port: {cua_port}")
+
+            # Config with VNC URL for the agent to use browser automation
+            config = {
+                "configurable": {
+                    "user_id": user_id,
+                    "cua_url": vnc_url,
+                    "x-cua-host": cua_host,
+                    "x-cua-port": cua_port,
+                    "x-user-id": user_id,
+                    "use_longterm_memory": True,
+                }
+            }
+
             # Execute through LangGraph agent
-            logger.info(f"Invoking agent {cron_job.assistant_id} for cron job {cron_job_id}")
+            logger.info(f"🤖 Invoking agent {cron_job.assistant_id} for cron job {cron_job_id} with VNC URL: {vnc_url}")
             result = await self.client.runs.wait(
                 thread_id=thread_id,
                 assistant_id=cron_job.assistant_id,
-                input=agent_input
+                input=agent_input,
+                config=config  # Now passing the config with cua_url!
             )
 
             # Mark as completed
