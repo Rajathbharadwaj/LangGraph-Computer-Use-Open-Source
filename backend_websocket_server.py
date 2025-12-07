@@ -929,7 +929,8 @@ async def extension_status(user_id: str = Depends(get_current_user)):
                     return {
                         "connected": len(users_with_info) > 0,
                         "count": len(users_with_info),
-                        "users": users_with_info
+                        "users": users_with_info,
+                        "users_with_info": users_with_info  # Include both field names for compatibility
                     }
     except Exception as e:
         print(f"Failed to check extension backend: {e}")
@@ -950,7 +951,8 @@ async def extension_status(user_id: str = Depends(get_current_user)):
     return {
         "connected": len(active_connections) > 0,
         "count": len(active_connections),
-        "users": users_with_cookies
+        "users": users_with_cookies,
+        "users_with_info": users_with_cookies  # Include both field names for compatibility
     }
 
 
