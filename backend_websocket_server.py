@@ -1277,17 +1277,23 @@ async def validate_discovery_ready(user_id: str = Depends(get_current_user)):
 
                 status_data = await resp.json()
 
-                # Find user with cookies
+                # Find user with cookies - SECURITY: MUST filter by authenticated user_id
                 user_with_cookies = None
+                print(f"🔐 [MULTI-TENANCY] validate_discovery_ready: Looking for cookies for user: {user_id}")
                 for user_info in status_data.get("users_with_info", []):
-                    if user_info.get("hasCookies") and user_info.get("username"):
+                    user_info_id = user_info.get("userId")
+                    # SECURITY: Only accept cookies belonging to the authenticated user
+                    if user_info_id == user_id and user_info.get("hasCookies") and user_info.get("username"):
                         user_with_cookies = user_info
+                        print(f"✅ [MULTI-TENANCY] Found cookies for authenticated user: {user_info_id} (@{user_info.get('username')})")
                         break
+                    elif user_info.get("hasCookies"):
+                        print(f"⚠️ [MULTI-TENANCY] Skipping cookies for different user: {user_info_id} (@{user_info.get('username')})")
 
                 if not user_with_cookies:
                     return {
                         "success": False,
-                        "error": "No X account connected. Please open x.com in your browser with the extension installed.",
+                        "error": f"No X account connected for your account. Please open x.com in your browser with the extension installed. (Looking for user: {user_id})",
                         "action": "connect_extension"
                     }
 
@@ -1362,15 +1368,22 @@ async def smart_discover_competitors(user_id: str, auth_user_id: str = Depends(g
                 status_data = await resp.json()
                 user_with_cookies = None
 
+                # SECURITY: MUST filter by authenticated user_id to prevent cross-user data leakage
+                print(f"🔐 [MULTI-TENANCY] smart_discover: Looking for cookies for user: {user_id}")
                 for user_info in status_data.get("users_with_info", []):
-                    if user_info.get("hasCookies") and user_info.get("username"):
+                    user_info_id = user_info.get("userId")
+                    # SECURITY: Only accept cookies belonging to the authenticated user
+                    if user_info_id == user_id and user_info.get("hasCookies") and user_info.get("username"):
                         user_with_cookies = user_info
+                        print(f"✅ [MULTI-TENANCY] Found cookies for authenticated user: {user_info_id} (@{user_info.get('username')})")
                         break
+                    elif user_info.get("hasCookies"):
+                        print(f"⚠️ [MULTI-TENANCY] Skipping cookies for different user: {user_info_id} (@{user_info.get('username')})")
 
                 if not user_with_cookies:
                     return {
                         "success": False,
-                        "error": "No X account connected. Please open x.com in your browser with the extension installed.",
+                        "error": f"No X account connected for your account. Please open x.com in your browser with the extension installed. (Looking for user: {user_id})",
                         "action": "connect_extension"
                     }
 
@@ -1817,20 +1830,27 @@ async def discover_competitors(user_handle: str, user_id: str = Depends(get_curr
         print(f"🕸️ Starting competitor discovery for @{user_handle} (user: {user_id})")
 
         # Check if user has cookies injected (check extension backend)
+        # SECURITY: MUST filter by authenticated user_id to prevent cross-user data leakage
         import aiohttp
         async with aiohttp.ClientSession() as session:
             async with session.get(f"{EXTENSION_BACKEND_URL}/status") as resp:
                 status_data = await resp.json()
                 user_with_cookies = None
+                print(f"🔐 [MULTI-TENANCY] discover_competitors: Looking for cookies for user: {user_id}")
                 for user_info in status_data.get("users_with_info", []):
-                    if user_info.get("hasCookies") and user_info.get("username"):
+                    user_info_id = user_info.get("userId")
+                    # SECURITY: Only accept cookies belonging to the authenticated user
+                    if user_info_id == user_id and user_info.get("hasCookies") and user_info.get("username"):
                         user_with_cookies = user_info
+                        print(f"✅ [MULTI-TENANCY] Found cookies for authenticated user: {user_info_id} (@{user_info.get('username')})")
                         break
+                    elif user_info.get("hasCookies"):
+                        print(f"⚠️ [MULTI-TENANCY] Skipping cookies for different user: {user_info_id} (@{user_info.get('username')})")
 
                 if not user_with_cookies:
                     return {
                         "success": False,
-                        "error": "No X account connected. Please connect your X account via the Chrome extension first.",
+                        "error": f"No X account connected for your account. Please connect your X account via the Chrome extension first. (Looking for user: {user_id})",
                         "message": "❌ Please inject your X cookies before discovery"
                     }
 
@@ -3057,6 +3077,7 @@ async def scrape_posts_docker(
     
     try:
         # Get username AND user_id with cookies from extension backend
+        # SECURITY: MUST filter by authenticated clerk_user_id to prevent cross-user data leakage
         username = None
         extension_user_id = None
         async with aiohttp.ClientSession() as session:
@@ -3064,19 +3085,25 @@ async def scrape_posts_docker(
                 async with session.get(f"{EXTENSION_BACKEND_URL}/status") as resp:
                     status_data = await resp.json()
                     if status_data.get("users_with_info"):
+                        print(f"🔐 [MULTI-TENANCY] Looking for cookies belonging to authenticated user: {clerk_user_id}")
                         for user_info in status_data["users_with_info"]:
-                            if user_info.get("username") and user_info.get("hasCookies"):
+                            user_info_id = user_info.get("userId")
+                            # SECURITY: Only use cookies belonging to the AUTHENTICATED user
+                            if user_info_id == clerk_user_id and user_info.get("username") and user_info.get("hasCookies"):
                                 username = user_info["username"]
                                 extension_user_id = user_info["userId"]
-                                print(f"✅ Found user with cookies: {extension_user_id} (@{username})")
+                                print(f"✅ [MULTI-TENANCY] Found cookies for authenticated user: {extension_user_id} (@{username})")
                                 break
+                            elif user_info.get("hasCookies"):
+                                print(f"⚠️ [MULTI-TENANCY] Skipping cookies for different user: {user_info_id} (@{user_info.get('username')}) - not authenticated user")
             except Exception as e:
                 print(f"⚠️ Could not fetch username from extension backend: {e}")
-        
+
         if not username or not extension_user_id:
+            print(f"❌ [MULTI-TENANCY] No cookies found for authenticated user {clerk_user_id}")
             return {
                 "success": False,
-                "error": "No X account connected. Please connect your X account first."
+                "error": f"No X account connected for your account. Please connect your X account first. (Looking for user: {clerk_user_id})"
             }
         
         print(f"📝 Scraping posts for @{username} using Docker VNC browser...")
