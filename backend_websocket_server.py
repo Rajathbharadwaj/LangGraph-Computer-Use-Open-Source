@@ -3034,9 +3034,11 @@ async def scrape_posts_docker(
 
     # SECURITY: Use ONLY authenticated Clerk user ID, ignore any user_id from request body
     target_count = data.get("targetCount", 50)
+    force_full_import = data.get("forceFullImport", False)  # Skip optimization if true
     min_posts_threshold = 30  # Minimum posts we want to have
 
     print(f"🔍 Scraping for authenticated Clerk user: {clerk_user_id}")
+    print(f"📊 Force full import: {force_full_import}")
     print(f"📊 Active WebSocket connections: {list(active_connections.keys())}")
     
     # Check existing posts in store using CLERK user ID (consistent with where posts are saved)
@@ -3048,25 +3050,27 @@ async def scrape_posts_docker(
         
         print(f"📚 Found {existing_count} existing posts in store")
         
-        # If we have enough posts, check if we need to update
-        if existing_count >= min_posts_threshold:
+        # If we have enough posts, check if we need to update (unless force full import)
+        if existing_count >= min_posts_threshold and not force_full_import:
             # Get the most recent post (by timestamp)
             if existing_posts:
                 sorted_posts = sorted(
-                    existing_posts, 
-                    key=lambda x: x.get('timestamp', ''), 
+                    existing_posts,
+                    key=lambda x: x.get('timestamp', ''),
                     reverse=True
                 )
                 most_recent_post = sorted_posts[0]
                 most_recent_content = most_recent_post.get('content', '')[:100]
-                
+
                 print(f"🔍 Most recent stored post: {most_recent_content}...")
                 print(f"   Will check if new posts exist by comparing first post only")
-                
+
                 # Only scrape 1 post to check if it's new
                 # If the first post matches our most recent, we're up to date
                 target_count = 1  # Only check the very first post
                 print(f"   📉 Reduced target to {target_count} for quick update check")
+        elif force_full_import:
+            print(f"🔄 Force full import requested - skipping optimization, will scrape {target_count} posts")
         else:
             print(f"⚠️ Only {existing_count} posts (< {min_posts_threshold}), will do full scrape")
             
