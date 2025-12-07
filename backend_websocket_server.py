@@ -2744,15 +2744,23 @@ async def _inject_cookies_internal(extension_user_id: str, clerk_user_id: str) -
     """
     import aiohttp
 
-    print(f"🔐 Clerk user: {clerk_user_id}, Extension user: {extension_user_id}")
+    print(f"🔐 [Cookie Injection] Clerk user: {clerk_user_id}, Extension user: {extension_user_id}")
+    print(f"🔍 [Cookie Injection] Looking up VNC session for Clerk user: {clerk_user_id}")
 
-    # Get the user's VNC session from Redis
+    # Get or create the user's VNC session from Redis
     vnc_manager = await get_vnc_manager()
     vnc_session = await vnc_manager.get_session(clerk_user_id)
+    print(f"🔍 [Cookie Injection] VNC session lookup result: {vnc_session is not None}")
 
     if not vnc_session or not vnc_session.get("https_url"):
-        print(f"❌ No VNC session found for Clerk user {clerk_user_id}")
-        return {"success": False, "error": "No VNC session found. Please load the VNC viewer first."}
+        print(f"⚠️ No VNC session found for Clerk user {clerk_user_id}, creating new session...")
+        try:
+            # Auto-create VNC session for the user
+            vnc_session = await vnc_manager.get_or_create_session(clerk_user_id)
+            print(f"✅ Created new VNC session for user {clerk_user_id}")
+        except Exception as e:
+            print(f"❌ Failed to create VNC session: {e}")
+            return {"success": False, "error": f"Failed to create VNC session: {str(e)}"}
 
     vnc_service_url = vnc_session.get("https_url")
     print(f"✅ Found VNC session at: {vnc_service_url}")
