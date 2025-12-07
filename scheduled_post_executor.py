@@ -15,7 +15,7 @@ from sqlalchemy.orm import sessionmaker
 import os
 import json
 import aiohttp
-import aioredis
+import redis.asyncio as aioredis
 
 # LangGraph SDK client
 from langgraph_sdk import get_client
