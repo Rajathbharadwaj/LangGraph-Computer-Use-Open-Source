@@ -23,6 +23,9 @@ from langgraph_sdk import get_client
 # VNC Session Manager for per-user browser sessions
 from vnc_session_manager import VNCSessionManager, get_vnc_manager
 
+# Workflow prompt generator
+from x_growth_workflows import get_workflow_prompt
+
 # Database models
 from database.models import CronJob, CronJobRun
 
@@ -339,10 +342,19 @@ class CronJobExecutor:
                 "cron_job_id": cron_job_id
             }
 
-            # Add workflow or custom prompt
+            # Add workflow or custom prompt - convert workflow ID to actual prompt
             if cron_job.workflow_id:
-                agent_input["workflow"] = cron_job.workflow_id
-                logger.info(f"Using workflow: {cron_job.workflow_id}")
+                # Convert workflow ID to full prompt using get_workflow_prompt
+                try:
+                    workflow_prompt = get_workflow_prompt(cron_job.workflow_id)
+                    agent_input["messages"] = [{
+                        "role": "user",
+                        "content": workflow_prompt
+                    }]
+                    logger.info(f"Using workflow: {cron_job.workflow_id} (converted to prompt, length: {len(workflow_prompt)})")
+                except Exception as e:
+                    logger.error(f"❌ Failed to load workflow {cron_job.workflow_id}: {e}")
+                    raise ValueError(f"Failed to load workflow {cron_job.workflow_id}: {e}")
             elif cron_job.custom_prompt:
                 agent_input["messages"] = [{
                     "role": "user",
