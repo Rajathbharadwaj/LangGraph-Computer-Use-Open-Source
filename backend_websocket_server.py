@@ -4388,6 +4388,73 @@ async def get_scheduler_status(user_id: str = Depends(get_current_user)):
         }
 
 
+# ============================================================================
+# AUTOMATIONS API - Aliases for frontend compatibility
+# ============================================================================
+# Frontend uses /api/automations, backend uses /api/cron-jobs
+# These are aliases to support both naming conventions
+
+@app.get("/api/automations")
+async def list_automations(
+    user_id: str = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Get all automations for authenticated user (alias for /api/cron-jobs)"""
+    try:
+        cron_jobs = db.query(CronJob).filter(
+            CronJob.user_id == user_id
+        ).order_by(CronJob.created_at.desc()).all()
+
+        return {
+            "automations": [
+                {
+                    "id": job.id,
+                    "name": job.name,
+                    "schedule": job.schedule,
+                    "workflow_id": job.workflow_id,
+                    "is_active": job.is_active,
+                    "last_run_at": job.last_run_at.isoformat() if job.last_run_at else None,
+                    "created_at": job.created_at.isoformat()
+                }
+                for job in cron_jobs
+            ]
+        }
+    except Exception as e:
+        print(f"Error listing automations: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/automations")
+async def create_automation(
+    request: dict,
+    user_id: str = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Create a new automation (alias for /api/cron-jobs)"""
+    return await create_cron_job(request, user_id, db)
+
+
+@app.delete("/api/automations/{automation_id}")
+async def delete_automation(
+    automation_id: int,
+    user_id: str = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Delete an automation (alias for /api/cron-jobs/{cron_job_id})"""
+    return await delete_cron_job(automation_id, user_id, db)
+
+
+@app.get("/api/automations/{automation_id}/runs")
+async def get_automation_runs(
+    automation_id: int,
+    limit: int = 10,
+    user_id: str = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Get runs for an automation (alias for /api/cron-jobs/{cron_job_id}/runs)"""
+    return await get_cron_job_runs(automation_id, limit, user_id, db)
+
+
 @app.get("/api/scheduled-posts/ai-drafts")
 async def get_ai_drafts(
     user_id: str = Depends(get_current_user),
