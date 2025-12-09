@@ -529,6 +529,15 @@ DO NOT:
 - Copy competitor content verbatim - adapt patterns to YOUR style
 - Use words or phrases the user never uses
 
+CRITICAL FORMATTING RULES (MUST FOLLOW):
+- NEVER use dashes (-) or bullet points to list things
+- NEVER use emphasis formatting like **bold** or *italic* or _underscores_
+- NEVER use markdown formatting of any kind
+- NEVER structure text as numbered or bulleted lists
+- Write in natural flowing sentences like a human typing casually
+- No structured formatting - just plain conversational text
+- If you want to list things, weave them into natural sentences instead
+
 Your {content_type} (write ONLY the content, nothing else):"""
         
         return prompt
@@ -578,6 +587,15 @@ INSTRUCTIONS:
 - If style is unclear, use a professional but friendly tone
 - DO NOT use hashtags (X penalizes them)
 - Avoid generic AI-like phrases
+
+CRITICAL FORMATTING RULES (MUST FOLLOW):
+- NEVER use dashes (-) or bullet points to list things
+- NEVER use emphasis formatting like **bold** or *italic* or _underscores_
+- NEVER use markdown formatting of any kind
+- NEVER structure text as numbered or bulleted lists
+- Write in natural flowing sentences like a human typing casually
+- No structured formatting - just plain conversational text
+- If you want to list things, weave them into natural sentences instead
 
 CRITICAL: The user described their style above. Honor their preferences precisely.
 If they said "casual", be casual. If they said "professional", be professional.

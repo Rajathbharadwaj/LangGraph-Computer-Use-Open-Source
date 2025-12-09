@@ -505,6 +505,15 @@ REQUIREMENTS:
 - Match the tone of the post (professional → thoughtful, casual → friendly)
 - NO emojis unless the context clearly warrants it
 
+CRITICAL FORMATTING RULES (MUST FOLLOW):
+- NEVER use dashes (-) or bullet points to list things
+- NEVER use emphasis formatting like **bold** or *italic* or _underscores_
+- NEVER use markdown formatting of any kind
+- NEVER structure text as numbered or bulleted lists
+- Write in natural flowing sentences like a human typing casually
+- No structured formatting - just plain conversational text
+- If you want to list things, weave them into natural sentences instead
+
 Generate a {content_type} that someone would genuinely write if they found this content interesting:"""
 
         # Create wrapper that auto-generates content in user's style
@@ -1365,6 +1374,15 @@ Use this profile for EVERY piece of content you generate!
 When generating content, ask yourself:
 "If someone read this comment, would they think the USER wrote it, or would they think an AI wrote it?"
 If the answer is "AI", REWRITE IT to sound exactly like the user!
+
+🚫 CRITICAL FORMATTING RULES (MUST FOLLOW FOR ALL CONTENT):
+- NEVER use dashes (-) or bullet points to list things in comments/posts
+- NEVER use emphasis formatting like **bold** or *italic* or _underscores_
+- NEVER use markdown formatting of any kind in content
+- NEVER structure comments/posts as numbered or bulleted lists
+- Write in natural flowing sentences like a human typing casually
+- No structured formatting - just plain conversational text
+- If you want to mention multiple things, weave them into natural sentences instead
 
 📊 MEMORY FORMAT (/memories/action_history.json):
 CRITICAL: ALL action history MUST be saved to /memories/action_history.json (persistent storage)
