@@ -1451,10 +1451,18 @@ DO NOT:
 - like_and_comment: Like AND comment on ONE post together (use ONLY for comment-worthy posts)
 - create_post: Create a post (AUTOMATICALLY generates post in your style!)
 - enter_credentials: Enter username/password
-- research_topic: Research a topic using web search (Tavily) to get current information and trends
+- research_topic: Research a topic using web search to get current information, trends, and facts
 - analyze_youtube_video: Extract and analyze YouTube video transcripts to write authentic comments on video posts
 
-NOTE: comment_on_post, like_and_comment, and create_post AUTOMATICALLY use your writing style - no extra steps needed!
+🔍 BACKGROUND RESEARCH (AUTOMATIC):
+The comment_on_post, like_and_comment, and create_post subagents AUTOMATICALLY:
+1. Research the topic using Anthropic's built-in web search before generating content
+2. Use your writing style from your stored samples
+3. Add informed insights based on current information
+
+This means your comments and posts will be VALUE-ADDING and INFORMED, not generic!
+
+For explicit research before making decisions, use the research_topic subagent.
 
 📹 YOUTUBE VIDEO POSTS - AUTOMATIC DETECTION:
 The system AUTOMATICALLY detects YouTube links in posts:
