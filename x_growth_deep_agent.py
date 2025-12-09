@@ -88,7 +88,7 @@ from youtube_transcript_tool import analyze_youtube_transcript
 
 
 # ============================================================================
-# WEB SEARCH TOOL (Tavily - Legacy)
+# WEB SEARCH TOOL (Tavily - Legacy, kept for backwards compatibility)
 # ============================================================================
 
 def create_web_search_tool():
@@ -104,6 +104,44 @@ def create_web_search_tool():
         print(f"⚠️ Could not create Tavily search tool: {e}")
         print(f"   Make sure TAVILY_API_KEY is set in environment variables")
         return None
+
+
+# Global model reference for web search tool (set during agent creation)
+_web_search_model = None
+
+
+def set_web_search_model(model):
+    """Set the model to use for web search tool"""
+    global _web_search_model
+    _web_search_model = model
+
+
+def create_anthropic_web_search_tool():
+    """Create a tool wrapper that uses Anthropic's built-in web search"""
+    @tool
+    async def anthropic_web_search(query: str) -> str:
+        """
+        Search the web using Anthropic's built-in web search capability.
+
+        Use this to research topics, find current information, trends, and facts
+        before creating content or commenting.
+
+        Args:
+            query: The search query or topic to research
+
+        Returns:
+            Research summary with key insights, facts, and context
+        """
+        global _web_search_model
+
+        if _web_search_model is None:
+            return "Error: Web search model not initialized"
+
+        # Use the do_background_research function
+        result = await do_background_research(query, _web_search_model)
+        return result if result else "No search results found for this query."
+
+    return anthropic_web_search
 
 
 # ============================================================================
@@ -1287,17 +1325,17 @@ These are the BEST posts to engage with for maximum impact!""",
 
         # ========================================================================
         # WEB SEARCH SUBAGENT
-        # Research topics before creating content or commenting
+        # Research topics using Anthropic's built-in web search
         # ========================================================================
         {
             "name": "research_topic",
-            "description": "Research a topic using web search to get current information, trends, and facts",
+            "description": "Research a topic using Anthropic's built-in web search to get current information, trends, and facts",
             "system_prompt": """You are a research specialist with web search access.
 
 Your ONLY job: Research the specified topic and return comprehensive findings.
 
 Steps:
-1. Call tavily_search_results_json with the topic/query
+1. Call anthropic_web_search with the topic/query
 2. Analyze the search results
 3. Synthesize findings into a concise summary with:
    - Key facts and trends
@@ -1312,7 +1350,7 @@ Use this to:
 - Find current information on breaking news or events
 
 Keep your summary under 300 words for clean context.""",
-            "tools": [create_web_search_tool()] if create_web_search_tool() else []
+            "tools": [create_anthropic_web_search_tool()]
         },
 
         # ========================================================================
@@ -1651,6 +1689,9 @@ def create_x_growth_agent(config: dict = None):
     
     # Initialize the model
     model = init_chat_model(model_name)
+
+    # Set the model for web search tool (used by research_topic subagent)
+    set_web_search_model(model)
 
     # Customize prompt with user preferences if user_id provided
     system_prompt = MAIN_AGENT_PROMPT
