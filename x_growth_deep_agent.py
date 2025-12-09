@@ -88,7 +88,7 @@ from youtube_transcript_tool import analyze_youtube_transcript
 
 
 # ============================================================================
-# WEB SEARCH TOOL (Tavily)
+# WEB SEARCH TOOL (Tavily - Legacy)
 # ============================================================================
 
 def create_web_search_tool():
@@ -104,6 +104,121 @@ def create_web_search_tool():
         print(f"⚠️ Could not create Tavily search tool: {e}")
         print(f"   Make sure TAVILY_API_KEY is set in environment variables")
         return None
+
+
+# ============================================================================
+# ANTHROPIC BUILT-IN WEB SEARCH (Server-Side)
+# ============================================================================
+
+async def do_background_research(topic: str, model) -> str:
+    """
+    Perform background research on a topic using Anthropic's built-in web search.
+
+    This uses Anthropic's server-side web search tool which executes in a single
+    API call without needing explicit tool handling.
+
+    Args:
+        topic: The topic or context to research (e.g., post content, discussion topic)
+        model: The ChatAnthropic model instance
+
+    Returns:
+        Research summary with key insights, facts, and context
+    """
+    from langchain_anthropic import ChatAnthropic
+
+    print(f"🔍 [Background Research] Starting research on: {topic[:100]}...")
+
+    try:
+        # Create a model with web search enabled
+        # Using bind_tools with Anthropic's built-in web_search tool
+        research_model = model.bind_tools([{"type": "web_search"}])
+
+        # Create research prompt
+        research_prompt = f"""You are a research assistant helping someone write valuable social media content.
+
+TOPIC TO RESEARCH:
+{topic}
+
+RESEARCH TASK:
+1. Search the web for the latest and most relevant information about this topic
+2. Find recent news, trends, statistics, or expert opinions
+3. Look for unique insights that would add value to a discussion
+
+IMPORTANT: Use your web search capability to find current information.
+
+After researching, provide a CONCISE summary (2-3 paragraphs max) with:
+- Key facts or recent developments
+- Interesting statistics or data points if available
+- Unique angles or insights that could spark discussion
+
+Focus on information that would help someone write an informed, valuable comment or post about this topic."""
+
+        # Invoke with web search enabled - server-side tool execution
+        response = await research_model.ainvoke(research_prompt)
+
+        # Extract the research content
+        # Server-side tools return results in the response content
+        research_result = ""
+
+        # Handle different response content formats
+        if hasattr(response, 'content'):
+            if isinstance(response.content, str):
+                research_result = response.content
+            elif isinstance(response.content, list):
+                # Content blocks format - extract text
+                for block in response.content:
+                    if isinstance(block, dict) and block.get('type') == 'text':
+                        research_result += block.get('text', '')
+                    elif hasattr(block, 'text'):
+                        research_result += block.text
+                    elif isinstance(block, str):
+                        research_result += block
+
+        if research_result:
+            print(f"✅ [Background Research] Found insights ({len(research_result)} chars)")
+            return research_result.strip()
+        else:
+            print("⚠️ [Background Research] No research results returned")
+            return ""
+
+    except Exception as e:
+        print(f"❌ [Background Research] Error: {e}")
+        import traceback
+        traceback.print_exc()
+        return ""
+
+
+def extract_research_topics(post_content: str) -> list[str]:
+    """
+    Extract key topics from post content that would benefit from research.
+
+    Args:
+        post_content: The content of the post being commented on
+
+    Returns:
+        List of topics to research
+    """
+    # Simple keyword extraction for research
+    # Focus on technical terms, proper nouns, and trending topics
+    topics = []
+
+    # Look for hashtags
+    import re
+    hashtags = re.findall(r'#(\w+)', post_content)
+    topics.extend(hashtags[:2])  # Max 2 hashtags
+
+    # Look for @mentions (could be notable accounts)
+    mentions = re.findall(r'@(\w+)', post_content)
+    topics.extend(mentions[:1])  # Max 1 mention
+
+    # If content is long enough, use the main topic
+    if len(post_content) > 50:
+        # Take first sentence or key phrase as main topic
+        first_sentence = post_content.split('.')[0][:150]
+        if first_sentence and first_sentence not in topics:
+            topics.append(first_sentence)
+
+    return topics
 
 
 # ============================================================================
@@ -531,15 +646,40 @@ Generate a {content_type} that someone would genuinely write if they found this 
                 post_content_for_style: The post content to match style against (optional, uses author_or_content if not provided)
                 runtime: Tool runtime context (injected by LangGraph)
             """
-            # Step 1: Enhanced context with full post details
+            # Step 0: Do BACKGROUND RESEARCH before generating comment
+            # This uses Anthropic's built-in web search for informed, valuable insights
+            post_text = post_content_for_style or author_or_content
+            research_context = ""
+
+            try:
+                print(f"🔬 [Background Research] Researching topic before commenting...")
+                research_context = await do_background_research(post_text, model)
+                if research_context:
+                    print(f"✅ [Background Research] Got {len(research_context)} chars of research context")
+                else:
+                    print("⚠️ [Background Research] No research results, proceeding without")
+            except Exception as research_error:
+                print(f"⚠️ [Background Research] Research failed: {research_error}, proceeding without")
+
+            # Step 1: Enhanced context with full post details + research
+            research_section = ""
+            if research_context:
+                research_section = f"""
+
+BACKGROUND RESEARCH (use this to add valuable, informed insights):
+{research_context[:1500]}
+
+Use the research above to write a comment that demonstrates knowledge and adds value to the discussion."""
+
             context = f"""POST TO COMMENT ON:
 Author: {author_or_content}
 Content: {post_content_for_style or 'See post identifier'}
+{research_section}
 
 Generate a thoughtful comment that:
 1. Matches MY writing style (tone, length, vocabulary)
 2. Responds authentically to the post's specific content
-3. Adds value to the conversation
+3. Adds value to the conversation with INFORMED insights (use the research if available!)
 """ if post_content_for_style else author_or_content
 
             print(f"🎨 Auto-generating comment in your style for: {(post_content_for_style or author_or_content)[:100]}...")
@@ -658,13 +798,37 @@ Generate a thoughtful comment that:
             Args:
                 topic_or_context: What you want to post about
             """
+            # Step 0: Do BACKGROUND RESEARCH before creating post
+            # This uses Anthropic's built-in web search for informed, valuable content
+            research_context = ""
+
+            try:
+                print(f"🔬 [Background Research] Researching topic before posting...")
+                research_context = await do_background_research(topic_or_context, model)
+                if research_context:
+                    print(f"✅ [Background Research] Got {len(research_context)} chars of research context")
+                else:
+                    print("⚠️ [Background Research] No research results, proceeding without")
+            except Exception as research_error:
+                print(f"⚠️ [Background Research] Research failed: {research_error}, proceeding without")
+
+            # Build enhanced context with research
+            enhanced_topic = topic_or_context
+            if research_context:
+                enhanced_topic = f"""{topic_or_context}
+
+BACKGROUND RESEARCH (use this to write an informed, valuable post):
+{research_context[:1500]}
+
+Use the research above to write a post that demonstrates expertise and provides real value."""
+
             # Step 1: Auto-generate post in user's style
             print(f"🎨 Auto-generating post in your style about: {topic_or_context[:100]}...")
 
             generated_post = topic_or_context[:280]
             try:
                 style_manager = XWritingStyleManager(store, user_id)
-                few_shot_prompt = style_manager.generate_few_shot_prompt(topic_or_context, "post", num_examples=10)
+                few_shot_prompt = style_manager.generate_few_shot_prompt(enhanced_topic, "post", num_examples=10)
                 response = model.invoke(few_shot_prompt)
                 generated_post = response.content.strip()
                 print(f"✍️ Generated post using 10 examples: {generated_post}")
