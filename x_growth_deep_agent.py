@@ -131,7 +131,13 @@ async def do_background_research(topic: str, model) -> str:
     try:
         # Create a model with web search enabled
         # Using bind_tools with Anthropic's built-in web_search tool
-        research_model = model.bind_tools([{"type": "web_search"}])
+        # Correct format: type, name, and max_uses are required
+        web_search_tool = {
+            "type": "web_search_20250305",
+            "name": "web_search",
+            "max_uses": 5  # Allow up to 5 searches per research call
+        }
+        research_model = model.bind_tools([web_search_tool])
 
         # Create research prompt
         research_prompt = f"""You are a research assistant helping someone write valuable social media content.
