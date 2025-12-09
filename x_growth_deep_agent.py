@@ -1093,13 +1093,23 @@ Steps:
 
 3. Call analyze_post_tone_and_intent to DEEPLY understand the post using extended thinking
 
-4. Parse the analysis JSON and evaluate:
-   - IF engagement_worthy == false: STOP - report "Post not engagement-worthy" and skip
-   - IF confidence < 0.7: STOP - report "Analysis confidence too low" and skip
-   - IF intent is "promotion" or "viral_bait": STOP - report "Promotional/viral bait content" and skip
-   - IF tone is "sarcastic" AND confidence < 0.9: STOP - report "Risky sarcasm detected" and skip
+4. Parse the analysis JSON and evaluate (BE LENIENT - engage with most content):
 
-5. If ALL checks pass (engagement-worthy, high confidence, not spam, safe tone):
+   ONLY SKIP IF:
+   - It's a PAID AD (has "Promoted" or "Ad" label, or is clearly corporate advertising)
+   - It's pure SPAM (copy-paste engagement bait with no substance)
+   - It's OFFENSIVE or CONTROVERSIAL content you shouldn't associate with
+
+   DO NOT SKIP:
+   - Someone promoting their own project/work (support creators!)
+   - Self-promotion of genuine hard work (startups, side projects, launches)
+   - Viral content that's still interesting/valuable
+   - Sarcastic posts (just match the tone in your comment)
+   - Low-confidence analysis (when unsure, engage anyway)
+
+   RULE: When in doubt, ENGAGE. We want MORE comments, not fewer.
+
+5. If checks pass (most posts should pass):
    a. Call get_comprehensive_context to see current state
    b. Call like_post with the post identifier
    c. Call get_comprehensive_context to verify like succeeded
@@ -1124,10 +1134,12 @@ CRITICAL RULES:
 - Do NOT trust tool feedback alone - verify each step with screenshots
 - If either like or comment fails verification, report failure
 
-ANALYSIS THRESHOLDS (STRICTLY ENFORCE):
-- Minimum confidence: 0.7 (0.9 for sarcastic posts)
-- Auto-skip intents: "promotion", "viral_bait"
-- engagement_worthy must be true
+ENGAGEMENT POLICY (BE LENIENT):
+- Skip ONLY: paid ads, spam, offensive content
+- Engage with: self-promotion, project launches, viral content, sarcasm
+- Low confidence? Engage anyway - better to comment than miss opportunities
+- promotion intent? Still engage if it's genuine work (not corporate ads)
+- When in doubt: COMMENT. We grow by engaging, not by being picky.
 
 NOTE: The comment_on_post tool AUTOMATICALLY generates comments in the user's writing style.
 NOTE: If you analyzed a YouTube video, the summary is already in your context - just reference it naturally in the comment.""",
