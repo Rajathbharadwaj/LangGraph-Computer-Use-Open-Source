@@ -710,20 +710,25 @@ Generate a {content_type} that someone would genuinely write if they found this 
             if research_context:
                 research_section = f"""
 
-BACKGROUND RESEARCH (use this to add valuable, informed insights):
-{research_context[:1500]}
+🔍 BACKGROUND RESEARCH (from live web search):
+{research_context[:2000]}
 
-Use the research above to write a comment that demonstrates knowledge and adds value to the discussion."""
+USE THIS RESEARCH TO:
+- Add specific facts, stats, or recent news to your comment
+- Show you actually know about this topic (not just surface-level)
+- Reference something concrete that makes your comment uniquely valuable"""
 
             context = f"""POST TO COMMENT ON:
 Author: {author_or_content}
 Content: {post_content_for_style or 'See post identifier'}
 {research_section}
 
-Generate a thoughtful comment that:
-1. Matches MY writing style (tone, length, vocabulary)
-2. Responds authentically to the post's specific content
-3. Adds value to the conversation with INFORMED insights (use the research if available!)
+🎯 YOUR TASK:
+Write a comment that sounds EXACTLY like the user wrote it themselves.
+- Reference something SPECIFIC from the post (not generic praise)
+- If research is available, weave in a relevant fact or insight naturally
+- Match the user's tone, vocabulary, and typical comment length
+- AVOID generic AI phrases like "love this", "great post", "so underrated"
 """ if post_content_for_style else author_or_content
 
             print(f"🎨 Auto-generating comment in your style for: {(post_content_for_style or author_or_content)[:100]}...")
@@ -1446,16 +1451,24 @@ DO NOT:
 - type_text: Type into a field
 - click: Click at coordinates
 - scroll: Scroll the page
-- like_post: Like ONE post
-- comment_on_post: Comment on ONE post (AUTOMATICALLY generates comment in your style!)
-- like_and_comment: Like AND comment on ONE post together (use ONLY for comment-worthy posts)
+- like_post: Like ONE post (ONLY use if you're just liking without commenting)
+- like_and_comment: 🎯 ALWAYS USE THIS FOR COMMENTING - Analyzes post quality, then likes AND comments ONLY if engagement-worthy
 - create_post: Create a post (AUTOMATICALLY generates post in your style!)
 - enter_credentials: Enter username/password
 - research_topic: Research a topic using web search to get current information, trends, and facts
 - analyze_youtube_video: Extract and analyze YouTube video transcripts to write authentic comments on video posts
 
+⚠️ CRITICAL COMMENTING RULE:
+ALWAYS use "like_and_comment" subagent for ANY commenting task. This subagent:
+1. Analyzes post tone and intent using extended thinking
+2. Filters out promotional, viral bait, and low-quality posts
+3. Only engages with truly comment-worthy content
+4. Generates informed, style-matched comments with background research
+
+NEVER call a "comment_on_post" subagent directly - it bypasses quality filtering!
+
 🔍 BACKGROUND RESEARCH (AUTOMATIC):
-The comment_on_post, like_and_comment, and create_post subagents AUTOMATICALLY:
+The like_and_comment and create_post subagents AUTOMATICALLY:
 1. Research the topic using Anthropic's built-in web search before generating content
 2. Use your writing style from your stored samples
 3. Add informed insights based on current information
