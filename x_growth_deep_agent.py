@@ -613,11 +613,14 @@ def get_atomic_subagents(store=None, user_id=None, model=None):
     # Add the Playwright posting tool (uses real keyboard typing!)
     posting_tool = create_post_on_x
 
-    # Combine all tool sets
-    all_tools = playwright_tools + extension_tools + [posting_tool]
+    # Combine all tool sets - IMPORTANT: Playwright tools come LAST to override extension tools
+    # This ensures get_post_context uses Playwright (works in scheduled mode) over extension version
+    all_tools = extension_tools + playwright_tools + [posting_tool]
 
     # Create a dict for easy lookup
+    # Playwright tools override extension tools with same name (e.g., get_post_context)
     tool_dict = {tool.name: tool for tool in all_tools}
+    print(f"🔧 Tool override: get_post_context is now using Playwright version (works without extension)")
 
     # Add user data tools to tool_dict if user_id is available
     user_data_tools = []

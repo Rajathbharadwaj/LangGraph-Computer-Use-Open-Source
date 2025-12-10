@@ -1054,6 +1054,93 @@ Use this information to understand what's visible, interactable, and readable on
             return f"Comprehensive context failed: {str(e)}"
 
     @tool
+    async def get_post_context(post_identifier: str, runtime: ToolRuntime) -> str:
+        """
+        Get context of a post using Playwright DOM scraping.
+        Works in scheduled/cron mode without Chrome extension.
+
+        Args:
+            post_identifier: Author name or content snippet to identify the post
+
+        Returns:
+            Post context including text, author, engagement metrics
+        """
+        try:
+            client = _get_client(runtime)
+
+            # First get the page text content
+            text_result = await client._request("GET", "/page-text")
+            page_text = text_result.get("text", "") if text_result.get("success") else ""
+
+            # Get DOM elements for more structured data
+            dom_result = await client._request("GET", "/dom-elements")
+
+            # Try to find the post in the page content
+            post_text = ""
+            author_handle = ""
+            author_name = ""
+
+            # Look for the post identifier in page text
+            lines = page_text.split('\n')
+            found_post = False
+            post_lines = []
+
+            for i, line in enumerate(lines):
+                if post_identifier.lower() in line.lower():
+                    found_post = True
+                    # Capture context around the match (5 lines before and after)
+                    start = max(0, i - 5)
+                    end = min(len(lines), i + 10)
+                    post_lines = lines[start:end]
+                    break
+
+            if post_lines:
+                post_text = '\n'.join(post_lines)
+            else:
+                # Fallback - just use first chunk of page text
+                post_text = page_text[:1000] if page_text else "Could not extract post text"
+
+            # Try to extract author from @ mentions
+            import re
+            handle_match = re.search(r'@(\w+)', post_text)
+            if handle_match:
+                author_handle = handle_match.group(1)
+
+            # Detect YouTube videos
+            from youtube_transcript_tool import detect_youtube_urls
+            youtube_urls = detect_youtube_urls(post_text)
+
+            youtube_section = ""
+            if youtube_urls:
+                youtube_section = f"""
+
+🎬 YOUTUBE VIDEO DETECTED: Yes ✅
+   YouTube URLs: {', '.join(youtube_urls)}
+   ⚠️ ACTION REQUIRED: Use analyze_youtube_video to get video summary before commenting!"""
+            else:
+                youtube_section = "\n\n🎬 YOUTUBE VIDEO DETECTED: No ❌"
+
+            return f"""📊 Post Context (via Playwright):
+
+CONTENT:
+{post_text[:800]}
+
+AUTHOR:
+- Handle: @{author_handle or post_identifier}
+- Note: Full author details require extension (not available in scheduled mode)
+
+ENGAGEMENT:
+- Note: Detailed metrics require extension (not available in scheduled mode)
+- Use visual inspection of the page for engagement data
+
+IDENTIFIED BY: "{post_identifier}"{youtube_section}
+
+💡 TIP: For full post context including hidden metrics, use interactive mode with Chrome extension."""
+
+        except Exception as e:
+            return f"❌ Failed to get post context via Playwright: {str(e)}"
+
+    @tool
     async def get_screenshot_with_analysis(runtime: ToolRuntime) -> str:
         """Get screenshot with visual analysis for multimodal LLMs that can see images"""
         try:
