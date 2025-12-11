@@ -942,29 +942,80 @@ async def inject_cookies(data: dict):
 async def create_post_playwright(data: dict):
     """Create a post using Playwright - types like a real user"""
     global page
-    
+
     if not page:
         return {"success": False, "error": "Browser not initialized"}
-    
+
     try:
         post_text = data.get("text", "")
         if not post_text:
             return {"success": False, "error": "No text provided"}
-        
+
         print(f"🎯 Creating post with Playwright: {post_text}")
-        
-        # Click the compose box
+
+        # 🔧 FIRST: Dismiss any overlays that might be blocking (modals, notifications, etc.)
+        # The #layers div contains X's modal overlays - we need to dismiss them first
+        try:
+            # Try pressing Escape to dismiss any modal
+            await page.keyboard.press("Escape")
+            await page.wait_for_timeout(300)
+
+            # Check for and dismiss common X overlays:
+            # 1. "Not interested" prompts
+            # 2. Cookie consent banners
+            # 3. "Got it" buttons on tutorials
+            # 4. Close buttons on modals
+            dismiss_selectors = [
+                '[data-testid="app-bar-close"]',  # Modal close button
+                '[aria-label="Close"]',  # Generic close button
+                'button:has-text("Got it")',  # Tutorial dismissal
+                'button:has-text("Not now")',  # Notification prompts
+                'button:has-text("Maybe later")',  # Feature prompts
+                '[data-testid="confirmationSheetConfirm"]',  # Confirmation dismissal
+                '[data-testid="confirmationSheetCancel"]',  # Cancel button on sheets
+            ]
+
+            for selector in dismiss_selectors:
+                try:
+                    btn = page.locator(selector).first
+                    if await btn.is_visible(timeout=500):
+                        print(f"🔧 Dismissing overlay with selector: {selector}")
+                        await btn.click(timeout=1000)
+                        await page.wait_for_timeout(300)
+                except:
+                    pass  # Selector not found or not clickable, continue
+
+            # One more Escape in case something else appeared
+            await page.keyboard.press("Escape")
+            await page.wait_for_timeout(300)
+
+        except Exception as dismiss_error:
+            print(f"⚠️ Warning during overlay dismissal: {dismiss_error}")
+            # Continue anyway - maybe there was no overlay
+
+        # Click the compose box (use force=True to bypass any remaining overlays)
         compose_box = page.locator('[data-testid="tweetTextarea_0"]')
-        await compose_box.click()
+        try:
+            await compose_box.click(force=True)
+        except Exception as click_err:
+            print(f"⚠️ Normal click failed, trying with force: {click_err}")
+            await compose_box.click(force=True, timeout=5000)
         await page.wait_for_timeout(500)
-        
+
+        # CLEAR any existing draft text first (Ctrl+A to select all, then delete)
+        print("🧹 Clearing any existing draft text...")
+        await page.keyboard.press("Control+a")  # Select all
+        await page.wait_for_timeout(100)
+        await page.keyboard.press("Backspace")  # Delete selected text
+        await page.wait_for_timeout(200)
+
         # Type the text (this sends real keyboard events!)
         await compose_box.type(post_text, delay=50)  # 50ms between keypresses
         await page.wait_for_timeout(1000)
-        
-        # Click the Post button
+
+        # Click the Post button (use force=True to bypass any overlays)
         post_button = page.locator('[data-testid="tweetButtonInline"]')
-        await post_button.click()
+        await post_button.click(force=True)
         
         # Wait for post to be published
         await page.wait_for_timeout(2000)
