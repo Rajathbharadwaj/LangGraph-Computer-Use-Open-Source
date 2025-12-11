@@ -604,6 +604,13 @@ def get_atomic_subagents(store=None, user_id=None, model=None):
     - Rate limit detection
     - Session health monitoring
     """
+    # Get current date/time for subagents that need it (content generation, trend research)
+    from datetime import datetime
+    import pytz
+    pacific_tz = pytz.timezone('America/Los_Angeles')
+    current_time = datetime.now(pacific_tz)
+    date_time_str = f"Current date: {current_time.strftime('%A, %B %d, %Y')} at {current_time.strftime('%I:%M %p')} Pacific Time"
+
     # Get all Playwright tools
     playwright_tools = get_async_playwright_tools()
 
@@ -1515,7 +1522,9 @@ Use this to detect session expiration or login issues!""",
         {
             "name": "find_trending",
             "description": "Find trending topics filtered by niche relevance for engagement opportunities",
-            "system_prompt": """You are a trending topics analyst specializing in niche-relevant trends.
+            "system_prompt": f"""You are a trending topics analyst specializing in niche-relevant trends.
+
+📅 {date_time_str}
 
 Your job: Get current trending topics and filter them for the user's niche.
 
@@ -1570,12 +1579,16 @@ These are the BEST posts to engage with for maximum impact!""",
         {
             "name": "research_topic",
             "description": "Research a topic using Anthropic's built-in web search to get current information, trends, and facts",
-            "system_prompt": """You are a research specialist with web search access.
+            "system_prompt": f"""You are a research specialist with web search access.
+
+📅 {date_time_str}
 
 Your ONLY job: Research the specified topic and return comprehensive findings.
 
 Steps:
 1. Call anthropic_web_search with the topic/query
+   - Include the current month/year in searches for recent information
+   - Example: "[topic] {current_time.strftime('%B %Y')}" or "[topic] latest news"
 2. Analyze the search results
 3. Synthesize findings into a concise summary with:
    - Key facts and trends
@@ -1672,7 +1685,9 @@ This is CRITICAL for:
         {
             "name": "generate_content_ideas",
             "description": "Research trending topics and generate post/thread ideas based on user's style",
-            "system_prompt": """You are a content ideation specialist with web research capability.
+            "system_prompt": f"""You are a content ideation specialist with web research capability.
+
+📅 {date_time_str}
 
 Your job: Research what's trending, then generate high-quality content ideas tailored to the user's niche and style.
 
@@ -1692,10 +1707,10 @@ Steps:
    - Call get_my_profile to understand their niche and expertise
 
 3. 🔍 RESEARCH CURRENT TRENDS (CRITICAL):
-   - Call anthropic_web_search with "[user's niche] trending topics December 2024"
+   - Call anthropic_web_search with "[user's niche] trending topics {current_time.strftime('%B %Y')}"
    - Also search for recent news/developments in their niche
    - Examples:
-     - AI niche → "AI developments December 2024"
+     - AI niche → "AI developments {current_time.strftime('%B %Y')}"
      - Startup niche → "startup funding news this week"
    - Use research to generate TIMELY, RELEVANT ideas
 
@@ -1780,7 +1795,9 @@ Focus on ideas that will STOP THE SCROLL - but sound HUMAN, not AI!""",
         {
             "name": "analyze_user_content",
             "description": "Analyze user's past posts to identify high-performing patterns and themes",
-            "system_prompt": """You are a content analytics specialist.
+            "system_prompt": f"""You are a content analytics specialist.
+
+📅 {date_time_str}
 
 Your job: Analyze user's past posts to understand what resonates with their audience.
 
@@ -1859,7 +1876,9 @@ This respects user control when auto_post_enabled is false!""",
         {
             "name": "find_quotable_posts",
             "description": "Find viral posts in user's niche that are good candidates for quote tweeting",
-            "system_prompt": """You are a viral content scout for quote tweet opportunities.
+            "system_prompt": f"""You are a viral content scout for quote tweet opportunities.
+
+📅 {date_time_str}
 
 Your job: Find posts that are ideal for quote tweeting (adding your own commentary).
 
@@ -1921,7 +1940,9 @@ This powers the Quote Tweet Blitz workflow!""",
         {
             "name": "generate_quote_commentary",
             "description": "Research topic and generate value-add commentary for a quote tweet",
-            "system_prompt": """You are a quote tweet copywriter specialist with web research capability.
+            "system_prompt": f"""You are a quote tweet copywriter specialist with web research capability.
+
+📅 {date_time_str}
 
 Your job: Research the topic, then generate compelling commentary for a quote tweet that adds INFORMED value.
 
@@ -1929,8 +1950,9 @@ Steps:
 1. Analyze the original post content to understand the topic
 2. 🔍 RESEARCH THE TOPIC (CRITICAL):
    - Call anthropic_web_search with a query about the post's topic
+   - Include current date in searches for timely info
    - Examples:
-     - Post about "AI agents" → search "AI agents best practices 2024"
+     - Post about "AI agents" → search "AI agents best practices {current_time.strftime('%B %Y')}"
      - Post about "startup hiring" → search "startup hiring strategies remote first"
    - Use research to add SPECIFIC, INFORMED insights (not generic opinions)
 3. Consider the user's expertise and writing style
@@ -2008,7 +2030,9 @@ Write EXACTLY how the user would write this - casual, specific, no AI phrases!""
         {
             "name": "identify_adjacent_niches",
             "description": "Identify adjacent niches where user's expertise provides unique value",
-            "system_prompt": """You are a niche expansion strategist.
+            "system_prompt": f"""You are a niche expansion strategist.
+
+📅 {date_time_str}
 
 Your job: Identify 3-5 adjacent niches where the user's expertise adds unique value.
 
@@ -2060,7 +2084,9 @@ This powers the Niche Expander workflow for broader reach!""",
         {
             "name": "decide_engagement_type",
             "description": "Decide the best engagement type (reply, quote, original post) based on context",
-            "system_prompt": """You are an engagement strategy advisor.
+            "system_prompt": f"""You are an engagement strategy advisor.
+
+📅 {date_time_str}
 
 Your job: Decide the optimal engagement type for a given situation.
 
@@ -2513,8 +2539,28 @@ def create_x_growth_agent(config: dict = None):
     # Set the model for web search tool (used by research_topic subagent)
     set_web_search_model(model)
 
+    # Get current date/time for context-aware content decisions
+    from datetime import datetime
+    import pytz
+
+    # Use Pacific time as default (common for tech/startup content)
+    pacific_tz = pytz.timezone('America/Los_Angeles')
+    current_time = datetime.now(pacific_tz)
+    date_time_context = f"""
+📅 CURRENT DATE & TIME:
+- Date: {current_time.strftime('%A, %B %d, %Y')}
+- Time: {current_time.strftime('%I:%M %p')} Pacific Time
+- Day of Week: {current_time.strftime('%A')}
+
+Use this for:
+- Creating timely, relevant content (reference current events, "this week", "today", etc.)
+- Avoiding outdated references (don't say "in 2024" if we're in 2025)
+- Understanding peak engagement times (weekday mornings are best)
+- Making content feel fresh and current
+"""
+
     # Customize prompt with user preferences if user_id provided
-    system_prompt = MAIN_AGENT_PROMPT
+    system_prompt = MAIN_AGENT_PROMPT + date_time_context
     user_memory = None
 
     # Initialize store for long-term memory
