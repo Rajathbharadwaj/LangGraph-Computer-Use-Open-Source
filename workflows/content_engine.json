@@ -28,7 +28,9 @@
     "max_length": 280,
     "include_visuals_when_possible": true,
     "auto_post": "{{user.auto_post_enabled}}",
-    "analyze_past_performance": true
+    "analyze_past_performance": true,
+    "use_existing_drafts": true,
+    "prefer_ai_drafts": true
   },
   "content_guidelines": {
     "post_structure": {
@@ -74,7 +76,36 @@
       "params": {},
       "description": "Check for warnings before creating content",
       "on_warning": "abort_session",
-      "next": "step_2"
+      "next": "step_1b"
+    },
+    {
+      "id": "step_1b",
+      "type": "conditional",
+      "condition": "{{config.use_existing_drafts}} == true",
+      "true_next": "step_1c",
+      "false_next": "step_2",
+      "description": "Check if we should look for existing AI drafts"
+    },
+    {
+      "id": "step_1c",
+      "type": "fetch",
+      "action": "get_pending_drafts",
+      "params": {
+        "status": "draft",
+        "ai_generated": true,
+        "limit": 1,
+        "order_by": "scheduled_at"
+      },
+      "description": "Look for AI-generated drafts that haven't been posted yet",
+      "next": "step_1d"
+    },
+    {
+      "id": "step_1d",
+      "type": "conditional",
+      "condition": "{{pending_drafts.length}} > 0",
+      "true_next": "step_6b",
+      "false_next": "step_2",
+      "description": "If drafts exist, use them; otherwise generate new content"
     },
     {
       "id": "step_2",
@@ -134,6 +165,18 @@
       },
       "description": "Generate full post content in user's exact writing style",
       "next": "step_7"
+    },
+    {
+      "id": "step_6b",
+      "type": "selection",
+      "action": "use_existing_draft",
+      "params": {
+        "draft": "{{pending_drafts[0]}}",
+        "mark_as_used": true
+      },
+      "description": "Use the first available AI-generated draft instead of generating new content",
+      "next": "step_7",
+      "notes": "This step is reached when we have existing AI drafts to use"
     },
     {
       "id": "step_7",

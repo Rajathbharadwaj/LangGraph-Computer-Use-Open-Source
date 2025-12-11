@@ -32,6 +32,9 @@ from langgraph.store.postgres import PostgresStore
 # Writing style learner
 from x_writing_style_learner import XWritingStyleManager, WritingSample
 
+# User memory manager for preferences
+from x_user_memory import XUserMemory, UserPreferences
+
 # Workflow imports
 from workflow_parser import parse_workflow, load_workflow, list_available_workflows
 
@@ -390,6 +393,127 @@ async def save_feedback(data: dict, clerk_user_id: str = Depends(get_current_use
         import traceback
         traceback.print_exc()
         return {"success": False, "error": str(e)}
+
+
+# ============================================================================
+# USER PREFERENCES API
+# ============================================================================
+
+@app.get("/api/preferences")
+async def get_preferences(clerk_user_id: str = Depends(get_current_user)):
+    """
+    Get user preferences for automation settings.
+
+    Returns:
+    {
+        "auto_post_enabled": bool,
+        "aggression_level": "conservative" | "moderate" | "aggressive",
+        "niche": ["AI", "LangChain", ...],
+        "thread_topics": ["tutorials", "personal stories", ...],
+        ...
+    }
+    """
+    try:
+        if not clerk_user_id:
+            raise HTTPException(status_code=401, detail="Authentication required")
+
+        memory = XUserMemory(store, clerk_user_id)
+        prefs = memory.get_preferences()
+
+        if prefs:
+            return {
+                "success": True,
+                "preferences": prefs.to_dict()
+            }
+        else:
+            # Return defaults if no preferences exist
+            return {
+                "success": True,
+                "preferences": {
+                    "user_id": clerk_user_id,
+                    "auto_post_enabled": False,
+                    "aggression_level": "moderate",
+                    "niche": [],
+                    "target_audience": "",
+                    "growth_goal": "",
+                    "engagement_style": "thoughtful_expert",
+                    "tone": "professional",
+                    "daily_limits": {"likes": 100, "comments": 50},
+                    "optimal_times": ["9-11am PST", "7-9pm PST"],
+                    "avoid_topics": [],
+                    "thread_topics": []
+                }
+            }
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"❌ Error getting preferences: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.put("/api/preferences")
+async def update_preferences(data: dict, clerk_user_id: str = Depends(get_current_user)):
+    """
+    Update user preferences for automation settings.
+
+    Request body (partial update supported):
+    {
+        "auto_post_enabled": true,
+        "aggression_level": "moderate",
+        ...
+    }
+    """
+    try:
+        if not clerk_user_id:
+            raise HTTPException(status_code=401, detail="Authentication required")
+
+        memory = XUserMemory(store, clerk_user_id)
+        existing = memory.get_preferences()
+
+        if existing:
+            # Merge updates into existing preferences
+            prefs_dict = existing.to_dict()
+            for key, value in data.items():
+                if key in prefs_dict:
+                    prefs_dict[key] = value
+            updated_prefs = UserPreferences(**prefs_dict)
+        else:
+            # Create new preferences with defaults + provided values
+            defaults = {
+                "user_id": clerk_user_id,
+                "auto_post_enabled": False,
+                "aggression_level": "moderate",
+                "niche": [],
+                "target_audience": "",
+                "growth_goal": "",
+                "engagement_style": "thoughtful_expert",
+                "tone": "professional",
+                "daily_limits": {"likes": 100, "comments": 50},
+                "optimal_times": ["9-11am PST", "7-9pm PST"],
+                "avoid_topics": [],
+                "thread_topics": []
+            }
+            defaults.update(data)
+            defaults["user_id"] = clerk_user_id  # Ensure user_id is correct
+            updated_prefs = UserPreferences(**defaults)
+
+        memory.save_preferences(updated_prefs)
+
+        print(f"✅ Updated preferences for user {clerk_user_id}: auto_post={updated_prefs.auto_post_enabled}, aggression={updated_prefs.aggression_level}")
+
+        return {
+            "success": True,
+            "preferences": updated_prefs.to_dict()
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"❌ Error updating preferences: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/api/agent/create-post")
@@ -2759,27 +2883,34 @@ async def activity_websocket(websocket: WebSocket, user_id: str):
         except:
             pass
 
-async def _inject_cookies_internal(extension_user_id: str, clerk_user_id: str) -> dict:
+async def _inject_cookies_internal(user_id: str, _deprecated_clerk_user_id: str = None) -> dict:
     """
     Internal helper to inject cookies into a user's VNC session.
     This can be called both from HTTP endpoints and internal functions.
+
+    Note: The second parameter is deprecated - extension and clerk user IDs are always the same
+    (the extension connects using the Clerk user ID from the dashboard).
     """
     import aiohttp
 
-    print(f"🔐 [Cookie Injection] Clerk user: {clerk_user_id}, Extension user: {extension_user_id}")
-    print(f"🔍 [Cookie Injection] Looking up VNC session for Clerk user: {clerk_user_id}")
+    # Use the single user_id for everything (they're always the same)
+    if _deprecated_clerk_user_id and _deprecated_clerk_user_id != user_id:
+        print(f"⚠️ [Cookie Injection] WARNING: Different IDs passed but they should be the same. Using: {user_id}")
+
+    print(f"🔐 [Cookie Injection] User: {user_id}")
+    print(f"🔍 [Cookie Injection] Looking up VNC session for user: {user_id}")
 
     # Get or create the user's VNC session from Redis
     vnc_manager = await get_vnc_manager()
-    vnc_session = await vnc_manager.get_session(clerk_user_id)
+    vnc_session = await vnc_manager.get_session(user_id)
     print(f"🔍 [Cookie Injection] VNC session lookup result: {vnc_session is not None}")
 
     if not vnc_session or not vnc_session.get("https_url"):
-        print(f"⚠️ No VNC session found for Clerk user {clerk_user_id}, creating new session...")
+        print(f"⚠️ No VNC session found for user {user_id}, creating new session...")
         try:
             # Auto-create VNC session for the user
-            vnc_session = await vnc_manager.get_or_create_session(clerk_user_id)
-            print(f"✅ Created new VNC session for user {clerk_user_id}")
+            vnc_session = await vnc_manager.get_or_create_session(user_id)
+            print(f"✅ Created new VNC session for user {user_id}")
         except Exception as e:
             print(f"❌ Failed to create VNC session: {e}")
             return {"success": False, "error": f"Failed to create VNC session: {str(e)}"}
@@ -2789,14 +2920,14 @@ async def _inject_cookies_internal(extension_user_id: str, clerk_user_id: str) -
 
     # Fetch cookies from extension backend
     cookie_data = None
-    print(f"🔍 Looking for cookies for extension user: {extension_user_id}")
+    print(f"🔍 Looking for cookies for user: {user_id}")
 
-    if extension_user_id not in user_cookies:
+    if user_id not in user_cookies:
         # Fetch from extension backend
         print(f"   Fetching from extension backend...")
         try:
             async with aiohttp.ClientSession() as session:
-                async with session.get(f'{EXTENSION_BACKEND_URL}/cookies/{extension_user_id}', timeout=aiohttp.ClientTimeout(total=5)) as resp:
+                async with session.get(f'{EXTENSION_BACKEND_URL}/cookies/{user_id}', timeout=aiohttp.ClientTimeout(total=5)) as resp:
                     print(f"   Extension backend response status: {resp.status}")
                     if resp.status == 200:
                         ext_data = await resp.json()
@@ -2817,10 +2948,10 @@ async def _inject_cookies_internal(extension_user_id: str, clerk_user_id: str) -
             traceback.print_exc()
 
         if not cookie_data:
-            print(f"❌ No cookie data found for {extension_user_id}")
+            print(f"❌ No cookie data found for {user_id}")
             return {"success": False, "error": "No cookies found for this user"}
     else:
-        cookie_data = user_cookies[extension_user_id]
+        cookie_data = user_cookies[user_id]
 
     if not cookie_data:
         return {"success": False, "error": "No cookies found for this user"}
@@ -4042,9 +4173,9 @@ async def generate_ai_content(
     This uses LangGraph to:
     1. Analyze user's writing style from imported posts
     2. Analyze high-quality competitor posts
-    3. Conduct web research with Perplexity API
+    3. Conduct web research with Anthropic's built-in web search (latest trends, insights, gaps)
     4. Strategize content for growth
-    5. Generate 7 posts for next week
+    5. Generate 7 posts for next week in user's exact writing style
     """
     try:
         # ==================== SECURITY AUDIT LOGGING ====================
@@ -5251,10 +5382,21 @@ async def execute_workflow_endpoint(workflow_json: dict, user_id: str = Depends(
             try:
                 vnc_manager = await get_vnc_manager()
                 if vnc_manager:
-                    vnc_session = await vnc_manager.get_session(user_id)
+                    vnc_session = await vnc_manager.get_or_create_session(user_id)
                     if vnc_session:
                         vnc_url = vnc_session.get("https_url") or vnc_session.get("service_url")
                         print(f"🖥️ Workflow: Using VNC URL for agent: {vnc_url}")
+
+                        # CRITICAL: Inject cookies into the VNC browser session before workflow starts
+                        try:
+                            print(f"🍪 Workflow: Injecting cookies for user {user_id}")
+                            inject_result = await _inject_cookies_internal(user_id, user_id)
+                            if inject_result.get("success"):
+                                print(f"✅ Workflow: Cookies injected successfully for @{inject_result.get('username')}")
+                            else:
+                                print(f"⚠️ Workflow: Cookie injection failed: {inject_result.get('error')}")
+                        except Exception as cookie_err:
+                            print(f"⚠️ Workflow: Cookie injection error: {cookie_err}")
             except Exception as e:
                 print(f"⚠️ Workflow: Could not get VNC session for agent: {e}")
 
@@ -5428,10 +5570,37 @@ async def execute_workflow_stream_endpoint(websocket: WebSocket):
             try:
                 vnc_manager = await get_vnc_manager()
                 if vnc_manager:
-                    vnc_session = await vnc_manager.get_session(user_id)
+                    vnc_session = await vnc_manager.get_or_create_session(user_id)
                     if vnc_session:
                         vnc_url = vnc_session.get("https_url") or vnc_session.get("service_url")
                         print(f"🖥️ Workflow WS: Using VNC URL for agent: {vnc_url}")
+
+                        # CRITICAL: Inject cookies into the VNC browser session before workflow starts
+                        # This ensures the agent can access X as the authenticated user
+                        try:
+                            print(f"🍪 Workflow WS: Injecting cookies for user {user_id}")
+                            # Use the same user_id for both extension and clerk since the extension
+                            # connects with the Clerk user ID passed from the dashboard
+                            inject_result = await _inject_cookies_internal(user_id, user_id)
+                            if inject_result.get("success"):
+                                print(f"✅ Workflow WS: Cookies injected successfully for @{inject_result.get('username')}")
+                                await websocket.send_json({
+                                    "type": "cookies_injected",
+                                    "success": True,
+                                    "username": inject_result.get("username"),
+                                    "logged_in": inject_result.get("logged_in")
+                                })
+                            else:
+                                print(f"⚠️ Workflow WS: Cookie injection failed: {inject_result.get('error')}")
+                                await websocket.send_json({
+                                    "type": "cookies_injected",
+                                    "success": False,
+                                    "error": inject_result.get("error")
+                                })
+                        except Exception as cookie_err:
+                            print(f"⚠️ Workflow WS: Cookie injection error: {cookie_err}")
+                            import traceback
+                            traceback.print_exc()
             except Exception as e:
                 print(f"⚠️ Workflow WS: Could not get VNC session for agent: {e}")
 
