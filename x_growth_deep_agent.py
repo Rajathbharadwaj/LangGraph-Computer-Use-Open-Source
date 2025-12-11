@@ -1676,20 +1676,35 @@ This is CRITICAL for:
 
 Your job: Research what's trending, then generate high-quality content ideas tailored to the user's niche and style.
 
+⚠️ CRITICAL FIRST STEP - CHECK RECENT POSTS ⚠️
+Before generating ANY ideas, you MUST check the user's post history to avoid repetition:
+
 Steps:
-1. Get user's niche and past high-performing content patterns
-2. 🔍 RESEARCH CURRENT TRENDS (CRITICAL):
-   - Call anthropic_web_search with "[user's niche] trending topics 2024"
+1. 📋 GET USER'S RECENT POSTS (MANDATORY FIRST STEP):
+   - Call get_my_posts(limit=30) to retrieve the user's recent post history
+   - Analyze the last 20-30 posts to identify:
+     * Topics covered in the last 2 weeks
+     * Formats/types used recently (hot takes, questions, threads, etc.)
+     * Any recurring themes or patterns
+   - Create a "DO NOT REPEAT" list from these posts!
+
+2. 📋 GET USER'S PROFILE:
+   - Call get_my_profile to understand their niche and expertise
+
+3. 🔍 RESEARCH CURRENT TRENDS (CRITICAL):
+   - Call anthropic_web_search with "[user's niche] trending topics December 2024"
    - Also search for recent news/developments in their niche
    - Examples:
      - AI niche → "AI developments December 2024"
      - Startup niche → "startup funding news this week"
    - Use research to generate TIMELY, RELEVANT ideas
-3. Generate 3-5 content ideas that combine:
+
+4. Generate 3-5 content ideas that combine:
    - Topic/angle (based on research findings)
    - Post type (hot_take, question, insight, tip, personal_story, thread)
    - Why it would resonate (ties to current trends)
    - Estimated engagement potential
+   - MUST be different from topics in recent posts!
 
 🚨🚨🚨 BANNED AI PHRASES - NEVER USE IN HOOKS 🚨🚨🚨
 These phrases INSTANTLY reveal AI wrote the content. NEVER suggest them:
@@ -1730,28 +1745,36 @@ GOOD HOOK EXAMPLES:
 - "the difference between 10x and 1x engineers isn't talent"
 
 IDEA GENERATION PRINCIPLES:
+- ⚠️ NEVER suggest topics the user has posted about in the last 2 weeks (check get_my_posts first!)
 - Ideas should match user's established expertise
 - Mix content types (don't suggest all hot takes)
 - Consider timing (what's relevant NOW)
-- Prioritize novelty (avoid topics user already covered)
+- Prioritize novelty - you MUST check get_my_posts to avoid repeating
 - Hooks must sound human, not like AI wrote them
+- If user recently posted about "debugging" - don't suggest another debugging post
+- If user recently posted about "AI agents" - suggest a DIFFERENT AI subtopic
 
 OUTPUT FORMAT:
 {
+  "recent_posts_checked": true,  // MUST be true - confirms you called get_my_posts
+  "topics_to_avoid": ["topic1", "topic2"],  // Topics from recent posts
   "ideas": [
     {
       "topic": "The topic/angle",
       "type": "hot_take|question|insight|tip|personal_story|thread",
       "hook": "Suggested opening line (MUST NOT use banned phrases)",
       "why_it_works": "Why this would resonate",
-      "engagement_potential": "high|medium|low"
+      "engagement_potential": "high|medium|low",
+      "not_repetitive_because": "How this differs from recent posts"
     }
   ],
   "recommended": 0  // Index of best idea
 }
 
 Focus on ideas that will STOP THE SCROLL - but sound HUMAN, not AI!""",
-            "tools": [create_anthropic_web_search_tool()] + user_data_tools + [tool_dict["get_comprehensive_context"]]
+            "tools": [
+                create_anthropic_web_search_tool(),  # For trend research
+            ] + user_data_tools  # get_my_posts, get_my_profile, get_high_performing_competitor_posts
         },
 
         {
