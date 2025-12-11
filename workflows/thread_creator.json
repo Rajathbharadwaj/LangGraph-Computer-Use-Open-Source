@@ -1,0 +1,200 @@
+{
+  "workflow_id": "thread_creator",
+  "name": "Thread Creator",
+  "description": "Create viral threads for 63-2400% more impressions than single posts. AI-generates thread ideas based on trending topics and user's style. Focus on personal stories, learnings, and insights.",
+  "category": "content_creation",
+  "difficulty": "intermediate",
+  "estimated_time_minutes": 30,
+  "expected_roi": "very_high",
+  "version": "1.0",
+  "goal": "maximize_impressions",
+  "schedule": {
+    "frequency": "twice_daily",
+    "optimal_times": ["9am", "7pm"],
+    "threads_per_day": 2
+  },
+  "config": {
+    "tweets_per_thread": {
+      "min": 5,
+      "max": 12,
+      "optimal": 7
+    },
+    "thread_types": [
+      "personal_story",
+      "lessons_learned",
+      "how_to_guide",
+      "industry_insights",
+      "behind_the_scenes",
+      "hot_take_with_evidence"
+    ],
+    "topic_sources": [
+      "user_past_posts",
+      "trending_topics",
+      "user_preferences"
+    ],
+    "auto_post": "{{user.auto_post_enabled}}",
+    "include_hook": true,
+    "include_cta": true
+  },
+  "thread_structure": {
+    "tweet_1_hook": {
+      "purpose": "Stop the scroll - provocative or intriguing opening",
+      "examples": [
+        "I spent 6 months building X and here's what nobody tells you:",
+        "The biggest lie in [industry]:",
+        "I made $X doing Y. Here's exactly how:",
+        "Everyone is wrong about [topic]. Here's why:"
+      ],
+      "max_length": 280
+    },
+    "tweets_2_to_n_minus_1": {
+      "purpose": "Deliver value - insights, steps, or story progression",
+      "format": "One clear point per tweet",
+      "include_numbers": true,
+      "max_length": 280
+    },
+    "tweet_n_cta": {
+      "purpose": "Call to action - engagement driver",
+      "examples": [
+        "If you found this helpful, follow me for more [topic] content",
+        "Repost this if you agree",
+        "What's your experience with [topic]? Reply below",
+        "Save this thread for later"
+      ],
+      "max_length": 280
+    }
+  },
+  "steps": [
+    {
+      "id": "step_1",
+      "type": "safety_check",
+      "action": "check_rate_limits",
+      "params": {},
+      "description": "Check for any warnings before creating content",
+      "on_warning": "abort_session",
+      "next": "step_2"
+    },
+    {
+      "id": "step_2",
+      "type": "research",
+      "action": "find_trending_topics",
+      "params": {
+        "relevant_to_niche": true,
+        "niche": "{{user.niche}}"
+      },
+      "description": "Find trending topics relevant to user's niche",
+      "next": "step_3"
+    },
+    {
+      "id": "step_3",
+      "type": "analysis",
+      "action": "analyze_user_posts",
+      "params": {
+        "get_high_performers": true,
+        "identify_themes": true
+      },
+      "description": "Analyze user's past posts to find themes that resonate",
+      "next": "step_4"
+    },
+    {
+      "id": "step_4",
+      "type": "generation",
+      "action": "generate_thread_idea",
+      "params": {
+        "thread_types": "{{config.thread_types}}",
+        "trending_topics": "{{trending_topics}}",
+        "user_themes": "{{user_themes}}",
+        "user_preferred_topics": "{{user.thread_topics}}"
+      },
+      "description": "Generate thread idea combining trends + user expertise + personal style",
+      "next": "step_5"
+    },
+    {
+      "id": "step_5",
+      "type": "generation",
+      "action": "generate_thread_content",
+      "params": {
+        "idea": "{{thread_idea}}",
+        "num_tweets": "{{config.tweets_per_thread.optimal}}",
+        "style": "user_writing_style",
+        "include_hook": "{{config.include_hook}}",
+        "include_cta": "{{config.include_cta}}"
+      },
+      "description": "Generate full thread content in user's exact writing style",
+      "next": "step_6"
+    },
+    {
+      "id": "step_6",
+      "type": "conditional",
+      "condition": "{{config.auto_post}} == true",
+      "true_next": "step_7",
+      "false_next": "step_9",
+      "description": "Check if auto-posting is enabled"
+    },
+    {
+      "id": "step_7",
+      "type": "navigate",
+      "action": "navigate_to_url",
+      "params": {
+        "url": "https://x.com/compose/tweet"
+      },
+      "description": "Navigate to compose tweet",
+      "next": "step_8"
+    },
+    {
+      "id": "step_8",
+      "type": "action",
+      "action": "create_thread",
+      "params": {
+        "tweets": "{{thread_tweets}}",
+        "delay_between_tweets_seconds": 2
+      },
+      "description": "Post the thread (multiple tweets in sequence)",
+      "next": "step_10"
+    },
+    {
+      "id": "step_9",
+      "type": "queue",
+      "action": "queue_for_approval",
+      "params": {
+        "content_type": "thread",
+        "content": "{{thread_tweets}}",
+        "suggested_time": "{{optimal_post_time}}"
+      },
+      "description": "Queue thread for user approval before posting",
+      "next": "step_10"
+    },
+    {
+      "id": "step_10",
+      "type": "memory",
+      "action": "save_to_history",
+      "params": {
+        "action": "thread_created",
+        "thread_topic": "{{thread_idea.topic}}",
+        "num_tweets": "{{thread_tweets.length}}",
+        "posted": "{{was_posted}}",
+        "queued": "{{was_queued}}"
+      },
+      "description": "Track thread creation in memory",
+      "next": "step_11"
+    },
+    {
+      "id": "step_11",
+      "type": "end",
+      "description": "Thread creation complete"
+    }
+  ],
+  "success_metrics": {
+    "threads_created": "count",
+    "threads_posted": "count",
+    "threads_queued": "count",
+    "avg_impressions_per_thread": "metric",
+    "avg_engagement_rate": "metric"
+  },
+  "learning_enabled": true,
+  "notes": {
+    "why_threads_work": "Threads get 63-2400% more impressions than single tweets. X's algorithm favors long-form content that keeps users engaged.",
+    "optimal_length": "7-12 tweets is the sweet spot. Shorter feels incomplete, longer loses attention.",
+    "timing": "Post threads at peak hours (9am, 2pm, 7pm) for maximum initial engagement."
+  }
+}

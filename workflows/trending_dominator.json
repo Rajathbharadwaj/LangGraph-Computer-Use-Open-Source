@@ -1,0 +1,240 @@
+{
+  "workflow_id": "trending_dominator",
+  "name": "Trending Topic Dominator",
+  "description": "Jump on trending topics within the first hour for maximum reach. Monitor trending topics, filter for niche relevance, and create timely content that rides the trend wave.",
+  "category": "content_creation",
+  "difficulty": "intermediate",
+  "estimated_time_minutes": 30,
+  "expected_roi": "very_high",
+  "version": "1.0",
+  "goal": "maximize_impressions",
+  "schedule": {
+    "frequency": "every_30_minutes",
+    "check_times": "continuous_during_peak_hours",
+    "peak_hours": ["8am-11am", "12pm-2pm", "6pm-10pm"]
+  },
+  "config": {
+    "max_trend_engagements_per_session": 10,
+    "max_trend_posts_per_session": 3,
+    "trend_freshness_max_hours": 2,
+    "require_niche_relevance": true,
+    "niche_keywords": "{{user.niche}}",
+    "action_delay_min_seconds": 20,
+    "action_delay_max_seconds": 45,
+    "engagement_types": ["reply", "quote_tweet", "original_post"]
+  },
+  "trending_filters": {
+    "include": {
+      "categories": ["tech", "AI", "startups", "business", "productivity", "software"],
+      "keywords": "{{user.niche}}"
+    },
+    "exclude": {
+      "categories": ["politics", "sports", "celebrity", "entertainment"],
+      "keywords": ["#ad", "#sponsored", "giveaway"]
+    }
+  },
+  "steps": [
+    {
+      "id": "step_1",
+      "type": "safety_check",
+      "action": "check_rate_limits",
+      "params": {},
+      "description": "Check for warnings before starting",
+      "on_warning": "abort_session",
+      "next": "step_2"
+    },
+    {
+      "id": "step_2",
+      "type": "navigate",
+      "action": "navigate_to_url",
+      "params": {
+        "url": "https://x.com/explore/tabs/trending"
+      },
+      "description": "Navigate to X trending page",
+      "next": "step_3"
+    },
+    {
+      "id": "step_3",
+      "type": "analyze",
+      "action": "find_trending_topics",
+      "params": {
+        "filter_by_niche": true,
+        "niche_keywords": "{{config.niche_keywords}}",
+        "exclude_categories": "{{trending_filters.exclude.categories}}"
+      },
+      "description": "Scan trending topics and filter for niche relevance",
+      "next": "step_4"
+    },
+    {
+      "id": "step_4",
+      "type": "conditional",
+      "condition": "relevant_trends_found > 0",
+      "true_next": "step_5",
+      "false_next": "step_10",
+      "description": "Check if any relevant trends found"
+    },
+    {
+      "id": "step_5",
+      "type": "loop",
+      "loop_count": "min({{relevant_trends.length}}, 3)",
+      "description": "Engage with top 3 relevant trending topics",
+      "children": [
+        {
+          "id": "step_5a",
+          "type": "research",
+          "action": "research_topic",
+          "params": {
+            "query": "{{trend_topic}}",
+            "quick_research": true
+          },
+          "description": "Quick research on the trending topic for informed commentary",
+          "next": "step_5b"
+        },
+        {
+          "id": "step_5b",
+          "type": "navigate",
+          "action": "navigate_to_url",
+          "params": {
+            "url": "https://x.com/search?q={{trend_topic}}&f=live"
+          },
+          "description": "Navigate to live search for the trending topic",
+          "next": "step_5c"
+        },
+        {
+          "id": "step_5c",
+          "type": "analyze",
+          "action": "get_comprehensive_context",
+          "params": {},
+          "description": "Analyze posts in the trending topic",
+          "next": "step_5d"
+        },
+        {
+          "id": "step_5d",
+          "type": "decision",
+          "action": "decide_engagement_type",
+          "params": {
+            "options": ["reply_to_top_post", "quote_tweet", "create_original_post"],
+            "based_on": "what_adds_most_value"
+          },
+          "description": "Decide best way to engage with this trend",
+          "next": "step_5e"
+        },
+        {
+          "id": "step_5e",
+          "type": "conditional_action",
+          "conditions": {
+            "reply": {
+              "action": "like_and_comment",
+              "params": {
+                "target": "top_post_in_trend",
+                "comment_style": "trend_expert"
+              }
+            },
+            "quote": {
+              "action": "quote_tweet",
+              "params": {
+                "target": "viral_post_in_trend",
+                "commentary_style": "hot_take"
+              }
+            },
+            "original": {
+              "action": "create_post",
+              "params": {
+                "topic": "{{trend_topic}}",
+                "style": "timely_insight"
+              }
+            }
+          },
+          "description": "Execute chosen engagement type",
+          "next": "step_5f"
+        },
+        {
+          "id": "step_5f",
+          "type": "delay",
+          "action": "random_delay",
+          "params": {
+            "min_seconds": "{{config.action_delay_min_seconds}}",
+            "max_seconds": "{{config.action_delay_max_seconds}}"
+          },
+          "description": "Human-like random delay",
+          "next": "step_5g"
+        },
+        {
+          "id": "step_5g",
+          "type": "memory",
+          "action": "save_to_history",
+          "params": {
+            "action": "trend_engagement",
+            "trend_topic": "{{trend_topic}}",
+            "engagement_type": "{{engagement_type}}",
+            "timestamp": "{{current_time}}",
+            "engagement_tracking": true
+          },
+          "description": "Track trend engagement for analytics"
+        }
+      ],
+      "next": "step_6"
+    },
+    {
+      "id": "step_6",
+      "type": "additional_engagement",
+      "description": "Reply to more posts in the trending topic",
+      "action": "engage_with_trend_posts",
+      "params": {
+        "max_replies": "{{config.max_trend_engagements_per_session}}",
+        "target": "early_posts_with_engagement"
+      },
+      "next": "step_7"
+    },
+    {
+      "id": "step_7",
+      "type": "safety_check",
+      "action": "check_rate_limits",
+      "params": {},
+      "description": "Check for warnings after trend engagement",
+      "on_warning": "pause_session",
+      "next": "step_8"
+    },
+    {
+      "id": "step_8",
+      "type": "memory",
+      "action": "update_trend_tracking",
+      "params": {
+        "trends_engaged": "{{engaged_trends}}",
+        "track_performance": true
+      },
+      "description": "Update trend tracking for future optimization",
+      "next": "step_9"
+    },
+    {
+      "id": "step_9",
+      "type": "schedule",
+      "action": "schedule_followup",
+      "params": {
+        "check_trend_performance_in": "2_hours",
+        "reason": "See if trend engagement got traction"
+      },
+      "description": "Schedule followup to check trend performance",
+      "next": "step_10"
+    },
+    {
+      "id": "step_10",
+      "type": "end",
+      "description": "Trending dominator session complete"
+    }
+  ],
+  "success_metrics": {
+    "trends_engaged": "count",
+    "replies_posted": "count",
+    "quotes_posted": "count",
+    "original_posts": "count",
+    "engagement_received": "metric",
+    "new_followers": "metric"
+  },
+  "learning_enabled": true,
+  "notes": {
+    "why_trending_works": "X's algorithm boosts content related to trending topics. Being early (first 1-2 hours) means your content gets surfaced to people searching/browsing the trend.",
+    "timing_is_critical": "The first hour of a trend is when engagement potential is highest. After that, the conversation is saturated.",
+    "niche_filter": "Only engage with trends relevant to your niche. Random trend-jacking looks spammy and hurts credibility."
+  }
+}

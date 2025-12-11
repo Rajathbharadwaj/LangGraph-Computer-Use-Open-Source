@@ -38,9 +38,22 @@ class UserPreferences:
     daily_limits: Dict[str, int]  # e.g., {"likes": 50, "comments": 20}
     optimal_times: List[str]  # e.g., ["9-11am EST", "7-9pm EST"]
     avoid_topics: List[str]  # e.g., ["politics", "religion"]
-    
+    # New fields for impression maximization
+    aggression_level: str = "moderate"  # "conservative", "moderate", "aggressive"
+    auto_post_enabled: bool = False  # If True, agent posts automatically; if False, queues for approval
+    thread_topics: Optional[List[str]] = None  # Preferred thread topics, e.g., ["personal stories", "tutorials"]
+
     def to_dict(self) -> dict:
         return asdict(self)
+
+    def get_daily_limits_for_aggression(self) -> Dict[str, int]:
+        """Get daily limits based on aggression level"""
+        limits = {
+            "conservative": {"likes": 50, "comments": 20, "posts": 5, "threads": 1, "quote_tweets": 5},
+            "moderate": {"likes": 100, "comments": 50, "posts": 10, "threads": 2, "quote_tweets": 15},
+            "aggressive": {"likes": 150, "comments": 100, "posts": 15, "threads": 3, "quote_tweets": 30}
+        }
+        return limits.get(self.aggression_level, limits["moderate"])
 
 
 @dataclass
