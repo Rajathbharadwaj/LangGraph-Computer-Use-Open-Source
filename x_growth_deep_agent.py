@@ -2634,6 +2634,8 @@ The AI will retrieve similar examples from your writing history for few-shot lea
             writing_style_prompt = "Write in a professional but friendly tone."
         
         if preferences:
+            # Use aggression-based limits (not the raw daily_limits which may be outdated)
+            effective_limits = preferences.get_daily_limits_for_aggression()
             system_prompt += f"""
 
 🎯 USER-SPECIFIC PREFERENCES (from long-term memory):
@@ -2642,7 +2644,13 @@ The AI will retrieve similar examples from your writing history for few-shot lea
 - Target Audience: {preferences.target_audience}
 - Growth Goal: {preferences.growth_goal}
 - Engagement Style: {preferences.engagement_style}
-- Daily Limits: {preferences.daily_limits}
+- Aggression Level: {preferences.aggression_level.upper()}
+- Daily Limits (based on {preferences.aggression_level} mode):
+  * Likes: {effective_limits.get('likes', 100)}/day
+  * Comments: {effective_limits.get('comments', 50)}/day
+  * Posts: {effective_limits.get('posts', 10)}/day
+  * Threads: {effective_limits.get('threads', 2)}/day
+  * Quote Tweets: {effective_limits.get('quote_tweets', 15)}/day
 
 {writing_style_prompt}
 
