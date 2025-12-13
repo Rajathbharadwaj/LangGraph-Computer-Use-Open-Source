@@ -1,0 +1,211 @@
+{
+  "workflow_id": "impression_blitz",
+  "name": "Impression Blitz",
+  "description": "High-volume engagement targeting viral posts for maximum impressions. Designed to reach 55K+ impressions/day for X monetization (5M in 3 months). Targets early-viral posts (50-500 likes, <1hr old) from high-follower accounts (10K-500K).",
+  "category": "engagement",
+  "difficulty": "intermediate",
+  "estimated_time_minutes": 45,
+  "expected_roi": "very_high",
+  "version": "1.0",
+  "goal": "maximize_impressions",
+  "schedule": {
+    "frequency": "every_2_hours",
+    "optimal_times": ["8am", "11am", "2pm", "5pm", "8pm"],
+    "sessions_per_day": 5,
+    "actions_per_session": 20
+  },
+  "config": {
+    "max_engagements_per_session": 20,
+    "min_post_age_minutes": 5,
+    "max_post_age_minutes": 60,
+    "min_likes": 50,
+    "max_likes": 500,
+    "min_author_followers": 10000,
+    "max_author_followers": 500000,
+    "action_delay_min_seconds": 15,
+    "action_delay_max_seconds": 45,
+    "session_break_min_minutes": 15,
+    "session_break_max_minutes": 30,
+    "prioritize_engagement_velocity": true,
+    "use_background_research": true
+  },
+  "targeting": {
+    "post_criteria": {
+      "engagement_velocity": "high",
+      "description": "Posts gaining 50+ likes in first 30 minutes indicate viral potential"
+    },
+    "author_criteria": {
+      "follower_range": "10K-500K (optimal visibility window)",
+      "engagement_rate": ">2% preferred",
+      "avoid": ["spam accounts", "engagement bait", "controversial figures"]
+    },
+    "content_criteria": {
+      "types": ["insights", "tutorials", "hot takes", "industry news", "personal stories"],
+      "avoid": ["ads", "giveaways", "engagement farming", "politics"]
+    }
+  },
+  "steps": [
+    {
+      "id": "step_1",
+      "type": "navigate",
+      "action": "navigate_to_url",
+      "params": {
+        "url": "https://x.com/home"
+      },
+      "description": "Navigate to For You timeline - X's algorithm already shows relevant viral content",
+      "next": "step_2"
+    },
+    {
+      "id": "step_2",
+      "type": "safety_check",
+      "action": "check_rate_limits",
+      "params": {},
+      "description": "Check for any rate limit warnings or behavioral detection signals before proceeding",
+      "on_warning": "abort_session",
+      "next": "step_3"
+    },
+    {
+      "id": "step_3",
+      "type": "analyze",
+      "action": "get_comprehensive_context",
+      "params": {},
+      "description": "Analyze page to identify high-engagement posts worth targeting",
+      "next": "step_4"
+    },
+    {
+      "id": "step_4",
+      "type": "loop",
+      "loop_count": "{{config.max_engagements_per_session}}",
+      "description": "Engage with high-visibility posts for maximum impression impact",
+      "children": [
+        {
+          "id": "step_4a",
+          "type": "filter",
+          "action": "find_high_engagement_posts",
+          "params": {
+            "min_likes": "{{config.min_likes}}",
+            "max_likes": "{{config.max_likes}}",
+            "max_age_minutes": "{{config.max_post_age_minutes}}",
+            "min_author_followers": "{{config.min_author_followers}}",
+            "max_author_followers": "{{config.max_author_followers}}"
+          },
+          "description": "Find posts in the optimal visibility window (viral but not oversaturated)",
+          "next": "step_4b"
+        },
+        {
+          "id": "step_4b",
+          "type": "research",
+          "action": "research_topic",
+          "params": {
+            "query": "{{post_topic}}",
+            "enabled": "{{config.use_background_research}}"
+          },
+          "description": "Research topic for authority-building comment (optional but recommended)",
+          "next": "step_4c"
+        },
+        {
+          "id": "step_4c",
+          "type": "action",
+          "action": "like_and_comment",
+          "params": {
+            "post_identifier": "{{post_author}}",
+            "comment_style": "authority_building",
+            "include_insight": true,
+            "reference_specific_content": true
+          },
+          "description": "Like + comment with value-add insight (NOT generic praise)",
+          "next": "step_4d"
+        },
+        {
+          "id": "step_4d",
+          "type": "delay",
+          "action": "random_delay",
+          "params": {
+            "min_seconds": "{{config.action_delay_min_seconds}}",
+            "max_seconds": "{{config.action_delay_max_seconds}}"
+          },
+          "description": "Human-like random delay between actions (anti-detection)",
+          "next": "step_4e"
+        },
+        {
+          "id": "step_4e",
+          "type": "safety_check",
+          "action": "check_rate_limits",
+          "params": {},
+          "description": "Check for warnings after every 5 actions",
+          "check_frequency": 5,
+          "on_warning": "pause_and_reduce_velocity",
+          "next": "step_4f"
+        },
+        {
+          "id": "step_4f",
+          "type": "memory",
+          "action": "save_to_history",
+          "params": {
+            "action": "impression_blitz_engagement",
+            "post_url": "{{post_url}}",
+            "author_followers": "{{author_followers}}",
+            "post_likes_at_engagement": "{{post_likes}}",
+            "estimated_impression_impact": "{{calculated_impact}}",
+            "engagement_tracking": true
+          },
+          "description": "Track engagement for impression analytics"
+        }
+      ],
+      "next": "step_5"
+    },
+    {
+      "id": "step_5",
+      "type": "scroll",
+      "action": "scroll_page",
+      "params": {
+        "direction": "down",
+        "amount": "2 pages"
+      },
+      "description": "Scroll to load fresh content for next batch",
+      "next": "step_6"
+    },
+    {
+      "id": "step_6",
+      "type": "conditional",
+      "condition": "actions_remaining > 0 AND no_warnings",
+      "true_next": "step_3",
+      "false_next": "step_7",
+      "description": "Continue if more actions allowed and no warnings detected"
+    },
+    {
+      "id": "step_7",
+      "type": "summary",
+      "action": "generate_session_summary",
+      "params": {
+        "metrics": ["engagements_count", "estimated_impressions", "avg_post_likes", "avg_author_followers"]
+      },
+      "description": "Generate session summary with impression estimates",
+      "next": "step_8"
+    },
+    {
+      "id": "step_8",
+      "type": "end",
+      "description": "Session complete - schedule next session with random offset"
+    }
+  ],
+  "success_metrics": {
+    "engagements_posted": "count",
+    "estimated_impressions": "calculated",
+    "avg_post_engagement_rate": "metric",
+    "avg_author_follower_count": "metric",
+    "warnings_detected": "count",
+    "session_duration_minutes": "metric"
+  },
+  "impression_calculation": {
+    "formula": "Each engagement on a post with X likes from author with Y followers = ~(Y * 0.05 + X * 0.1) impressions",
+    "notes": "Conservative estimate - viral posts can 10x this"
+  },
+  "safety": {
+    "max_velocity_per_10min": 15,
+    "pause_on_warning": true,
+    "reduce_velocity_on_warning_by": 0.5,
+    "abort_on_captcha": true
+  },
+  "learning_enabled": true
+}

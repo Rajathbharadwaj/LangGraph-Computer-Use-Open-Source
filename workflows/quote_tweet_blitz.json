@@ -1,0 +1,213 @@
+{
+  "workflow_id": "quote_tweet_blitz",
+  "name": "Quote Tweet Blitz",
+  "description": "Quote viral posts with hot takes for 2x engagement. Targets posts with 1K+ likes and adds value-add commentary (not just 'This!'). Leverages existing viral content for maximum visibility.",
+  "category": "engagement",
+  "difficulty": "intermediate",
+  "estimated_time_minutes": 30,
+  "expected_roi": "very_high",
+  "version": "1.0",
+  "goal": "maximize_impressions",
+  "schedule": {
+    "frequency": "twice_daily",
+    "optimal_times": ["10am", "9pm"],
+    "quote_tweets_per_session": 10
+  },
+  "config": {
+    "max_quotes_per_session": 10,
+    "min_post_likes": 1000,
+    "max_post_likes": 50000,
+    "min_author_followers": 10000,
+    "max_post_age_hours": 24,
+    "action_delay_min_seconds": 30,
+    "action_delay_max_seconds": 60,
+    "require_niche_relevance": true,
+    "commentary_styles": [
+      "hot_take",
+      "additional_insight",
+      "personal_experience",
+      "contrarian_view",
+      "provocative_question"
+    ]
+  },
+  "targeting": {
+    "post_criteria": {
+      "engagement": "1K+ likes (proven viral content)",
+      "age": "< 24 hours (still relevant)",
+      "type": "Insights, opinions, tutorials, industry news"
+    },
+    "avoid": {
+      "topics": ["politics", "controversy", "engagement bait"],
+      "post_types": ["giveaways", "ads", "spam"]
+    }
+  },
+  "commentary_guidelines": {
+    "good_examples": [
+      "I tested this exact strategy for 6 months. Here's what they don't mention: [specific insight]",
+      "Unpopular opinion: this works for B2B but completely fails for B2C because [reason]",
+      "Adding context: when we tried this at [company], we found [specific result]",
+      "The missing piece here: [insight that adds value]",
+      "Hot take: this advice is outdated because [reason]. What works now is [alternative]"
+    ],
+    "bad_examples": [
+      "This!",
+      "So true!",
+      "Great post!",
+      "Everyone should read this",
+      "Saving this for later"
+    ],
+    "rules": [
+      "Add specific value or insight",
+      "Reference your own experience when possible",
+      "Disagree respectfully if you have a different view",
+      "Ask a thought-provoking question",
+      "Write in user's exact style"
+    ]
+  },
+  "steps": [
+    {
+      "id": "step_1",
+      "type": "safety_check",
+      "action": "check_rate_limits",
+      "params": {},
+      "description": "Check for warnings before starting",
+      "on_warning": "abort_session",
+      "next": "step_2"
+    },
+    {
+      "id": "step_2",
+      "type": "navigate",
+      "action": "navigate_to_url",
+      "params": {
+        "url": "https://x.com/home"
+      },
+      "description": "Navigate to For You timeline to find viral posts",
+      "next": "step_3"
+    },
+    {
+      "id": "step_3",
+      "type": "analyze",
+      "action": "get_comprehensive_context",
+      "params": {},
+      "description": "Analyze page to find high-engagement posts worth quoting",
+      "next": "step_4"
+    },
+    {
+      "id": "step_4",
+      "type": "loop",
+      "loop_count": "{{config.max_quotes_per_session}}",
+      "description": "Find and quote viral posts with value-add commentary",
+      "children": [
+        {
+          "id": "step_4a",
+          "type": "filter",
+          "action": "find_quotable_posts",
+          "params": {
+            "min_likes": "{{config.min_post_likes}}",
+            "max_likes": "{{config.max_post_likes}}",
+            "max_age_hours": "{{config.max_post_age_hours}}",
+            "niche_relevant": "{{config.require_niche_relevance}}"
+          },
+          "description": "Find viral posts in your niche worth quoting",
+          "next": "step_4b"
+        },
+        {
+          "id": "step_4b",
+          "type": "analysis",
+          "action": "analyze_post_for_quote",
+          "params": {
+            "post_content": "{{post_content}}",
+            "determine_angle": true
+          },
+          "description": "Analyze post to determine best quote angle (agree, disagree, add insight, etc.)",
+          "next": "step_4c"
+        },
+        {
+          "id": "step_4c",
+          "type": "generation",
+          "action": "generate_quote_commentary",
+          "params": {
+            "post_content": "{{post_content}}",
+            "angle": "{{quote_angle}}",
+            "style": "user_writing_style",
+            "max_length": 280
+          },
+          "description": "Generate value-add commentary in user's writing style",
+          "next": "step_4d"
+        },
+        {
+          "id": "step_4d",
+          "type": "action",
+          "action": "quote_tweet",
+          "params": {
+            "post_identifier": "{{post_author}}",
+            "commentary": "{{generated_commentary}}"
+          },
+          "description": "Quote the post with generated commentary",
+          "next": "step_4e"
+        },
+        {
+          "id": "step_4e",
+          "type": "delay",
+          "action": "random_delay",
+          "params": {
+            "min_seconds": "{{config.action_delay_min_seconds}}",
+            "max_seconds": "{{config.action_delay_max_seconds}}"
+          },
+          "description": "Human-like random delay (longer for quote tweets - more visible action)",
+          "next": "step_4f"
+        },
+        {
+          "id": "step_4f",
+          "type": "memory",
+          "action": "save_to_history",
+          "params": {
+            "action": "quote_tweet",
+            "original_post_url": "{{post_url}}",
+            "original_author": "{{post_author}}",
+            "original_likes": "{{post_likes}}",
+            "commentary_angle": "{{quote_angle}}",
+            "engagement_tracking": true
+          },
+          "description": "Track quote tweet for analytics"
+        }
+      ],
+      "next": "step_5"
+    },
+    {
+      "id": "step_5",
+      "type": "scroll",
+      "action": "scroll_page",
+      "params": {
+        "direction": "down",
+        "amount": "3 pages"
+      },
+      "description": "Scroll to find more viral content",
+      "next": "step_6"
+    },
+    {
+      "id": "step_6",
+      "type": "conditional",
+      "condition": "quotes_remaining > 0 AND no_warnings",
+      "true_next": "step_3",
+      "false_next": "step_7",
+      "description": "Continue if more quotes allowed"
+    },
+    {
+      "id": "step_7",
+      "type": "end",
+      "description": "Quote tweet session complete"
+    }
+  ],
+  "success_metrics": {
+    "quotes_posted": "count",
+    "avg_original_post_likes": "metric",
+    "engagement_on_quotes": "metric",
+    "new_followers_from_quotes": "metric"
+  },
+  "learning_enabled": true,
+  "notes": {
+    "why_quote_tweets_work": "Quote tweets get 2x engagement because you leverage existing viral content's momentum while adding your own perspective. Your quote appears in followers' feeds AND in the original post's quote section.",
+    "best_times": "Quote tweets work best when the original post is still trending (< 24 hours old) but has proven engagement (1K+ likes)."
+  }
+}

@@ -25,4 +25,6 @@ htmlcov/
 x-automation-extension/
 *.json
 !requirements.txt
+!workflows/*.json
+!langgraph.json
 .DS_Store

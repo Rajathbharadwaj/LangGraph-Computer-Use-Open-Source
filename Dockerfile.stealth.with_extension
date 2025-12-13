@@ -58,8 +58,8 @@ RUN cd /tmp && \
 # Create app directory
 RUN mkdir -p /app
 
-# Copy Chrome extension into Docker (Docker-specific version with host IP)
-COPY x-automation-extension-docker /app/x-automation-extension
+# Copy Chrome extension into Docker
+COPY x-automation-extension-prod /app/x-automation-extension
 
 # Copy all necessary files
 COPY cua_server.py /app/

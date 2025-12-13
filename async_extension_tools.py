@@ -16,6 +16,7 @@ from langchain_core.tools import tool
 from youtube_transcript_tool import detect_youtube_urls
 from pydantic import BaseModel, Field
 from langchain.chat_models import init_chat_model
+from langchain.tools import ToolRuntime
 
 
 class AsyncExtensionClient:
@@ -307,24 +308,21 @@ TIMING:
         print(f"🔗 [Extension] Extracting URL for post: {post_identifier[:50]}...")
 
         try:
-            cua_url = get_cua_url_from_runtime(runtime)
+            # Use the extension client to call the backend
+            client = AsyncExtensionClient()
+            result = await client._request("POST", "/extension/get_post_url", {
+                "identifier": post_identifier
+            })
 
-            async with aiohttp.ClientSession() as session:
-                async with session.post(
-                    f"{cua_url}/extension/get_post_url",
-                    json={"identifier": post_identifier},
-                    timeout=aiohttp.ClientTimeout(total=10)
-                ) as response:
-                    if response.status == 200:
-                        data = await response.json()
-                        post_url = data.get("post_url")
-                        if post_url:
-                            print(f"✅ [Extension] Found post URL: {post_url}")
-                            return f"✅ Post URL extracted: {post_url}"
-                        else:
-                            return "❌ Could not find post URL"
-                    else:
-                        return f"❌ Extension request failed: {response.status}"
+            if result.get("success"):
+                post_url = result.get("post_url")
+                if post_url:
+                    print(f"✅ [Extension] Found post URL: {post_url}")
+                    return f"✅ Post URL extracted: {post_url}"
+                else:
+                    return "❌ Could not find post URL"
+            else:
+                return f"❌ Extension request failed: {result.get('error', 'Unknown error')}"
 
         except Exception as e:
             print(f"❌ [Extension] get_post_url error: {e}")

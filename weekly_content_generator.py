@@ -18,7 +18,6 @@ from langgraph.graph import StateGraph, END
 from langgraph.store.postgres import PostgresStore
 from langchain_anthropic import ChatAnthropic
 from langchain_core.messages import SystemMessage, HumanMessage
-from openai import OpenAI  # Still needed for Perplexity API
 import os
 from datetime import datetime, timedelta
 import json
@@ -59,19 +58,86 @@ class ContentGeneratorState(TypedDict):
 
 
 # ============================================================================
-# PERPLEXITY CLIENT
+# ANTHROPIC WEB SEARCH (using built-in server-side tool)
 # ============================================================================
 
-def get_perplexity_client():
-    """Initialize Perplexity API client (OpenAI-compatible)"""
-    api_key = os.getenv("PERPLEXITY_API_KEY")
-    if not api_key:
-        raise ValueError("PERPLEXITY_API_KEY not found in environment")
+async def anthropic_web_search(query: str) -> str:
+    """
+    Perform web search using Anthropic's built-in web search capability.
 
-    return OpenAI(
-        api_key=api_key,
-        base_url="https://api.perplexity.ai"
-    )
+    This uses Claude's server-side web search tool which executes in a single
+    API call without needing explicit tool handling.
+
+    Args:
+        query: The search query
+
+    Returns:
+        Search results as a string summary
+    """
+    print(f"🔍 [Anthropic Web Search] Searching: {query[:100]}...")
+
+    try:
+        # Create model with web search enabled
+        llm = ChatAnthropic(
+            model="claude-sonnet-4-20250514",
+            api_key=os.getenv("ANTHROPIC_API_KEY"),
+            temperature=0.3
+        )
+
+        # Bind the web search tool (Anthropic's built-in server-side tool)
+        web_search_tool = {
+            "type": "web_search_20250305",
+            "name": "web_search",
+            "max_uses": 5
+        }
+        search_model = llm.bind_tools([web_search_tool])
+
+        # Create search prompt
+        search_prompt = f"""You are a research assistant. Search the web for current information about:
+
+{query}
+
+RESEARCH TASK:
+1. Search the web for the latest and most relevant information
+2. Find recent news, trends, statistics, or expert opinions
+3. Look for unique insights that would add value
+
+After researching, provide a CONCISE summary (2-3 paragraphs max) with:
+- Key facts or recent developments
+- Interesting statistics or data points if available
+- Unique angles or insights
+
+Focus on information from the last 7 days when possible."""
+
+        # Invoke with web search enabled
+        response = await search_model.ainvoke(search_prompt)
+
+        # Extract the content
+        result = ""
+        if hasattr(response, 'content'):
+            if isinstance(response.content, str):
+                result = response.content
+            elif isinstance(response.content, list):
+                for block in response.content:
+                    if isinstance(block, dict) and block.get('type') == 'text':
+                        result += block.get('text', '')
+                    elif hasattr(block, 'text'):
+                        result += block.text
+                    elif isinstance(block, str):
+                        result += block
+
+        if result:
+            print(f"✅ [Anthropic Web Search] Found results ({len(result)} chars)")
+            return result.strip()
+        else:
+            print("⚠️ [Anthropic Web Search] No results returned")
+            return ""
+
+    except Exception as e:
+        print(f"❌ [Anthropic Web Search] Error: {e}")
+        import traceback
+        traceback.print_exc()
+        return ""
 
 
 # ============================================================================
@@ -92,6 +158,14 @@ async def analyze_user_profile(state: ContentGeneratorState) -> ContentGenerator
 
     user_id = state["user_id"]
 
+    # ==================== SECURITY AUDIT LOGGING ====================
+    print("=" * 80)
+    print("🔍 LOADING USER POSTS FROM STORE")
+    print(f"🔐 user_id: {user_id}")
+    print(f"📋 Looking up namespace: ({user_id}, 'writing_samples')")
+    print("=" * 80)
+    # ================================================================
+
     # Get store connection (check POSTGRES_URI first for Cloud Run, then DATABASE_URL for local)
     conn_string = (os.getenv("POSTGRES_URI") or
                    os.getenv("DATABASE_URL") or
@@ -102,7 +176,14 @@ async def analyze_user_profile(state: ContentGeneratorState) -> ContentGenerator
         posts_namespace = (user_id, "writing_samples")
         stored_posts = list(store.search(posts_namespace))
 
+        print(f"📦 Found {len(stored_posts)} posts in store for user_id: {user_id}")
+        if stored_posts and len(stored_posts) > 0:
+            # Show first post as sample
+            first_post_content = stored_posts[0].value.get("content", "")[:100]
+            print(f"📝 Sample post (first 100 chars): {first_post_content}...")
+
         if not stored_posts:
+            print(f"❌ ERROR: No imported posts found for user_id: {user_id}")
             state["error"] = "No imported posts found for user"
             return state
 
@@ -315,92 +396,54 @@ Format: {{"patterns": {{}}, "growth_triggers": [], "topics": []}}
 
 async def web_research(state: ContentGeneratorState) -> ContentGeneratorState:
     """
-    Node 3: Web research using Perplexity API
+    Node 3: Web research using Anthropic's built-in web search
 
     Searches for:
     - Latest trends in the niche
     - Unique insights/data
     - Content gaps/opportunities
     """
-    print("🌐 Conducting web research...")
+    print("🌐 Conducting web research with Anthropic...")
 
     niche = state["user_niche"]
     user_topics = state["user_style"].get("topics", [])
 
-    try:
-        client = get_perplexity_client()
+    # Get current date for timely searches
+    current_date = datetime.now().strftime("%B %Y")
 
+    try:
         # Research query 1: Latest trends
-        trends_query = f"What are the latest trends, news, and breakthroughs in {niche} in the last 7 days? Focus on topics related to {', '.join(user_topics[:3]) if user_topics else niche}."
+        trends_query = f"Latest trends, news, and breakthroughs in {niche} {current_date}. Focus on {', '.join(user_topics[:3]) if user_topics else niche}."
 
         print(f"   🔍 Searching: Latest trends in {niche}...")
-
-        trends_response = client.chat.completions.create(
-            model="llama-3.1-sonar-large-128k-online",
-            messages=[
-                {
-                    "role": "system",
-                    "content": "You are a research assistant. Provide factual, up-to-date information with specific examples and data."
-                },
-                {
-                    "role": "user",
-                    "content": trends_query
-                }
-            ]
-        )
-
-        latest_trends = trends_response.choices[0].message.content
+        latest_trends = await anthropic_web_search(trends_query)
 
         # Research query 2: Unique insights
-        insights_query = f"What are some unique insights, data, or research findings about {niche} that most people don't know about? Include recent case studies or surprising statistics."
+        insights_query = f"Unique insights, data, or research findings about {niche} that most people don't know. Recent case studies or surprising statistics {current_date}."
 
         print(f"   🔍 Searching: Unique insights...")
-
-        insights_response = client.chat.completions.create(
-            model="llama-3.1-sonar-large-128k-online",
-            messages=[
-                {
-                    "role": "system",
-                    "content": "You are a research assistant. Focus on lesser-known insights and surprising findings."
-                },
-                {
-                    "role": "user",
-                    "content": insights_query
-                }
-            ]
-        )
-
-        unique_insights = insights_response.choices[0].message.content
+        unique_insights = await anthropic_web_search(insights_query)
 
         # Research query 3: Content gaps
-        gaps_query = f"What important questions or topics in {niche} are under-discussed or lack good explanations? What do people struggle to understand?"
+        gaps_query = f"What important questions or topics in {niche} are under-discussed or lack good explanations? Common misconceptions in {niche}."
 
         print(f"   🔍 Searching: Content gaps...")
+        content_gaps = await anthropic_web_search(gaps_query)
 
-        gaps_response = client.chat.completions.create(
-            model="llama-3.1-sonar-large-128k-online",
-            messages=[
-                {
-                    "role": "system",
-                    "content": "You are a research assistant. Identify knowledge gaps and underserved topics."
-                },
-                {
-                    "role": "user",
-                    "content": gaps_query
-                }
-            ]
-        )
+        # Store results (filter out empty results)
+        state["latest_trends"] = [{"type": "trends", "content": latest_trends}] if latest_trends else []
+        state["unique_insights"] = [unique_insights] if unique_insights else []
+        state["content_gaps"] = [content_gaps] if content_gaps else []
 
-        content_gaps = gaps_response.choices[0].message.content
-
-        state["latest_trends"] = [{"type": "trends", "content": latest_trends}]
-        state["unique_insights"] = [unique_insights]
-        state["content_gaps"] = [content_gaps]
-
-        print(f"   ✅ Research complete")
+        if latest_trends or unique_insights or content_gaps:
+            print(f"   ✅ Research complete - Found trends: {bool(latest_trends)}, insights: {bool(unique_insights)}, gaps: {bool(content_gaps)}")
+        else:
+            print(f"   ⚠️ No research results found, but continuing...")
 
     except Exception as e:
         print(f"   ⚠️ Web research failed: {e}")
+        import traceback
+        traceback.print_exc()
         print(f"   ⚠️ Continuing without web research...")
         state["latest_trends"] = []
         state["unique_insights"] = []
