@@ -518,6 +518,183 @@ def create_user_posts_tool(user_id: str):
     return get_my_posts
 
 
+def create_pending_drafts_tool(user_id: str):
+    """
+    Create a tool that retrieves AI-generated draft posts waiting to be published.
+
+    This gives the agent access to pre-generated content that can be posted
+    instead of generating new content on the fly.
+
+    Args:
+        user_id: User ID to retrieve drafts for
+
+    Returns:
+        Tool that fetches AI drafts from the ScheduledPost database table
+    """
+    from langchain.tools import ToolRuntime
+
+    @tool
+    async def get_pending_drafts(
+        limit: int = 5,
+        runtime: ToolRuntime = None  # Injected by LangGraph at execution time
+    ) -> str:
+        """
+        Retrieve AI-generated draft posts that are ready to be published.
+
+        Use this tool to:
+        - Check if there are pre-generated posts available
+        - Get content that matches the user's writing style
+        - Use existing drafts instead of generating new content
+
+        Args:
+            limit: Maximum number of drafts to retrieve (default: 5)
+
+        Returns:
+            List of AI-generated drafts with content, scheduled time, and metadata
+        """
+        try:
+            # Import database dependencies locally to avoid global import issues
+            from database.database import SessionLocal
+            from database.models import ScheduledPost, XAccount
+
+            print(f"\n📝 [get_pending_drafts] Retrieving AI drafts for user {user_id}...")
+            print(f"   Parameters: limit={limit}")
+
+            db = SessionLocal()
+            try:
+                # Get user's X accounts
+                x_accounts = db.query(XAccount).filter(XAccount.user_id == user_id).all()
+                if not x_accounts:
+                    return "No X accounts connected. Please connect your X account first."
+
+                x_account_ids = [acc.id for acc in x_accounts]
+
+                # Query AI-generated draft posts
+                drafts = db.query(ScheduledPost).filter(
+                    ScheduledPost.x_account_id.in_(x_account_ids),
+                    ScheduledPost.status == "draft",
+                    ScheduledPost.ai_generated == True
+                ).order_by(ScheduledPost.scheduled_at.asc()).limit(limit).all()
+
+                if not drafts:
+                    return "No AI-generated drafts available. Generate content from the Content Calendar first."
+
+                print(f"   ✅ Found {len(drafts)} AI drafts")
+
+                # Format response
+                result = f"📝 AI-Generated Drafts ({len(drafts)} available):\n\n"
+
+                for i, draft in enumerate(drafts, 1):
+                    scheduled_time = draft.scheduled_at.strftime('%A, %B %d at %I:%M %p') if draft.scheduled_at else "Not scheduled"
+                    confidence = draft.ai_confidence / 100.0 if draft.ai_confidence else 1.0
+                    metadata = draft.ai_metadata or {}
+
+                    result += f"{i}. Draft ID: {draft.id}\n"
+                    result += f"   Content: \"{draft.content[:200]}{'...' if len(draft.content) > 200 else ''}\"\n"
+                    result += f"   Scheduled: {scheduled_time}\n"
+                    result += f"   Confidence: {confidence:.0%}\n"
+                    if metadata.get("topic"):
+                        result += f"   Topic: {metadata.get('topic')}\n"
+                    if metadata.get("content_type"):
+                        result += f"   Type: {metadata.get('content_type')}\n"
+                    result += "\n"
+
+                result += "\n💡 To use a draft, call mark_draft_as_used with the draft ID, then post the content."
+
+                return result
+
+            finally:
+                db.close()
+
+        except Exception as e:
+            print(f"❌ Error retrieving pending drafts: {e}")
+            import traceback
+            traceback.print_exc()
+            return f"Error retrieving drafts: {str(e)}"
+
+    return get_pending_drafts
+
+
+def create_mark_draft_used_tool(user_id: str):
+    """
+    Create a tool that marks an AI draft as used/posted.
+
+    This updates the draft status in the database so it won't be used again.
+
+    Args:
+        user_id: User ID for validation
+
+    Returns:
+        Tool that marks a draft as used in the database
+    """
+    from langchain.tools import ToolRuntime
+
+    @tool
+    async def mark_draft_as_used(
+        draft_id: int,
+        new_status: str = "posted",
+        runtime: ToolRuntime = None
+    ) -> str:
+        """
+        Mark an AI-generated draft as used after posting.
+
+        Call this AFTER successfully posting the draft content to prevent
+        the same draft from being used again.
+
+        Args:
+            draft_id: The ID of the draft to mark as used
+            new_status: New status for the draft ("posted" or "scheduled")
+
+        Returns:
+            Confirmation message
+        """
+        try:
+            from database.database import SessionLocal
+            from database.models import ScheduledPost, XAccount
+            from datetime import datetime, timezone
+
+            print(f"\n✅ [mark_draft_as_used] Marking draft {draft_id} as {new_status}...")
+
+            db = SessionLocal()
+            try:
+                # Verify user owns this draft
+                x_accounts = db.query(XAccount).filter(XAccount.user_id == user_id).all()
+                if not x_accounts:
+                    return "Error: No X accounts connected."
+
+                x_account_ids = [acc.id for acc in x_accounts]
+
+                draft = db.query(ScheduledPost).filter(
+                    ScheduledPost.id == draft_id,
+                    ScheduledPost.x_account_id.in_(x_account_ids)
+                ).first()
+
+                if not draft:
+                    return f"Error: Draft {draft_id} not found or you don't have permission to modify it."
+
+                # Update draft status
+                old_status = draft.status
+                draft.status = new_status
+                if new_status == "posted":
+                    draft.posted_at = datetime.now(timezone.utc)
+
+                db.commit()
+
+                print(f"   ✅ Draft {draft_id} status changed: {old_status} → {new_status}")
+                return f"Draft {draft_id} marked as {new_status}. Content: \"{draft.content[:100]}...\""
+
+            finally:
+                db.close()
+
+        except Exception as e:
+            print(f"❌ Error marking draft as used: {e}")
+            import traceback
+            traceback.print_exc()
+            return f"Error marking draft as used: {str(e)}"
+
+    return mark_draft_as_used
+
+
 def create_user_profile_tool(user_id: str):
     """
     Create a tool that retrieves the user's X profile information.
@@ -640,8 +817,14 @@ def get_atomic_subagents(store=None, user_id=None, model=None):
         tool_dict["get_my_posts"] = user_posts_tool
         tool_dict["get_high_performing_competitor_posts"] = competitor_posts_tool
 
-        user_data_tools = [user_profile_tool, user_posts_tool, competitor_posts_tool]
-        print(f"✅ Added user data tools to subagents: get_my_profile, get_my_posts, get_high_performing_competitor_posts")
+        # Add AI draft tools for content_engine workflow integration
+        pending_drafts_tool = create_pending_drafts_tool(user_id)
+        mark_draft_tool = create_mark_draft_used_tool(user_id)
+        tool_dict["get_pending_drafts"] = pending_drafts_tool
+        tool_dict["mark_draft_as_used"] = mark_draft_tool
+
+        user_data_tools = [user_profile_tool, user_posts_tool, competitor_posts_tool, pending_drafts_tool, mark_draft_tool]
+        print(f"✅ Added user data tools to subagents: get_my_profile, get_my_posts, get_high_performing_competitor_posts, get_pending_drafts, mark_draft_as_used")
 
     # WRAP comment_on_post and create_post_on_x with AUTOMATIC style transfer + activity logging
     print(f"🔍 [Activity Logging] Checking prerequisites: store={store is not None}, user_id={user_id}, model={model is not None}")
