@@ -1512,7 +1512,7 @@ QUALITY CHECK:
 - Is the CTA clear?
 
 That's it. Create the full thread, then post.""",
-            "tools": [tool_dict["create_post_on_x"], tool_dict["navigate_to_url"], tool_dict["click_at_coordinates"], tool_dict["type_text_at_coordinates"], tool_dict["get_comprehensive_context"]],
+            "tools": [tool_dict["create_post_on_x"], tool_dict["navigate_to_url"], tool_dict["click_at_coordinates"], tool_dict["type_text"], tool_dict["get_comprehensive_context"]],
             "middleware": [screenshot_middleware]
         },
 
@@ -1553,7 +1553,7 @@ GOOD QUOTE TWEET PATTERNS:
 - "[specific question about implementation]?"
 
 Write in the USER'S exact writing style - casual, specific, brief.""",
-            "tools": [tool_dict["create_post_on_x"], tool_dict["navigate_to_url"], tool_dict["click_at_coordinates"], tool_dict["type_text_at_coordinates"], tool_dict["get_comprehensive_context"]],
+            "tools": [tool_dict["create_post_on_x"], tool_dict["navigate_to_url"], tool_dict["click_at_coordinates"], tool_dict["type_text"], tool_dict["get_comprehensive_context"]],
             "middleware": [screenshot_middleware]
         },
 
@@ -1953,21 +1953,21 @@ IDEA GENERATION PRINCIPLES:
 - If user recently posted about "AI agents" - suggest a DIFFERENT AI subtopic
 
 OUTPUT FORMAT:
-{
+{{
   "recent_posts_checked": true,  // MUST be true - confirms you called get_my_posts
   "topics_to_avoid": ["topic1", "topic2"],  // Topics from recent posts
   "ideas": [
-    {
+    {{
       "topic": "The topic/angle",
       "type": "hot_take|question|insight|tip|personal_story|thread",
       "hook": "Suggested opening line (MUST NOT use banned phrases)",
       "why_it_works": "Why this would resonate",
       "engagement_potential": "high|medium|low",
       "not_repetitive_because": "How this differs from recent posts"
-    }
+    }}
   ],
   "recommended": 0  // Index of best idea
-}
+}}
 
 Focus on ideas that will STOP THE SCROLL - but sound HUMAN, not AI!""",
             "tools": [
@@ -1995,23 +1995,23 @@ Steps:
 3. Return actionable insights
 
 ANALYSIS OUTPUT:
-{
+{{
   "top_performing_topics": ["topic1", "topic2"],
   "best_post_types": ["type1", "type2"],
   "avg_high_performer_length": N,
-  "engagement_patterns": {
+  "engagement_patterns": {{
     "questions_engagement": "high|medium|low",
     "insights_engagement": "high|medium|low",
     "personal_stories_engagement": "high|medium|low"
-  },
-  "style_elements": {
+  }},
+  "style_elements": {{
     "uses_emojis": true/false,
     "typical_tone": "casual|professional|technical",
     "typical_structure": "description"
-  },
+  }},
   "avoid_topics": ["topics that underperformed"],
   "recommendations": ["actionable suggestions"]
-}
+}}
 
 This powers content generation to match what works for THIS specific user!""",
             "tools": user_data_tools
@@ -2103,18 +2103,18 @@ Instead use casual language like:
 - "adds missing context about [X]"
 
 OUTPUT FORMAT:
-{
+{{
   "quotable_posts": [
-    {
+    {{
       "author": "username",
       "post_preview": "first 100 chars...",
       "likes": N,
       "quote_angle": "agree|disagree|add_insight|personal_experience|question",
       "why_quotable": "casual reason (no AI phrases)",
       "urgency": "high|medium|low"
-    }
+    }}
   ]
-}
+}}
 
 This powers the Quote Tweet Blitz workflow!""",
             "tools": [tool_dict["get_comprehensive_context"]] + user_data_tools
@@ -2246,19 +2246,19 @@ CRITERIA FOR GOOD ADJACENT NICHES:
 - Niches where user has no credibility
 
 OUTPUT FORMAT:
-{
+{{
   "core_niche": "user's main niche",
   "adjacent_niches": [
-    {
+    {{
       "niche": "niche name",
       "keywords": ["search keywords for this niche"],
       "relevance_reason": "why user's expertise adds value here",
       "key_accounts": ["influencers to engage with"],
       "engagement_approach": "how to add value in this niche",
       "priority": "high|medium|low"
-    }
+    }}
   ]
-}
+}}
 
 This powers the Niche Expander workflow for broader reach!""",
             "tools": user_data_tools
@@ -2316,12 +2316,12 @@ Instead, suggest angles that sound human:
 - "push back on [specific assumption]"
 
 OUTPUT FORMAT:
-{
+{{
   "recommended_action": "reply|quote_tweet|original_post",
   "reasoning": "why this is the best choice",
   "target": "post URL if reply/quote, null if original",
   "suggested_content_angle": "brief description of what to say (NO AI phrases)"
-}
+}}
 
 Make the choice that maximizes IMPRESSION IMPACT!""",
             "tools": [tool_dict["get_comprehensive_context"]] + user_data_tools

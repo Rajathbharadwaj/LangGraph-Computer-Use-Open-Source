@@ -54,6 +54,18 @@ from fastapi import Depends
 from clerk_auth import get_current_user
 from clerk_webhooks import router as webhook_router
 
+# Ads service router
+from ads_service.routes import router as ads_router
+
+# CRM service router
+from crm_service.routes import crm_router
+
+# Billing service routers
+from billing_routes import router as billing_router
+from services.billing_service import BillingService
+from services.stripe_service import AGENT_SESSION_COSTS, CREDIT_COSTS
+from stripe_webhooks import router as stripe_webhook_router
+
 # Global store variable (initialized in lifespan)
 store = None
 _pg_pool = None  # Connection pool for PostgresStore
@@ -130,8 +142,10 @@ async def lifespan(app: FastAPI):
         import traceback
         traceback.print_exc()
 
-    print("📡 WebSocket: ws://localhost:8001/ws/extension/{user_id}")
-    print("🌐 Dashboard: http://localhost:3000")
+    backend_url = os.getenv('BACKEND_API_URL', 'http://localhost:8000')
+    ws_url = backend_url.replace('https://', 'wss://').replace('http://', 'ws://')
+    print(f"📡 WebSocket: {ws_url}/ws/extension/{{user_id}}")
+    print(f"🌐 Dashboard: {os.getenv('FRONTEND_URL', 'http://localhost:3000')}")
     print("🔌 Extension will connect automatically!")
     print(f"🤖 LangGraph Agent: {os.getenv('LANGGRAPH_URL', 'http://localhost:8124')}")
 
@@ -165,6 +179,16 @@ app.add_middleware(
 
 # Include Clerk webhook router
 app.include_router(webhook_router)
+
+# Include Ads service router
+app.include_router(ads_router)
+
+# Include CRM service router
+app.include_router(crm_router)
+
+# Include Billing service routers
+app.include_router(billing_router)
+app.include_router(stripe_webhook_router)
 
 # Store active connections
 active_connections = {}
@@ -274,9 +298,11 @@ async def get_user_vnc_client(user_id: str):
 # Initialize scheduled post executor on startup
 @app.get("/")
 async def root():
+    backend_url = os.getenv('BACKEND_API_URL', 'http://localhost:8000')
+    ws_url = backend_url.replace('https://', 'wss://').replace('http://', 'ws://')
     return {
         "message": "Parallel Universe Backend",
-        "websocket": "ws://localhost:8000/ws/extension/{user_id}",
+        "websocket": f"{ws_url}/ws/extension/{{user_id}}",
         "active_connections": len(active_connections)
     }
 
@@ -4120,29 +4146,46 @@ async def delete_scheduled_post(
 
 @app.post("/api/upload")
 async def upload_media(
-    user_id: str = Depends(get_current_user),file: UploadFile = File(...)):
+    user_id: str = Depends(get_current_user), file: UploadFile = File(...)):
     """
-    Upload media file (image/video) for scheduled post
-    Saves to local uploads directory (in production would use S3/Cloudinary)
+    Upload media file (image/video) to Google Cloud Storage.
+    Returns a public URL for the uploaded file.
     """
     try:
-        # Create uploads directory if it doesn't exist
-        upload_dir = "uploads/media"
-        os.makedirs(upload_dir, exist_ok=True)
+        import uuid
+        from google.cloud import storage
 
         # Generate unique filename
-        import uuid
-        file_extension = os.path.splitext(file.filename)[1]
+        file_extension = os.path.splitext(file.filename)[1] if file.filename else ".bin"
         unique_filename = f"{uuid.uuid4()}{file_extension}"
-        file_path = os.path.join(upload_dir, unique_filename)
 
-        # Save file
-        with open(file_path, "wb") as buffer:
-            content = await file.read()
-            buffer.write(content)
+        # Read file content as bytes
+        content = await file.read()
 
-        # Return URL (in production this would be S3/Cloudinary URL)
-        file_url = f"/uploads/media/{unique_filename}"
+        # Debug: Check if file is corrupted on arrival
+        if len(content) > 0:
+            first_bytes = content[:4].hex()
+            print(f"[UPLOAD DEBUG] First 4 bytes: {first_bytes}, size: {len(content)}")
+
+        # Upload to GCS
+        gcs_bucket = os.getenv("GCS_BUCKET", "parallel-universe-prod-assets")
+        gcp_project = os.getenv("GCP_PROJECT", "parallel-universe-prod")
+
+        client = storage.Client(project=gcp_project)
+        bucket = client.bucket(gcs_bucket)
+
+        # Store in user-specific path
+        blob_path = f"uploads/{user_id}/{unique_filename}"
+        blob = bucket.blob(blob_path)
+
+        # Upload raw bytes directly
+        blob.upload_from_string(
+            content,
+            content_type=file.content_type or "application/octet-stream"
+        )
+
+        # Bucket has uniform bucket-level access with public read, so construct URL directly
+        file_url = f"https://storage.googleapis.com/{gcs_bucket}/{blob_path}"
 
         return {
             "success": True,
@@ -4405,6 +4448,142 @@ async def list_cron_jobs(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.put("/api/cron-jobs/{cron_job_id}/pause")
+async def pause_cron_job(
+    cron_job_id: int,
+    user_id: str = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Pause a cron job (stops execution but keeps the job)"""
+    try:
+        from cron_job_executor import get_cron_executor
+
+        cron_job = db.query(CronJob).filter(
+            CronJob.id == cron_job_id,
+            CronJob.user_id == user_id
+        ).first()
+
+        if not cron_job:
+            raise HTTPException(status_code=404, detail="Cron job not found")
+
+        if not cron_job.is_active:
+            return {"message": "Cron job is already paused", "is_active": False}
+
+        # Remove from scheduler
+        executor = await get_cron_executor()
+        executor.cancel_cron_job(cron_job_id)
+
+        # Update database
+        cron_job.is_active = False
+        cron_job.updated_at = datetime.utcnow()
+        db.commit()
+
+        print(f"⏸️ Paused cron job {cron_job_id}: {cron_job.name}")
+        return {
+            "message": "Cron job paused successfully",
+            "is_active": False,
+            "cron_job_id": cron_job_id
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error pausing cron job: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.put("/api/cron-jobs/{cron_job_id}/resume")
+async def resume_cron_job(
+    cron_job_id: int,
+    user_id: str = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Resume a paused cron job"""
+    try:
+        from cron_job_executor import get_cron_executor
+
+        cron_job = db.query(CronJob).filter(
+            CronJob.id == cron_job_id,
+            CronJob.user_id == user_id
+        ).first()
+
+        if not cron_job:
+            raise HTTPException(status_code=404, detail="Cron job not found")
+
+        if cron_job.is_active:
+            return {"message": "Cron job is already active", "is_active": True}
+
+        # Update database first
+        cron_job.is_active = True
+        cron_job.updated_at = datetime.utcnow()
+        db.commit()
+
+        # Re-schedule the job
+        executor = await get_cron_executor()
+        executor.schedule_cron_job(cron_job)
+
+        print(f"▶️ Resumed cron job {cron_job_id}: {cron_job.name}")
+        return {
+            "message": "Cron job resumed successfully",
+            "is_active": True,
+            "cron_job_id": cron_job_id,
+            "next_run_at": cron_job.next_run_at.isoformat() if cron_job.next_run_at else None
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error resuming cron job: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.put("/api/cron-jobs/{cron_job_id}/toggle")
+async def toggle_cron_job(
+    cron_job_id: int,
+    user_id: str = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Toggle a cron job's active status (pause if active, resume if paused)"""
+    try:
+        from cron_job_executor import get_cron_executor
+
+        cron_job = db.query(CronJob).filter(
+            CronJob.id == cron_job_id,
+            CronJob.user_id == user_id
+        ).first()
+
+        if not cron_job:
+            raise HTTPException(status_code=404, detail="Cron job not found")
+
+        executor = await get_cron_executor()
+
+        if cron_job.is_active:
+            # Pause: remove from scheduler
+            executor.cancel_cron_job(cron_job_id)
+            cron_job.is_active = False
+            action = "paused"
+            print(f"⏸️ Toggled OFF cron job {cron_job_id}: {cron_job.name}")
+        else:
+            # Resume: add back to scheduler
+            cron_job.is_active = True
+            executor.schedule_cron_job(cron_job)
+            action = "resumed"
+            print(f"▶️ Toggled ON cron job {cron_job_id}: {cron_job.name}")
+
+        cron_job.updated_at = datetime.utcnow()
+        db.commit()
+
+        return {
+            "message": f"Cron job {action} successfully",
+            "is_active": cron_job.is_active,
+            "cron_job_id": cron_job_id,
+            "next_run_at": cron_job.next_run_at.isoformat() if cron_job.next_run_at and cron_job.is_active else None
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error toggling cron job: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.delete("/api/cron-jobs/{cron_job_id}")
 async def delete_cron_job(
     cron_job_id: int,
@@ -4586,6 +4765,36 @@ async def get_automation_runs(
     return await get_cron_job_runs(automation_id, limit, user_id, db)
 
 
+@app.put("/api/automations/{automation_id}/pause")
+async def pause_automation(
+    automation_id: int,
+    user_id: str = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Pause an automation (alias for /api/cron-jobs/{cron_job_id}/pause)"""
+    return await pause_cron_job(automation_id, user_id, db)
+
+
+@app.put("/api/automations/{automation_id}/resume")
+async def resume_automation(
+    automation_id: int,
+    user_id: str = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Resume an automation (alias for /api/cron-jobs/{cron_job_id}/resume)"""
+    return await resume_cron_job(automation_id, user_id, db)
+
+
+@app.put("/api/automations/{automation_id}/toggle")
+async def toggle_automation(
+    automation_id: int,
+    user_id: str = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Toggle an automation's active status (alias for /api/cron-jobs/{cron_job_id}/toggle)"""
+    return await toggle_cron_job(automation_id, user_id, db)
+
+
 @app.get("/api/scheduled-posts/ai-drafts")
 async def get_ai_drafts(
     user_id: str = Depends(get_current_user),
@@ -4652,10 +4861,26 @@ async def run_agent(data: dict, user_id: str = Depends(get_current_user)):
     user_id = data.get("user_id")
     task = data.get("task", "Help me grow my X account")
     thread_id = data.get("thread_id")  # Optional: continue existing thread
-    
+
     if not user_id:
         return {"success": False, "error": "user_id is required"}
-    
+
+    # Check if user has enough credits before starting
+    db = SessionLocal()
+    try:
+        billing = BillingService(db)
+        min_credits = AGENT_SESSION_COSTS.get("x_growth", 10)
+        has_credits, reason = billing.check_credits(user_id, min_credits)
+        if not has_credits:
+            print(f"⚠️ User {user_id} has insufficient credits: {reason}")
+            return {
+                "success": False,
+                "error": reason,
+                "credits_exhausted": True
+            }
+    finally:
+        db.close()
+
     try:
         # Use provided thread_id or create/get thread for this user
         if thread_id:
@@ -4751,6 +4976,10 @@ async def stream_agent_execution(user_id: str, thread_id: str, task: str, use_ro
 
         # Track the last sent content to calculate diffs
         last_content = ""
+
+        # Track LLM message count for credit consumption
+        llm_message_count = 0
+        session_start_time = datetime.now()
 
         # Mark this run as active (will be populated with run_id once we get it)
         active_runs[user_id] = {
@@ -4885,6 +5114,8 @@ async def stream_agent_execution(user_id: str, thread_id: str, task: str, use_ro
                                                 "token": current_content
                                             })
                                             print(f"📤 Sent full content: {current_content[:50]}...")
+                                            # Count as a new LLM message for credit tracking
+                                            llm_message_count += 1
 
                                         last_content = current_content
                         except Exception as e:
@@ -4918,7 +5149,46 @@ async def stream_agent_execution(user_id: str, thread_id: str, task: str, use_ro
             # Clean up active run
             if user_id in active_runs:
                 del active_runs[user_id]
-            
+
+            # Usage-based billing: charge credits based on actual LangSmith costs
+            db = SessionLocal()
+            try:
+                billing = BillingService(db)
+
+                if run_id:
+                    # Preferred: Use LangSmith to get actual cost
+                    print(f"💳 Getting actual cost from LangSmith for run {run_id}...")
+                    billing_result = billing.consume_credits_from_langsmith(
+                        user_id=user_id,
+                        run_id=run_id,
+                        agent_type="x_growth",
+                        description=f"X Growth session: {task[:50]}"
+                    )
+                    print(f"💳 Charged {billing_result['credits_charged']} credits "
+                          f"(${billing_result['actual_cost']:.2f} actual, "
+                          f"{billing_result['tokens']} tokens)")
+                else:
+                    # Fallback: Use fixed estimate if no run_id
+                    print(f"⚠️ No run_id available, using fallback billing")
+                    session_duration_minutes = (datetime.now() - session_start_time).total_seconds() / 60
+                    base_cost = AGENT_SESSION_COSTS.get("x_growth", 10)
+                    message_cost = llm_message_count * CREDIT_COSTS.get("sonnet_message", 1)
+                    computer_use_cost = int(session_duration_minutes * CREDIT_COSTS.get("computer_use_minute", 5)) if vnc_url else 0
+                    total_credits = base_cost + message_cost + computer_use_cost
+
+                    billing.consume_credits(
+                        user_id=user_id,
+                        credits=total_credits,
+                        description=f"X Growth session: {task[:50]}",
+                        agent_type="x_growth"
+                    )
+                    print(f"💳 Fallback billing: {total_credits} credits")
+
+            except Exception as credit_error:
+                print(f"⚠️ Failed to consume credits: {credit_error}")
+            finally:
+                db.close()
+
             print(f"✅ Agent completed for user {user_id}")
         
         except Exception as stream_error:

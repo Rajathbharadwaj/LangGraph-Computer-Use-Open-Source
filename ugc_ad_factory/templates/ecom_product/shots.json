@@ -1,0 +1,100 @@
+{
+  "mode": "ecom_product",
+  "description": "Shot types for e-commerce product videos",
+  "shot_types": [
+    {
+      "id": "hero_product",
+      "name": "Hero Product Shot",
+      "description": "Product centered, clean background, dramatic lighting",
+      "typical_duration": 2.5,
+      "camera_options": ["static", "slow_zoom_in", "orbit"],
+      "prompt_template": "Professional product photography of {{product}}, centered composition, {{background}}, studio lighting, commercial quality, 4K, vertical format 9:16",
+      "when_to_use": "Opening shot, product reveal, CTA"
+    },
+    {
+      "id": "lifestyle",
+      "name": "Lifestyle Context Shot",
+      "description": "Product in use in real-world setting",
+      "typical_duration": 3.0,
+      "camera_options": ["handheld", "tracking", "pov"],
+      "prompt_template": "{{person_description}} using {{product}} in {{setting}}, natural lighting, authentic UGC style, candid moment, 4K vertical",
+      "when_to_use": "Showing product benefits, relatability"
+    },
+    {
+      "id": "close_up",
+      "name": "Close-Up Detail",
+      "description": "Macro shot of product features or texture",
+      "typical_duration": 1.5,
+      "camera_options": ["rack_focus", "slow_pan", "static"],
+      "prompt_template": "Extreme close-up of {{product_feature}}, shallow depth of field, texture detail, professional macro photography, 4K",
+      "when_to_use": "Highlighting quality, unique features"
+    },
+    {
+      "id": "text_card",
+      "name": "Text Card",
+      "description": "Bold text overlay on solid or gradient background",
+      "typical_duration": 2.0,
+      "camera_options": ["static"],
+      "prompt_template": "Minimal background, {{color}} gradient or solid, clean modern aesthetic, vertical 9:16",
+      "is_generated": false,
+      "when_to_use": "Hooks, key points, CTAs, transitions"
+    },
+    {
+      "id": "b_roll_hands",
+      "name": "Hands B-Roll",
+      "description": "Hands interacting with product",
+      "typical_duration": 2.0,
+      "camera_options": ["overhead", "side_angle"],
+      "prompt_template": "Hands holding or using {{product}}, clean background, soft natural lighting, lifestyle photography, 4K vertical",
+      "when_to_use": "Demonstrating ease of use, tactile quality"
+    },
+    {
+      "id": "before_after",
+      "name": "Before/After Split",
+      "description": "Split screen or transition showing transformation",
+      "typical_duration": 3.0,
+      "camera_options": ["static", "wipe"],
+      "prompt_template": "Split comparison showing {{before_state}} transforming to {{after_state}}, clean composition, 4K vertical",
+      "when_to_use": "Transformation ads, results"
+    },
+    {
+      "id": "packaging",
+      "name": "Packaging Shot",
+      "description": "Product packaging, unboxing moment",
+      "typical_duration": 2.0,
+      "camera_options": ["overhead", "angle_reveal"],
+      "prompt_template": "Premium product packaging of {{product}}, unboxing aesthetic, clean background, soft lighting, 4K vertical",
+      "when_to_use": "Unboxing content, gift appeal"
+    },
+    {
+      "id": "reaction",
+      "name": "Reaction Shot",
+      "description": "Person reacting to product, expressing emotion",
+      "typical_duration": 1.5,
+      "camera_options": ["front_facing", "selfie_style"],
+      "prompt_template": "Person with {{emotion}} expression, looking at product, natural lighting, authentic UGC style, vertical selfie angle",
+      "when_to_use": "Social proof, testimonial style"
+    }
+  ],
+  "transition_styles": [
+    {
+      "id": "cut",
+      "name": "Hard Cut",
+      "description": "Instant transition, high energy",
+      "when_to_use": "Fast-paced content, TikTok style"
+    },
+    {
+      "id": "crossfade",
+      "name": "Crossfade",
+      "description": "Smooth blend between shots",
+      "duration_ms": 300,
+      "when_to_use": "Luxury products, smooth transitions"
+    },
+    {
+      "id": "zoom_transition",
+      "name": "Zoom Transition",
+      "description": "Zoom into next shot",
+      "when_to_use": "Dynamic content, reveals"
+    }
+  ]
+}

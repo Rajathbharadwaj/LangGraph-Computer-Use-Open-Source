@@ -23,6 +23,10 @@ from langgraph_sdk import get_client
 # VNC Session Manager for per-user browser sessions
 from vnc_session_manager import VNCSessionManager, get_vnc_manager
 
+# Billing service for credit tracking
+from services.billing_service import BillingService
+from services.stripe_service import AGENT_SESSION_COSTS, CREDIT_COSTS
+
 logger = logging.getLogger(__name__)
 
 # Extension backend URL for cookie fetching
@@ -160,8 +164,8 @@ class ScheduledPostExecutor:
                 }
                 playwright_cookies.append(pw_cookie)
 
-            # Inject cookies to VNC via the CDP endpoint
-            inject_url = f"{vnc_url.rstrip('/')}/api/cookies"
+            # Inject cookies to VNC (use /session/load endpoint)
+            inject_url = f"{vnc_url.rstrip('/')}/session/load"
 
             async with aiohttp.ClientSession() as session:
                 async with session.post(
@@ -297,6 +301,22 @@ class ScheduledPostExecutor:
             logger.info(f"🚀 Executing scheduled post {post_id} for @{username}")
             logger.info(f"📝 Content: {post_content[:100]}...")
 
+            # Check if user has enough credits
+            billing = BillingService(db)
+            min_credits = AGENT_SESSION_COSTS.get("content_engine", 5)
+            has_credits, reason = billing.check_credits(user_id, min_credits)
+            if not has_credits:
+                logger.warning(f"⚠️ Skipping scheduled post {post_id} - user {user_id} has insufficient credits: {reason}")
+                # Mark as failed due to credits
+                post = db.query(ScheduledPost).filter(ScheduledPost.id == post_id).first()
+                if post:
+                    post.status = "failed"
+                    post.error_message = "Insufficient credits"
+                    db.commit()
+                return
+
+            session_start_time = datetime.now()
+
             # Step 1: Get or create VNC session for the user
             logger.info(f"🖥️ Getting VNC session for user {user_id}...")
             vnc_url = await self._get_user_vnc_url(user_id)
@@ -386,6 +406,43 @@ class ScheduledPostExecutor:
                 post.posted_at = datetime.now()
                 db.commit()
                 logger.info(f"✅ Post {post_id} marked as posted in database")
+
+            # Usage-based billing: charge credits based on actual LangSmith costs
+            try:
+                # Try to get run_id from result metadata
+                run_id = None
+                if isinstance(result, dict):
+                    run_id = result.get("run_id") or result.get("metadata", {}).get("run_id")
+
+                if run_id:
+                    # Preferred: Use LangSmith to get actual cost
+                    logger.info(f"💳 Getting actual cost from LangSmith for run {run_id}...")
+                    billing_result = billing.consume_credits_from_langsmith(
+                        user_id=user_id,
+                        run_id=run_id,
+                        agent_type="content_engine",
+                        description=f"Scheduled post: {post_content[:30]}"
+                    )
+                    logger.info(f"💳 Charged {billing_result['credits_charged']} credits "
+                                f"(${billing_result['actual_cost']:.2f} actual) for post {post_id}")
+                else:
+                    # Fallback: Use fixed estimate if no run_id
+                    logger.warning(f"⚠️ No run_id available for post {post_id}, using fallback billing")
+                    session_duration_minutes = (datetime.now() - session_start_time).total_seconds() / 60
+                    base_cost = AGENT_SESSION_COSTS.get("content_engine", 5)
+                    computer_use_cost = int(session_duration_minutes * CREDIT_COSTS.get("computer_use_minute", 5)) if vnc_url else 0
+                    total_credits = base_cost + computer_use_cost
+
+                    billing.consume_credits(
+                        user_id=user_id,
+                        credits=total_credits,
+                        description=f"Scheduled post: {post_content[:30]}",
+                        agent_type="content_engine"
+                    )
+                    logger.info(f"💳 Fallback billing: {total_credits} credits for post {post_id}")
+
+            except Exception as credit_error:
+                logger.warning(f"⚠️ Failed to consume credits for post {post_id}: {credit_error}")
 
             # Update job status
             if job_id in self.scheduled_jobs:

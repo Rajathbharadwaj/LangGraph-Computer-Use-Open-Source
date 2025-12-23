@@ -29,6 +29,10 @@ from x_growth_workflows import get_workflow_prompt
 # Database models
 from database.models import CronJob, CronJobRun
 
+# Billing service for credit tracking
+from services.billing_service import BillingService
+from services.stripe_service import AGENT_SESSION_COSTS, CREDIT_COSTS
+
 logger = logging.getLogger(__name__)
 
 # Extension backend URL for cookie fetching
@@ -174,8 +178,8 @@ class CronJobExecutor:
                 }
                 playwright_cookies.append(pw_cookie)
 
-            # Inject cookies to VNC
-            inject_url = f"{vnc_url.rstrip('/')}/api/cookies"
+            # Inject cookies to VNC (use /session/load endpoint)
+            inject_url = f"{vnc_url.rstrip('/')}/session/load"
             async with aiohttp.ClientSession() as session:
                 async with session.post(
                     inject_url,
@@ -318,6 +322,17 @@ class CronJobExecutor:
 
             logger.info(f"🔄 Executing cron job: {cron_job.name} (ID: {cron_job_id}) [Lock acquired]")
 
+            # Check if user has enough credits
+            billing = BillingService(db)
+            min_credits = AGENT_SESSION_COSTS.get("x_growth", 10)
+            has_credits, reason = billing.check_credits(user_id, min_credits)
+            if not has_credits:
+                logger.warning(f"⚠️ Skipping cron job {cron_job_id} - user {user_id} has insufficient credits: {reason}")
+                await self._release_lock(user_id)
+                return
+
+            session_start_time = datetime.utcnow()
+
             # Create execution record
             run = CronJobRun(
                 cron_job_id=cron_job_id,
@@ -430,6 +445,43 @@ class CronJobExecutor:
             run.completed_at = datetime.utcnow()
             cron_job.last_run_at = datetime.utcnow()
             db.commit()
+
+            # Usage-based billing: charge credits based on actual LangSmith costs
+            try:
+                # Try to get run_id from result metadata
+                run_id = None
+                if isinstance(result, dict):
+                    run_id = result.get("run_id") or result.get("metadata", {}).get("run_id")
+
+                if run_id:
+                    # Preferred: Use LangSmith to get actual cost
+                    logger.info(f"💳 Getting actual cost from LangSmith for run {run_id}...")
+                    billing_result = billing.consume_credits_from_langsmith(
+                        user_id=user_id,
+                        run_id=run_id,
+                        agent_type="x_growth",
+                        description=f"Cron job: {cron_job.name[:40]}"
+                    )
+                    logger.info(f"💳 Charged {billing_result['credits_charged']} credits "
+                                f"(${billing_result['actual_cost']:.2f} actual) for cron job {cron_job_id}")
+                else:
+                    # Fallback: Use fixed estimate if no run_id
+                    logger.warning(f"⚠️ No run_id available for cron job {cron_job_id}, using fallback billing")
+                    session_duration_minutes = (datetime.utcnow() - session_start_time).total_seconds() / 60
+                    base_cost = AGENT_SESSION_COSTS.get("x_growth", 10)
+                    computer_use_cost = int(session_duration_minutes * CREDIT_COSTS.get("computer_use_minute", 5)) if vnc_url else 0
+                    total_credits = base_cost + computer_use_cost
+
+                    billing.consume_credits(
+                        user_id=user_id,
+                        credits=total_credits,
+                        description=f"Cron job: {cron_job.name[:40]}",
+                        agent_type="x_growth"
+                    )
+                    logger.info(f"💳 Fallback billing: {total_credits} credits for cron job {cron_job_id}")
+
+            except Exception as credit_error:
+                logger.warning(f"⚠️ Failed to consume credits for cron job {cron_job_id}: {credit_error}")
 
             logger.info(f"✅ Completed cron job: {cron_job.name} (ID: {cron_job_id})")
 

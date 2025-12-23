@@ -48,6 +48,18 @@ CLERK_SECRET=$(gcloud secrets versions access latest --secret=clerk-secret-key -
 CLERK_PUBLISHABLE=$(gcloud secrets versions access latest --secret=clerk-publishable-key --project=$PROJECT_ID 2>/dev/null || echo "")
 DATABASE_URL=$(gcloud secrets versions access latest --secret=database-url --project=$PROJECT_ID 2>/dev/null || echo "postgresql://postgres:ParallelUniverse2024!@10.97.0.3:5432/parallel_universe_db")
 
+# Meta Ads credentials
+META_APP_ID=$(gcloud secrets versions access latest --secret=meta-app-id --project=$PROJECT_ID 2>/dev/null || echo "")
+META_APP_SECRET=$(gcloud secrets versions access latest --secret=meta-app-secret --project=$PROJECT_ID 2>/dev/null || echo "")
+
+# Stripe credentials
+STRIPE_SECRET_KEY=$(gcloud secrets versions access latest --secret=stripe-secret-key --project=$PROJECT_ID 2>/dev/null || echo "")
+STRIPE_WEBHOOK_SECRET=$(gcloud secrets versions access latest --secret=stripe-webhook-secret --project=$PROJECT_ID 2>/dev/null || echo "")
+STRIPE_PRICE_STARTER=$(gcloud secrets versions access latest --secret=stripe-price-starter --project=$PROJECT_ID 2>/dev/null || echo "")
+STRIPE_PRICE_PRO=$(gcloud secrets versions access latest --secret=stripe-price-pro --project=$PROJECT_ID 2>/dev/null || echo "")
+STRIPE_PRICE_PRO_PLUS=$(gcloud secrets versions access latest --secret=stripe-price-pro-plus --project=$PROJECT_ID 2>/dev/null || echo "")
+STRIPE_PRICE_ULTIMATE=$(gcloud secrets versions access latest --secret=stripe-price-ultimate --project=$PROJECT_ID 2>/dev/null || echo "")
+
 # Environment variables for Cloud Run
 ENV_VARS="DATABASE_URL=$DATABASE_URL"
 ENV_VARS="$ENV_VARS,REDIS_HOST=10.110.183.147"
@@ -59,6 +71,20 @@ ENV_VARS="$ENV_VARS,ANTHROPIC_API_KEY=$ANTHROPIC_KEY"
 [ -n "$CLERK_SECRET" ] && ENV_VARS="$ENV_VARS,CLERK_SECRET_KEY=$CLERK_SECRET"
 [ -n "$CLERK_PUBLISHABLE" ] && ENV_VARS="$ENV_VARS,NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=$CLERK_PUBLISHABLE"
 ENV_VARS="$ENV_VARS,EXTENSION_BACKEND_URL=https://extension-backend-service-644185288504.us-central1.run.app"
+ENV_VARS="$ENV_VARS,BACKEND_API_URL=https://backend-api-bw5qfm5d5a-uc.a.run.app"
+ENV_VARS="$ENV_VARS,FRONTEND_URL=https://paralleluniverse.app"
+
+# Meta Ads
+[ -n "$META_APP_ID" ] && ENV_VARS="$ENV_VARS,META_APP_ID=$META_APP_ID"
+[ -n "$META_APP_SECRET" ] && ENV_VARS="$ENV_VARS,META_APP_SECRET=$META_APP_SECRET"
+
+# Stripe
+[ -n "$STRIPE_SECRET_KEY" ] && ENV_VARS="$ENV_VARS,STRIPE_SECRET_KEY=$STRIPE_SECRET_KEY"
+[ -n "$STRIPE_WEBHOOK_SECRET" ] && ENV_VARS="$ENV_VARS,STRIPE_WEBHOOK_SECRET=$STRIPE_WEBHOOK_SECRET"
+[ -n "$STRIPE_PRICE_STARTER" ] && ENV_VARS="$ENV_VARS,STRIPE_PRICE_STARTER=$STRIPE_PRICE_STARTER"
+[ -n "$STRIPE_PRICE_PRO" ] && ENV_VARS="$ENV_VARS,STRIPE_PRICE_PRO=$STRIPE_PRICE_PRO"
+[ -n "$STRIPE_PRICE_PRO_PLUS" ] && ENV_VARS="$ENV_VARS,STRIPE_PRICE_PRO_PLUS=$STRIPE_PRICE_PRO_PLUS"
+[ -n "$STRIPE_PRICE_ULTIMATE" ] && ENV_VARS="$ENV_VARS,STRIPE_PRICE_ULTIMATE=$STRIPE_PRICE_ULTIMATE"
 
 echo "📦 Building and deploying from source..."
 
