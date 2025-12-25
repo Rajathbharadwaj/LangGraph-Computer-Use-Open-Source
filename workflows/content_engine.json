@@ -1,0 +1,261 @@
+{
+  "workflow_id": "content_engine",
+  "name": "Content Engine",
+  "description": "Consistent high-quality original posts (3-5/day) to build authority and grow impressions. AI-generates content ideas based on user's style, expertise, and what's resonating in their niche.",
+  "category": "content_creation",
+  "difficulty": "beginner",
+  "estimated_time_minutes": 15,
+  "expected_roi": "high",
+  "version": "1.0",
+  "goal": "maximize_impressions",
+  "schedule": {
+    "frequency": "3-5_times_daily",
+    "optimal_times": ["9am", "12pm", "3pm", "6pm", "9pm"],
+    "posts_per_day": 5
+  },
+  "config": {
+    "posts_per_session": 1,
+    "post_types": [
+      "hot_take",
+      "question",
+      "insight",
+      "tip",
+      "personal_story",
+      "observation",
+      "announcement",
+      "lesson_learned"
+    ],
+    "max_length": 280,
+    "include_visuals_when_possible": true,
+    "auto_post": "{{user.auto_post_enabled}}",
+    "analyze_past_performance": true,
+    "use_existing_drafts": true,
+    "prefer_ai_drafts": true
+  },
+  "content_guidelines": {
+    "post_structure": {
+      "hook": "First line must stop the scroll",
+      "value": "Deliver insight or entertainment",
+      "engagement_driver": "End with question or call to action (optional)"
+    },
+    "good_post_types": {
+      "hot_take": {
+        "description": "Contrarian opinion with reasoning",
+        "example": "Unpopular opinion: [X] is overrated. Here's why: [reason]. What works better: [alternative]"
+      },
+      "question": {
+        "description": "Thought-provoking question to spark discussion",
+        "example": "What's the one skill you wish you learned 5 years ago? For me it's [skill] because [reason]"
+      },
+      "insight": {
+        "description": "Non-obvious observation from experience",
+        "example": "After [X] years in [industry], I've learned: [insight]. This changed how I [action]"
+      },
+      "tip": {
+        "description": "Actionable advice",
+        "example": "Quick tip: [tip]. I've used this to [result]. Try it and let me know how it goes"
+      },
+      "personal_story": {
+        "description": "Authentic story with lesson",
+        "example": "Last week I [did something]. It went [result]. Lesson: [takeaway]"
+      }
+    },
+    "avoid": [
+      "Generic motivational quotes",
+      "Links in main post (put in reply)",
+      "Hashtags (X penalizes them)",
+      "Engagement bait ('Like if you agree')",
+      "Repetitive formats"
+    ]
+  },
+  "steps": [
+    {
+      "id": "step_1",
+      "type": "safety_check",
+      "action": "check_rate_limits",
+      "params": {},
+      "description": "Check for warnings before creating content",
+      "on_warning": "abort_session",
+      "next": "step_1b"
+    },
+    {
+      "id": "step_1b",
+      "type": "conditional",
+      "condition": "{{config.use_existing_drafts}} == true",
+      "true_next": "step_1c",
+      "false_next": "step_2",
+      "description": "Check if we should look for existing AI drafts"
+    },
+    {
+      "id": "step_1c",
+      "type": "fetch",
+      "action": "get_pending_drafts",
+      "params": {
+        "status": "draft",
+        "ai_generated": true,
+        "limit": 1,
+        "order_by": "scheduled_at"
+      },
+      "description": "Look for AI-generated drafts that haven't been posted yet",
+      "next": "step_1d"
+    },
+    {
+      "id": "step_1d",
+      "type": "conditional",
+      "condition": "{{pending_drafts.length}} > 0",
+      "true_next": "step_6b",
+      "false_next": "step_2",
+      "description": "If drafts exist, use them; otherwise generate new content"
+    },
+    {
+      "id": "step_2",
+      "type": "analysis",
+      "action": "analyze_user_posts",
+      "params": {
+        "get_high_performers": true,
+        "identify_patterns": true,
+        "last_n_days": 30
+      },
+      "description": "Analyze user's high-performing posts to understand what resonates",
+      "next": "step_3"
+    },
+    {
+      "id": "step_3",
+      "type": "analysis",
+      "action": "check_recent_posts",
+      "params": {
+        "last_n_hours": 24
+      },
+      "description": "Check what user posted recently to avoid repetition",
+      "next": "step_4"
+    },
+    {
+      "id": "step_4",
+      "type": "generation",
+      "action": "generate_post_ideas",
+      "params": {
+        "post_types": "{{config.post_types}}",
+        "exclude_recent_topics": "{{recent_topics}}",
+        "based_on_high_performers": "{{high_performing_patterns}}",
+        "num_ideas": 3
+      },
+      "description": "Generate 3 post ideas based on what works for this user",
+      "next": "step_5"
+    },
+    {
+      "id": "step_5",
+      "type": "selection",
+      "action": "select_best_idea",
+      "params": {
+        "ideas": "{{post_ideas}}",
+        "criteria": ["novelty", "value", "engagement_potential", "authenticity"]
+      },
+      "description": "Select the best idea for this time slot",
+      "next": "step_6"
+    },
+    {
+      "id": "step_6",
+      "type": "generation",
+      "action": "generate_post_content",
+      "params": {
+        "idea": "{{selected_idea}}",
+        "style": "user_writing_style",
+        "max_length": "{{config.max_length}}",
+        "include_hook": true
+      },
+      "description": "Generate full post content in user's exact writing style",
+      "next": "step_7"
+    },
+    {
+      "id": "step_6b",
+      "type": "selection",
+      "action": "use_existing_draft",
+      "params": {
+        "draft": "{{pending_drafts[0]}}",
+        "mark_as_used": true
+      },
+      "description": "Use the first available AI-generated draft instead of generating new content",
+      "next": "step_7",
+      "notes": "This step is reached when we have existing AI drafts to use"
+    },
+    {
+      "id": "step_7",
+      "type": "conditional",
+      "condition": "{{config.auto_post}} == true",
+      "true_next": "step_8",
+      "false_next": "step_10",
+      "description": "Check if auto-posting is enabled"
+    },
+    {
+      "id": "step_8",
+      "type": "navigate",
+      "action": "navigate_to_url",
+      "params": {
+        "url": "https://x.com/compose/tweet"
+      },
+      "description": "Navigate to compose tweet",
+      "next": "step_9"
+    },
+    {
+      "id": "step_9",
+      "type": "action",
+      "action": "create_post",
+      "params": {
+        "text": "{{generated_post}}"
+      },
+      "description": "Post the generated content",
+      "next": "step_11"
+    },
+    {
+      "id": "step_10",
+      "type": "queue",
+      "action": "queue_for_approval",
+      "params": {
+        "content_type": "post",
+        "content": "{{generated_post}}",
+        "suggested_time": "{{optimal_post_time}}",
+        "post_type": "{{selected_idea.type}}"
+      },
+      "description": "Queue post for user approval before posting",
+      "next": "step_11"
+    },
+    {
+      "id": "step_11",
+      "type": "memory",
+      "action": "save_to_history",
+      "params": {
+        "action": "content_created",
+        "post_type": "{{selected_idea.type}}",
+        "topic": "{{selected_idea.topic}}",
+        "posted": "{{was_posted}}",
+        "queued": "{{was_queued}}",
+        "engagement_tracking": true
+      },
+      "description": "Track content creation for analytics and pattern learning",
+      "next": "step_12"
+    },
+    {
+      "id": "step_12",
+      "type": "end",
+      "description": "Content engine session complete"
+    }
+  ],
+  "success_metrics": {
+    "posts_created": "count",
+    "posts_queued": "count",
+    "avg_engagement_rate": "metric",
+    "impressions_per_post": "metric",
+    "follower_growth_contribution": "metric"
+  },
+  "learning_enabled": true,
+  "learning_rules": {
+    "track_performance": "Track which post_types get most engagement",
+    "adapt_timing": "Learn which times work best for this user",
+    "topic_patterns": "Identify which topics resonate most"
+  },
+  "notes": {
+    "consistency_matters": "Posting 3-5 times daily signals to X's algorithm that you're an active creator. The algorithm rewards consistency.",
+    "quality_over_quantity": "Better to post 3 great posts than 10 mediocre ones. Each post should provide value.",
+    "timing": "Posts at peak hours (9am, 12pm, 6pm, 9pm) get more initial engagement, which signals quality to the algorithm."
+  }
+}

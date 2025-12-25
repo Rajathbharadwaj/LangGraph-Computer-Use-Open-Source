@@ -32,6 +32,9 @@ from langgraph.store.postgres import PostgresStore
 # Writing style learner
 from x_writing_style_learner import XWritingStyleManager, WritingSample
 
+# User memory manager for preferences
+from x_user_memory import XUserMemory, UserPreferences
+
 # Workflow imports
 from workflow_parser import parse_workflow, load_workflow, list_available_workflows
 
@@ -50,6 +53,18 @@ from fastapi import Depends
 # Clerk authentication imports
 from clerk_auth import get_current_user
 from clerk_webhooks import router as webhook_router
+
+# Ads service router
+from ads_service.routes import router as ads_router
+
+# CRM service router
+from crm_service.routes import crm_router
+
+# Billing service routers
+from billing_routes import router as billing_router
+from services.billing_service import BillingService
+from services.stripe_service import AGENT_SESSION_COSTS, CREDIT_COSTS
+from stripe_webhooks import router as stripe_webhook_router
 
 # Global store variable (initialized in lifespan)
 store = None
@@ -127,8 +142,10 @@ async def lifespan(app: FastAPI):
         import traceback
         traceback.print_exc()
 
-    print("📡 WebSocket: ws://localhost:8001/ws/extension/{user_id}")
-    print("🌐 Dashboard: http://localhost:3000")
+    backend_url = os.getenv('BACKEND_API_URL', 'http://localhost:8000')
+    ws_url = backend_url.replace('https://', 'wss://').replace('http://', 'ws://')
+    print(f"📡 WebSocket: {ws_url}/ws/extension/{{user_id}}")
+    print(f"🌐 Dashboard: {os.getenv('FRONTEND_URL', 'http://localhost:3000')}")
     print("🔌 Extension will connect automatically!")
     print(f"🤖 LangGraph Agent: {os.getenv('LANGGRAPH_URL', 'http://localhost:8124')}")
 
@@ -162,6 +179,16 @@ app.add_middleware(
 
 # Include Clerk webhook router
 app.include_router(webhook_router)
+
+# Include Ads service router
+app.include_router(ads_router)
+
+# Include CRM service router
+app.include_router(crm_router)
+
+# Include Billing service routers
+app.include_router(billing_router)
+app.include_router(stripe_webhook_router)
 
 # Store active connections
 active_connections = {}
@@ -271,41 +298,42 @@ async def get_user_vnc_client(user_id: str):
 # Initialize scheduled post executor on startup
 @app.get("/")
 async def root():
+    backend_url = os.getenv('BACKEND_API_URL', 'http://localhost:8000')
+    ws_url = backend_url.replace('https://', 'wss://').replace('http://', 'ws://')
     return {
         "message": "Parallel Universe Backend",
-        "websocket": "ws://localhost:8000/ws/extension/{user_id}",
+        "websocket": f"{ws_url}/ws/extension/{{user_id}}",
         "active_connections": len(active_connections)
     }
 
 @app.post("/api/generate-preview")
-async def generate_preview(data: dict):
+async def generate_preview(data: dict, clerk_user_id: str = Depends(get_current_user)):
     """
     Generate a preview post/comment in the user's style
-    
+
+    IMPORTANT: Uses authenticated clerk_user_id from JWT token for multi-tenancy isolation
+
     Request body:
     {
-        "user_id": "user_xxx",
-        "clerk_user_id": "user_yyy",
         "content_type": "post" or "comment",
         "context": "What to write about or reply to",
         "feedback": "Optional previous feedback to incorporate"
     }
     """
     try:
-        user_id = data.get("user_id")
-        clerk_user_id = data.get("clerk_user_id")
         content_type = data.get("content_type", "post")
         context = data.get("context", "")
         feedback = data.get("feedback", "")
-        
-        if not user_id or not context:
-            return {"success": False, "error": "Missing user_id or context"}
-        
-        print(f"🎨 Generating {content_type} preview for user: {user_id}")
-        
-        # Initialize style manager
+
+        if not clerk_user_id or not context:
+            return {"success": False, "error": "Missing authentication or context"}
+
+        print(f"🎨 Generating {content_type} preview for authenticated user: {clerk_user_id}")
+
+        # Initialize style manager with AUTHENTICATED clerk_user_id from JWT
+        # This ensures users can only generate content based on THEIR OWN posts
         from x_writing_style_learner import XWritingStyleManager
-        style_manager = XWritingStyleManager(store, user_id)
+        style_manager = XWritingStyleManager(store, clerk_user_id)
         
         # If there's feedback, append it to the context
         if feedback:
@@ -340,36 +368,36 @@ async def generate_preview(data: dict):
 
 
 @app.post("/api/save-feedback")
-async def save_feedback(data: dict):
+async def save_feedback(data: dict, clerk_user_id: str = Depends(get_current_user)):
     """
     Save user feedback about generated content for style refinement
-    
+
+    IMPORTANT: Uses authenticated clerk_user_id from JWT token for multi-tenancy isolation
+
     Request body:
     {
-        "user_id": "user_xxx",
         "feedback": "Make it more casual",
         "original_content": "The generated content",
         "context": "What it was about"
     }
     """
     try:
-        user_id = data.get("user_id")
         feedback_text = data.get("feedback", "")
         original_content = data.get("original_content", "")
         context = data.get("context", "")
-        
-        if not user_id or not feedback_text:
-            return {"success": False, "error": "Missing user_id or feedback"}
-        
-        print(f"💬 Saving feedback for user: {user_id}")
-        
-        # Store feedback in the store
-        namespace = (user_id, "style_feedback")
+
+        if not clerk_user_id or not feedback_text:
+            return {"success": False, "error": "Missing authentication or feedback"}
+
+        print(f"💬 Saving feedback for authenticated user: {clerk_user_id}")
+
+        # Store feedback in the store using AUTHENTICATED clerk_user_id
+        namespace = (clerk_user_id, "style_feedback")
         feedback_id = str(uuid.uuid4())
-        
+
         feedback_data = {
             "feedback_id": feedback_id,
-            "user_id": user_id,
+            "user_id": clerk_user_id,
             "feedback": feedback_text,
             "original_content": original_content,
             "context": context,
@@ -393,43 +421,165 @@ async def save_feedback(data: dict):
         return {"success": False, "error": str(e)}
 
 
+# ============================================================================
+# USER PREFERENCES API
+# ============================================================================
+
+@app.get("/api/preferences")
+async def get_preferences(clerk_user_id: str = Depends(get_current_user)):
+    """
+    Get user preferences for automation settings.
+
+    Returns:
+    {
+        "auto_post_enabled": bool,
+        "aggression_level": "conservative" | "moderate" | "aggressive",
+        "niche": ["AI", "LangChain", ...],
+        "thread_topics": ["tutorials", "personal stories", ...],
+        ...
+    }
+    """
+    try:
+        if not clerk_user_id:
+            raise HTTPException(status_code=401, detail="Authentication required")
+
+        memory = XUserMemory(store, clerk_user_id)
+        prefs = memory.get_preferences()
+
+        if prefs:
+            return {
+                "success": True,
+                "preferences": prefs.to_dict()
+            }
+        else:
+            # Return defaults if no preferences exist
+            return {
+                "success": True,
+                "preferences": {
+                    "user_id": clerk_user_id,
+                    "auto_post_enabled": False,
+                    "aggression_level": "moderate",
+                    "niche": [],
+                    "target_audience": "",
+                    "growth_goal": "",
+                    "engagement_style": "thoughtful_expert",
+                    "tone": "professional",
+                    "daily_limits": {"likes": 100, "comments": 50},
+                    "optimal_times": ["9-11am PST", "7-9pm PST"],
+                    "avoid_topics": [],
+                    "thread_topics": []
+                }
+            }
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"❌ Error getting preferences: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.put("/api/preferences")
+async def update_preferences(data: dict, clerk_user_id: str = Depends(get_current_user)):
+    """
+    Update user preferences for automation settings.
+
+    Request body (partial update supported):
+    {
+        "auto_post_enabled": true,
+        "aggression_level": "moderate",
+        ...
+    }
+    """
+    try:
+        if not clerk_user_id:
+            raise HTTPException(status_code=401, detail="Authentication required")
+
+        memory = XUserMemory(store, clerk_user_id)
+        existing = memory.get_preferences()
+
+        if existing:
+            # Merge updates into existing preferences
+            prefs_dict = existing.to_dict()
+            for key, value in data.items():
+                if key in prefs_dict:
+                    prefs_dict[key] = value
+            updated_prefs = UserPreferences(**prefs_dict)
+        else:
+            # Create new preferences with defaults + provided values
+            defaults = {
+                "user_id": clerk_user_id,
+                "auto_post_enabled": False,
+                "aggression_level": "moderate",
+                "niche": [],
+                "target_audience": "",
+                "growth_goal": "",
+                "engagement_style": "thoughtful_expert",
+                "tone": "professional",
+                "daily_limits": {"likes": 100, "comments": 50},
+                "optimal_times": ["9-11am PST", "7-9pm PST"],
+                "avoid_topics": [],
+                "thread_topics": []
+            }
+            defaults.update(data)
+            defaults["user_id"] = clerk_user_id  # Ensure user_id is correct
+            updated_prefs = UserPreferences(**defaults)
+
+        memory.save_preferences(updated_prefs)
+
+        print(f"✅ Updated preferences for user {clerk_user_id}: auto_post={updated_prefs.auto_post_enabled}, aggression={updated_prefs.aggression_level}")
+
+        return {
+            "success": True,
+            "preferences": updated_prefs.to_dict()
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"❌ Error updating preferences: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.post("/api/agent/create-post")
-async def agent_create_post(data: dict):
+async def agent_create_post(data: dict, clerk_user_id: str = Depends(get_current_user)):
     """
     Generate a styled post and publish it to X via the Docker VNC extension.
-    
+
+    IMPORTANT: Uses authenticated clerk_user_id from JWT for style generation and user isolation
+
     Request body:
     {
-        "user_id": "user_xxx",  // Extension user ID (for scraping/posting)
-        "clerk_user_id": "user_yyy",  // Clerk user ID (for style/memory)
+        "user_id": "user_xxx",  // Extension user ID (for posting via extension)
         "context": "What to write about",
         "post_text": "Optional: pre-generated text to post directly"
     }
-    
+
     If post_text is provided, it will be posted directly.
-    Otherwise, content will be generated using the user's writing style.
+    Otherwise, content will be generated using the AUTHENTICATED user's writing style.
     """
     try:
-        user_id = data.get("user_id")  # Extension user ID
-        clerk_user_id = data.get("clerk_user_id")  # Clerk user ID
+        extension_user_id = data.get("user_id")  # Extension user ID for posting
         context = data.get("context", "")
         post_text = data.get("post_text", "")
-        
-        if not user_id:
-            return {"success": False, "error": "Missing user_id"}
-        
-        print(f"📝 Creating post for user: {user_id}")
-        
-        # If no post_text provided, generate it
+
+        if not extension_user_id:
+            return {"success": False, "error": "Missing extension user_id"}
+
+        print(f"📝 Creating post for authenticated user: {clerk_user_id}, extension_id: {extension_user_id}")
+
+        # If no post_text provided, generate it using AUTHENTICATED user's style
         if not post_text:
             if not context:
                 return {"success": False, "error": "Missing context or post_text"}
-            
-            print(f"🎨 Generating styled post...")
-            
-            # Initialize style manager
+
+            print(f"🎨 Generating styled post for authenticated user: {clerk_user_id}")
+
+            # Initialize style manager with AUTHENTICATED clerk_user_id
+            # This ensures content is generated based on THIS user's posts only
             from x_writing_style_learner import XWritingStyleManager
-            style_manager = XWritingStyleManager(store, user_id)
+            style_manager = XWritingStyleManager(store, clerk_user_id)
             
             # Generate content
             generated = await style_manager.generate_content(
@@ -448,14 +598,14 @@ async def agent_create_post(data: dict):
             }
         
         # Call extension backend to create post
-        print(f"📤 Sending post to extension backend...")
+        print(f"📤 Sending post to extension backend for extension user: {extension_user_id}")
 
         import requests
         response = requests.post(
             f"{EXTENSION_BACKEND_URL}/extension/create-post",
             json={
                 "post_text": post_text,
-                "user_id": user_id
+                "user_id": extension_user_id
             },
             timeout=20
         )
@@ -674,8 +824,8 @@ async def destroy_vnc_session(session_id: str, user_id: str = Depends(get_curren
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.post("/api/posts/cleanup-duplicates/{user_id}")
-async def cleanup_duplicate_posts(user_id: str):
+@app.post("/api/posts/cleanup-duplicates")
+async def cleanup_duplicate_posts(user_id: str = Depends(get_current_user)):
     """Remove duplicate posts from both LangGraph Store and database"""
     try:
         # Clean up LangGraph Store
@@ -716,8 +866,8 @@ async def cleanup_duplicate_posts(user_id: str):
             "error": str(e)
         }
 
-@app.get("/api/vnc/session/{user_id}")
-async def get_vnc_session_by_user_id(user_id: str):
+@app.get("/api/vnc/session")
+async def get_vnc_session_by_user_id(user_id: str = Depends(get_current_user)):
     """
     Internal endpoint for LangGraph middleware to get VNC session URL by user ID.
     No authentication required for internal service-to-service calls.
@@ -761,7 +911,7 @@ async def get_vnc_session_by_user_id(user_id: str):
         return {"success": False, "error": str(e)}
 
 @app.get("/api/posts/count/{username}")
-async def get_posts_count(username: str):
+async def get_posts_count(username: str, user_id: str = Depends(get_current_user)):
     """Get total count of imported posts from database"""
     try:
         from database.models import UserPost, XAccount
@@ -798,9 +948,9 @@ async def get_posts_count(username: str):
             "count": 0
         }
 
-@app.get("/api/posts/{user_id}")
-async def get_user_posts(user_id: str):
-    """Get stored posts for a user (from PostgreSQL database)"""
+@app.get("/api/posts")
+async def get_user_posts(user_id: str = Depends(get_current_user)):
+    """Get stored posts for authenticated user (from PostgreSQL database)"""
     try:
         # First try PostgreSQL database (most reliable source)
         from database.models import UserPost, XAccount
@@ -808,8 +958,8 @@ async def get_user_posts(user_id: str):
 
         db = SessionLocal()
         try:
-            # Get the user's X account by clerk_user_id
-            x_account = db.query(XAccount).filter(XAccount.clerk_user_id == user_id).first()
+            # Get the user's X account by user_id (correct column name)
+            x_account = db.query(XAccount).filter(XAccount.user_id == user_id).first()
 
             if x_account:
                 # Get all posts for this X account
@@ -904,7 +1054,7 @@ async def get_user_posts(user_id: str):
         }
 
 @app.get("/api/extension/status")
-async def extension_status(user_id: Optional[str] = None):
+async def extension_status(user_id: str = Depends(get_current_user)):
     """
     Check if any extensions are connected
 
@@ -929,7 +1079,8 @@ async def extension_status(user_id: Optional[str] = None):
                     return {
                         "connected": len(users_with_info) > 0,
                         "count": len(users_with_info),
-                        "users": users_with_info
+                        "users": users_with_info,
+                        "users_with_info": users_with_info  # Include both field names for compatibility
                     }
     except Exception as e:
         print(f"Failed to check extension backend: {e}")
@@ -950,12 +1101,13 @@ async def extension_status(user_id: Optional[str] = None):
     return {
         "connected": len(active_connections) > 0,
         "count": len(active_connections),
-        "users": users_with_cookies
+        "users": users_with_cookies,
+        "users_with_info": users_with_cookies  # Include both field names for compatibility
     }
 
 
 @app.delete("/api/extension/disconnect/{user_id}")
-async def extension_disconnect(user_id: str):
+async def extension_disconnect(user_id: str, auth_user_id: str = Depends(get_current_user)):
     """
     Disconnect a user's X account by clearing their cookies from the extension backend.
     This proxies the request to the extension backend service.
@@ -963,6 +1115,10 @@ async def extension_disconnect(user_id: str):
     Args:
         user_id: Clerk user ID to disconnect
     """
+    # SECURITY: Verify path user_id matches authenticated user
+    if user_id != auth_user_id:
+        raise HTTPException(status_code=403, detail="Access denied")
+
     import aiohttp
 
     try:
@@ -985,8 +1141,8 @@ async def extension_disconnect(user_id: str):
         }
 
 
-@app.get("/api/activity/recent/{user_id}")
-async def get_recent_activity(user_id: str, limit: int = 50):
+@app.get("/api/activity/recent")
+async def get_recent_activity(user_id: str = Depends(get_current_user), limit: int = 50):
     """
     Get recent activity logs for a user from BOTH ActivityLogger and /memories/action_history.json.
 
@@ -1147,8 +1303,8 @@ async def activity_websocket(websocket: WebSocket, user_id: str):
 
 
 # LEGACY ENDPOINT - For backwards compatibility with /memories/action_history.json format
-@app.get("/api/activity/legacy/{user_id}")
-async def get_legacy_activity(user_id: str, limit: int = 50):
+@app.get("/api/activity/legacy")
+async def get_legacy_activity(user_id: str = Depends(get_current_user), limit: int = 50):
     """
     LEGACY: Get activity from /memories/action_history.json (old format)
 
@@ -1250,8 +1406,8 @@ async def get_legacy_activity(user_id: str, limit: int = 50):
 # SOCIAL GRAPH ENDPOINTS
 # ============================================================================
 
-@app.post("/api/social-graph/validate/{user_id}")
-async def validate_discovery_ready(user_id: str):
+@app.post("/api/social-graph/validate")
+async def validate_discovery_ready(user_id: str = Depends(get_current_user)):
     """
     Pre-flight validation before discovery.
     Checks authentication and returns actionable errors.
@@ -1271,17 +1427,23 @@ async def validate_discovery_ready(user_id: str):
 
                 status_data = await resp.json()
 
-                # Find user with cookies
+                # Find user with cookies - SECURITY: MUST filter by authenticated user_id
                 user_with_cookies = None
+                print(f"🔐 [MULTI-TENANCY] validate_discovery_ready: Looking for cookies for user: {user_id}")
                 for user_info in status_data.get("users_with_info", []):
-                    if user_info.get("hasCookies") and user_info.get("username"):
+                    user_info_id = user_info.get("userId")
+                    # SECURITY: Only accept cookies belonging to the authenticated user
+                    if user_info_id == user_id and user_info.get("hasCookies") and user_info.get("username"):
                         user_with_cookies = user_info
+                        print(f"✅ [MULTI-TENANCY] Found cookies for authenticated user: {user_info_id} (@{user_info.get('username')})")
                         break
+                    elif user_info.get("hasCookies"):
+                        print(f"⚠️ [MULTI-TENANCY] Skipping cookies for different user: {user_info_id} (@{user_info.get('username')})")
 
                 if not user_with_cookies:
                     return {
                         "success": False,
-                        "error": "No X account connected. Please open x.com in your browser with the extension installed.",
+                        "error": f"No X account connected for your account. Please open x.com in your browser with the extension installed. (Looking for user: {user_id})",
                         "action": "connect_extension"
                     }
 
@@ -1300,7 +1462,7 @@ async def validate_discovery_ready(user_id: str):
 
 
 @app.post("/api/social-graph/smart-discover/{user_id}")
-async def smart_discover_competitors(user_id: str):
+async def smart_discover_competitors(user_id: str, auth_user_id: str = Depends(get_current_user)):
     """
     PRODUCTION-READY smart discovery with automatic fallback and validation.
 
@@ -1311,6 +1473,10 @@ async def smart_discover_competitors(user_id: str):
     4. Run optimized discovery if we have candidate pool
     5. Fall back to standard discovery if needed
     """
+    # SECURITY: Verify path user_id matches authenticated user
+    if user_id != auth_user_id:
+        raise HTTPException(status_code=403, detail="Access denied")
+
     try:
         from social_graph_scraper import SocialGraphBuilder
         from social_graph_scraper_v2 import OptimizedSocialGraphBuilder
@@ -1352,15 +1518,22 @@ async def smart_discover_competitors(user_id: str):
                 status_data = await resp.json()
                 user_with_cookies = None
 
+                # SECURITY: MUST filter by authenticated user_id to prevent cross-user data leakage
+                print(f"🔐 [MULTI-TENANCY] smart_discover: Looking for cookies for user: {user_id}")
                 for user_info in status_data.get("users_with_info", []):
-                    if user_info.get("hasCookies") and user_info.get("username"):
+                    user_info_id = user_info.get("userId")
+                    # SECURITY: Only accept cookies belonging to the authenticated user
+                    if user_info_id == user_id and user_info.get("hasCookies") and user_info.get("username"):
                         user_with_cookies = user_info
+                        print(f"✅ [MULTI-TENANCY] Found cookies for authenticated user: {user_info_id} (@{user_info.get('username')})")
                         break
+                    elif user_info.get("hasCookies"):
+                        print(f"⚠️ [MULTI-TENANCY] Skipping cookies for different user: {user_info_id} (@{user_info.get('username')})")
 
                 if not user_with_cookies:
                     return {
                         "success": False,
-                        "error": "No X account connected. Please open x.com in your browser with the extension installed.",
+                        "error": f"No X account connected for your account. Please open x.com in your browser with the extension installed. (Looking for user: {user_id})",
                         "action": "connect_extension"
                     }
 
@@ -1467,8 +1640,12 @@ async def smart_discover_competitors(user_id: str):
 
 
 @app.post("/api/social-graph/cancel/{user_id}")
-async def cancel_discovery(user_id: str):
+async def cancel_discovery(user_id: str, auth_user_id: str = Depends(get_current_user)):
     """Cancel ongoing discovery and save partial results"""
+    # SECURITY: Verify path user_id matches authenticated user
+    if user_id != auth_user_id:
+        raise HTTPException(status_code=403, detail="Access denied")
+
     try:
         # Set cancellation flag in store
         cancel_namespace = (user_id, "discovery_control")
@@ -1480,8 +1657,12 @@ async def cancel_discovery(user_id: str):
 
 
 @app.get("/api/social-graph/progress/{user_id}")
-async def get_discovery_progress(user_id: str):
+async def get_discovery_progress(user_id: str, auth_user_id: str = Depends(get_current_user)):
     """Get current discovery progress"""
+    # SECURITY: Verify path user_id matches authenticated user
+    if user_id != auth_user_id:
+        raise HTTPException(status_code=403, detail="Access denied")
+
     try:
         if not store:
             return {"success": False, "error": "Store not initialized", "progress": None}
@@ -1503,8 +1684,8 @@ async def get_discovery_progress(user_id: str):
         return {"success": False, "error": str(e)}
 
 
-@app.post("/api/social-graph/reset-progress/{user_id}")
-async def reset_discovery_progress(user_id: str):
+@app.post("/api/social-graph/reset-progress")
+async def reset_discovery_progress(user_id: str = Depends(get_current_user)):
     """Reset/clear the discovery progress state (clears stuck locks)"""
     try:
         if not store:
@@ -1532,8 +1713,8 @@ async def reset_discovery_progress(user_id: str):
         return {"success": False, "error": str(e)}
 
 
-@app.post("/api/social-graph/discover-optimized/{user_id}")
-async def discover_competitors_optimized(user_id: str, user_handle: str):
+@app.post("/api/social-graph/discover-optimized")
+async def discover_competitors_optimized(user_handle: str, user_id: str = Depends(get_current_user)):
     """
     OPTIMIZED competitor discovery using direct following comparison.
 
@@ -1584,8 +1765,8 @@ async def discover_competitors_optimized(user_id: str, user_handle: str):
         }
 
 
-@app.post("/api/social-graph/discover-followers/{user_id}")
-async def discover_competitors_from_followers(user_id: str, user_handle: str):
+@app.post("/api/social-graph/discover-followers")
+async def discover_competitors_from_followers(user_handle: str, user_id: str = Depends(get_current_user)):
     """
     FOLLOWER-BASED competitor discovery - analyzes YOUR followers instead of who you follow.
 
@@ -1664,8 +1845,8 @@ async def discover_competitors_from_followers(user_id: str, user_handle: str):
         }
 
 
-@app.post("/api/social-graph/discover-native/{user_id}")
-async def discover_competitors_native(user_id: str, user_handle: str):
+@app.post("/api/social-graph/discover-native")
+async def discover_competitors_native(user_handle: str, user_id: str = Depends(get_current_user)):
     """
     X NATIVE competitor discovery - uses X's "Followed by" feature.
 
@@ -1763,8 +1944,8 @@ async def discover_competitors_native(user_id: str, user_handle: str):
         }
 
 
-@app.post("/api/social-graph/discover/{user_id}")
-async def discover_competitors(user_id: str, user_handle: str):
+@app.post("/api/social-graph/discover")
+async def discover_competitors(user_handle: str, user_id: str = Depends(get_current_user)):
     """Standard competitor discovery with cancellation support"""
 
     # CRITICAL: Fail early if store is not available - prevents data loss!
@@ -1799,20 +1980,27 @@ async def discover_competitors(user_id: str, user_handle: str):
         print(f"🕸️ Starting competitor discovery for @{user_handle} (user: {user_id})")
 
         # Check if user has cookies injected (check extension backend)
+        # SECURITY: MUST filter by authenticated user_id to prevent cross-user data leakage
         import aiohttp
         async with aiohttp.ClientSession() as session:
             async with session.get(f"{EXTENSION_BACKEND_URL}/status") as resp:
                 status_data = await resp.json()
                 user_with_cookies = None
+                print(f"🔐 [MULTI-TENANCY] discover_competitors: Looking for cookies for user: {user_id}")
                 for user_info in status_data.get("users_with_info", []):
-                    if user_info.get("hasCookies") and user_info.get("username"):
+                    user_info_id = user_info.get("userId")
+                    # SECURITY: Only accept cookies belonging to the authenticated user
+                    if user_info_id == user_id and user_info.get("hasCookies") and user_info.get("username"):
                         user_with_cookies = user_info
+                        print(f"✅ [MULTI-TENANCY] Found cookies for authenticated user: {user_info_id} (@{user_info.get('username')})")
                         break
+                    elif user_info.get("hasCookies"):
+                        print(f"⚠️ [MULTI-TENANCY] Skipping cookies for different user: {user_info_id} (@{user_info.get('username')})")
 
                 if not user_with_cookies:
                     return {
                         "success": False,
-                        "error": "No X account connected. Please connect your X account via the Chrome extension first.",
+                        "error": f"No X account connected for your account. Please connect your X account via the Chrome extension first. (Looking for user: {user_id})",
                         "message": "❌ Please inject your X cookies before discovery"
                     }
 
@@ -1847,8 +2035,8 @@ async def discover_competitors(user_id: str, user_handle: str):
         }
 
 
-@app.post("/api/social-graph/analyze-content/{user_id}")
-async def analyze_competitor_content(user_id: str):
+@app.post("/api/social-graph/analyze-content")
+async def analyze_competitor_content(user_id: str = Depends(get_current_user)):
     """
     Scrape and analyze content from discovered competitors.
     This adds topic clustering to the social graph.
@@ -1910,7 +2098,8 @@ async def _release_redis_lock(redis_client, lock_key: str, request_id: str, user
 async def scrape_competitor_posts(
     user_id: str,
     force_rescrape: bool = Query(False),
-    request: Request = None
+    request: Request = None,
+    auth_user_id: str = Depends(get_current_user)
 ):
     """
     Scrape posts for all competitors that don't have posts yet.
@@ -1923,6 +2112,10 @@ async def scrape_competitor_posts(
     Returns:
         Updated graph with posts scraped
     """
+    # SECURITY: Verify path user_id matches authenticated user
+    if user_id != auth_user_id:
+        raise HTTPException(status_code=403, detail="Access denied")
+
     try:
         print(f"🔍 force_rescrape parameter value: {force_rescrape}")
 
@@ -2169,8 +2362,8 @@ async def scrape_competitor_posts(
         }
 
 
-@app.post("/api/social-graph/refilter/{user_id}")
-async def refilter_competitors(user_id: str, min_threshold: int = 50):
+@app.post("/api/social-graph/refilter")
+async def refilter_competitors(min_threshold: int = 50, user_id: str = Depends(get_current_user)):
     """
     Re-filter existing graph data with a new threshold.
     No re-scraping needed!
@@ -2235,7 +2428,7 @@ async def refilter_competitors(user_id: str, min_threshold: int = 50):
 
 
 @app.post("/api/social-graph/insights/{user_id}")
-async def generate_content_insights(user_id: str):
+async def generate_content_insights(user_id: str, auth_user_id: str = Depends(get_current_user)):
     """
     Analyze competitor posts to extract patterns and generate content suggestions.
 
@@ -2251,6 +2444,10 @@ async def generate_content_insights(user_id: str):
     Returns:
         Content insights with patterns, suggestions, and benchmarks
     """
+    # SECURITY: Verify path user_id matches authenticated user
+    if user_id != auth_user_id:
+        raise HTTPException(status_code=403, detail="Access denied")
+
     try:
         from content_insights_analyzer import ContentInsightsAnalyzer
         from social_graph_scraper import SocialGraphBuilder
@@ -2309,7 +2506,7 @@ async def generate_content_insights(user_id: str):
 
 
 @app.get("/api/social-graph/insights/{user_id}")
-async def get_content_insights(user_id: str):
+async def get_content_insights(user_id: str, auth_user_id: str = Depends(get_current_user)):
     """
     Get cached content insights if available.
 
@@ -2319,6 +2516,10 @@ async def get_content_insights(user_id: str):
     Returns:
         Cached content insights or null
     """
+    # SECURITY: Verify path user_id matches authenticated user
+    if user_id != auth_user_id:
+        raise HTTPException(status_code=403, detail="Access denied")
+
     try:
         if not store:
             return {"success": False, "insights": None, "error": "Store not initialized"}
@@ -2349,6 +2550,7 @@ async def get_content_insights(user_id: str):
 async def calculate_relevancy_scores(
     user_id: str,
     user_handle: str,
+    auth_user_id: str = Depends(get_current_user),
     batch_size: int = 20,
     overlap_weight: float = 0.4,
     relevancy_weight: float = 0.6
@@ -2366,6 +2568,10 @@ async def calculate_relevancy_scores(
     Returns:
         Updated graph data with relevancy_score, quality_score, and progress info
     """
+    # SECURITY: Verify path user_id matches authenticated user
+    if user_id != auth_user_id:
+        raise HTTPException(status_code=403, detail="Access denied")
+
     try:
         from competitor_relevancy_scorer import add_relevancy_scores
         from social_graph_scraper import SocialGraphBuilder
@@ -2443,8 +2649,12 @@ async def calculate_relevancy_scores(
 
 
 @app.post("/api/social-graph/reset-relevancy/{user_id}")
-async def reset_relevancy_analysis(user_id: str):
+async def reset_relevancy_analysis(user_id: str, auth_user_id: str = Depends(get_current_user)):
     """Reset relevancy analysis state to re-analyze all competitors from scratch"""
+    # SECURITY: Verify path user_id matches authenticated user
+    if user_id != auth_user_id:
+        raise HTTPException(status_code=403, detail="Access denied")
+
     try:
         from competitor_relevancy_scorer import CompetitorRelevancyScorer
 
@@ -2472,8 +2682,8 @@ async def reset_relevancy_analysis(user_id: str):
         }
 
 
-@app.get("/api/social-graph/{user_id}")
-async def get_social_graph(user_id: str):
+@app.get("/api/social-graph")
+async def get_social_graph(user_id: str = Depends(get_current_user)):
     """
     Get the stored social graph for a user.
 
@@ -2516,8 +2726,8 @@ async def get_social_graph(user_id: str):
         }
 
 
-@app.get("/api/competitors/{user_id}")
-async def list_competitors(user_id: str, limit: int = 50):
+@app.get("/api/competitors")
+async def list_competitors(limit: int = 50, user_id: str = Depends(get_current_user)):
     """
     List all discovered competitors for a user.
 
@@ -2549,8 +2759,8 @@ async def list_competitors(user_id: str, limit: int = 50):
         }
 
 
-@app.get("/api/competitor/{user_id}/{username}")
-async def get_competitor(user_id: str, username: str):
+@app.get("/api/competitor/{username}")
+async def get_competitor(username: str, user_id: str = Depends(get_current_user)):
     """
     Get details for a specific competitor.
 
@@ -2699,36 +2909,51 @@ async def activity_websocket(websocket: WebSocket, user_id: str):
         except:
             pass
 
-async def _inject_cookies_internal(extension_user_id: str, clerk_user_id: str) -> dict:
+async def _inject_cookies_internal(user_id: str, _deprecated_clerk_user_id: str = None) -> dict:
     """
     Internal helper to inject cookies into a user's VNC session.
     This can be called both from HTTP endpoints and internal functions.
+
+    Note: The second parameter is deprecated - extension and clerk user IDs are always the same
+    (the extension connects using the Clerk user ID from the dashboard).
     """
     import aiohttp
 
-    print(f"🔐 Clerk user: {clerk_user_id}, Extension user: {extension_user_id}")
+    # Use the single user_id for everything (they're always the same)
+    if _deprecated_clerk_user_id and _deprecated_clerk_user_id != user_id:
+        print(f"⚠️ [Cookie Injection] WARNING: Different IDs passed but they should be the same. Using: {user_id}")
 
-    # Get the user's VNC session from Redis
+    print(f"🔐 [Cookie Injection] User: {user_id}")
+    print(f"🔍 [Cookie Injection] Looking up VNC session for user: {user_id}")
+
+    # Get or create the user's VNC session from Redis
     vnc_manager = await get_vnc_manager()
-    vnc_session = await vnc_manager.get_session(clerk_user_id)
+    vnc_session = await vnc_manager.get_session(user_id)
+    print(f"🔍 [Cookie Injection] VNC session lookup result: {vnc_session is not None}")
 
     if not vnc_session or not vnc_session.get("https_url"):
-        print(f"❌ No VNC session found for Clerk user {clerk_user_id}")
-        return {"success": False, "error": "No VNC session found. Please load the VNC viewer first."}
+        print(f"⚠️ No VNC session found for user {user_id}, creating new session...")
+        try:
+            # Auto-create VNC session for the user
+            vnc_session = await vnc_manager.get_or_create_session(user_id)
+            print(f"✅ Created new VNC session for user {user_id}")
+        except Exception as e:
+            print(f"❌ Failed to create VNC session: {e}")
+            return {"success": False, "error": f"Failed to create VNC session: {str(e)}"}
 
     vnc_service_url = vnc_session.get("https_url")
     print(f"✅ Found VNC session at: {vnc_service_url}")
 
     # Fetch cookies from extension backend
     cookie_data = None
-    print(f"🔍 Looking for cookies for extension user: {extension_user_id}")
+    print(f"🔍 Looking for cookies for user: {user_id}")
 
-    if extension_user_id not in user_cookies:
+    if user_id not in user_cookies:
         # Fetch from extension backend
         print(f"   Fetching from extension backend...")
         try:
             async with aiohttp.ClientSession() as session:
-                async with session.get(f'{EXTENSION_BACKEND_URL}/cookies/{extension_user_id}', timeout=aiohttp.ClientTimeout(total=5)) as resp:
+                async with session.get(f'{EXTENSION_BACKEND_URL}/cookies/{user_id}', timeout=aiohttp.ClientTimeout(total=5)) as resp:
                     print(f"   Extension backend response status: {resp.status}")
                     if resp.status == 200:
                         ext_data = await resp.json()
@@ -2749,10 +2974,10 @@ async def _inject_cookies_internal(extension_user_id: str, clerk_user_id: str) -
             traceback.print_exc()
 
         if not cookie_data:
-            print(f"❌ No cookie data found for {extension_user_id}")
+            print(f"❌ No cookie data found for {user_id}")
             return {"success": False, "error": "No cookies found for this user"}
     else:
-        cookie_data = user_cookies[extension_user_id]
+        cookie_data = user_cookies[user_id]
 
     if not cookie_data:
         return {"success": False, "error": "No cookies found for this user"}
@@ -2954,20 +3179,23 @@ async def extension_websocket(websocket: WebSocket, user_id: str):
             del active_connections[user_id]
 
 @app.post("/api/scrape-posts-docker")
-async def scrape_posts_docker(data: dict):
+async def scrape_posts_docker(
+    data: dict,
+    clerk_user_id: str = Depends(get_current_user)
+):
     """
-    Use Docker VNC browser to scrape user's X posts (doesn't disturb user)
+    Use Docker VNC browser to scrape authenticated user's X posts (doesn't disturb user)
     Optimized: Only scrapes if new posts are available
     """
     import aiohttp
-    
-    user_id = data.get("user_id", "default_user")  # Extension/Docker user ID
-    clerk_user_id = data.get("clerk_user_id", user_id)  # Clerk user ID for WebSocket and Store
+
+    # SECURITY: Use ONLY authenticated Clerk user ID, ignore any user_id from request body
     target_count = data.get("targetCount", 50)
+    force_full_import = data.get("forceFullImport", False)  # Skip optimization if true
     min_posts_threshold = 30  # Minimum posts we want to have
-    
-    print(f"🔍 Scraping for extension user_id: {user_id}")
-    print(f"📡 WebSocket/Store user_id (Clerk): {clerk_user_id}")
+
+    print(f"🔍 Scraping for authenticated Clerk user: {clerk_user_id}")
+    print(f"📊 Force full import: {force_full_import}")
     print(f"📊 Active WebSocket connections: {list(active_connections.keys())}")
     
     # Check existing posts in store using CLERK user ID (consistent with where posts are saved)
@@ -2979,25 +3207,27 @@ async def scrape_posts_docker(data: dict):
         
         print(f"📚 Found {existing_count} existing posts in store")
         
-        # If we have enough posts, check if we need to update
-        if existing_count >= min_posts_threshold:
+        # If we have enough posts, check if we need to update (unless force full import)
+        if existing_count >= min_posts_threshold and not force_full_import:
             # Get the most recent post (by timestamp)
             if existing_posts:
                 sorted_posts = sorted(
-                    existing_posts, 
-                    key=lambda x: x.get('timestamp', ''), 
+                    existing_posts,
+                    key=lambda x: x.get('timestamp', ''),
                     reverse=True
                 )
                 most_recent_post = sorted_posts[0]
                 most_recent_content = most_recent_post.get('content', '')[:100]
-                
+
                 print(f"🔍 Most recent stored post: {most_recent_content}...")
                 print(f"   Will check if new posts exist by comparing first post only")
-                
+
                 # Only scrape 1 post to check if it's new
                 # If the first post matches our most recent, we're up to date
                 target_count = 1  # Only check the very first post
                 print(f"   📉 Reduced target to {target_count} for quick update check")
+        elif force_full_import:
+            print(f"🔄 Force full import requested - skipping optimization, will scrape {target_count} posts")
         else:
             print(f"⚠️ Only {existing_count} posts (< {min_posts_threshold}), will do full scrape")
             
@@ -3008,6 +3238,7 @@ async def scrape_posts_docker(data: dict):
     
     try:
         # Get username AND user_id with cookies from extension backend
+        # SECURITY: MUST filter by authenticated clerk_user_id to prevent cross-user data leakage
         username = None
         extension_user_id = None
         async with aiohttp.ClientSession() as session:
@@ -3015,19 +3246,25 @@ async def scrape_posts_docker(data: dict):
                 async with session.get(f"{EXTENSION_BACKEND_URL}/status") as resp:
                     status_data = await resp.json()
                     if status_data.get("users_with_info"):
+                        print(f"🔐 [MULTI-TENANCY] Looking for cookies belonging to authenticated user: {clerk_user_id}")
                         for user_info in status_data["users_with_info"]:
-                            if user_info.get("username") and user_info.get("hasCookies"):
+                            user_info_id = user_info.get("userId")
+                            # SECURITY: Only use cookies belonging to the AUTHENTICATED user
+                            if user_info_id == clerk_user_id and user_info.get("username") and user_info.get("hasCookies"):
                                 username = user_info["username"]
                                 extension_user_id = user_info["userId"]
-                                print(f"✅ Found user with cookies: {extension_user_id} (@{username})")
+                                print(f"✅ [MULTI-TENANCY] Found cookies for authenticated user: {extension_user_id} (@{username})")
                                 break
+                            elif user_info.get("hasCookies"):
+                                print(f"⚠️ [MULTI-TENANCY] Skipping cookies for different user: {user_info_id} (@{user_info.get('username')}) - not authenticated user")
             except Exception as e:
                 print(f"⚠️ Could not fetch username from extension backend: {e}")
-        
+
         if not username or not extension_user_id:
+            print(f"❌ [MULTI-TENANCY] No cookies found for authenticated user {clerk_user_id}")
             return {
                 "success": False,
-                "error": "No X account connected. Please connect your X account first."
+                "error": f"No X account connected for your account. Please connect your X account first. (Looking for user: {clerk_user_id})"
             }
         
         print(f"📝 Scraping posts for @{username} using Docker VNC browser...")
@@ -3151,11 +3388,7 @@ async def scrape_posts_docker(data: dict):
                     # Send progress update to user's WebSocket if connected
                     # Use clerk_user_id for WebSocket connection
                     websocket = active_connections.get(clerk_user_id)
-                    if not websocket and active_connections:
-                        # Fallback: use the first connected user (likely the current user)
-                        websocket = list(active_connections.values())[0]
-                        print(f"   ⚠️ Using fallback WebSocket (user_id mismatch)")
-                    
+
                     if websocket:
                         try:
                             await websocket.send_json({
@@ -3168,7 +3401,7 @@ async def scrape_posts_docker(data: dict):
                         except Exception as ws_err:
                             print(f"   ⚠️ Failed to send WebSocket update: {ws_err}")
                     else:
-                        print(f"   ⚠️ No WebSocket connection found for user {user_id}")
+                        print(f"   ⚠️ No WebSocket connection found for user {clerk_user_id}")
                     
                     # Check if we're stuck (no new posts)
                     if unique_count == last_count:
@@ -3231,15 +3464,15 @@ async def scrape_posts_docker(data: dict):
         # Check against LangGraph Store (more reliable than in-memory)
         existing_store_contents = {p.get("content") for p in existing_posts}
         new_posts = [p for p in posts if p.get("content") not in existing_store_contents]
-        
-        # Also update in-memory cache
-        if user_id not in user_posts:
-            user_posts[user_id] = []
-        
-        existing_contents = {p.get("content") for p in user_posts[user_id]}
+
+        # Also update in-memory cache (using clerk_user_id)
+        if clerk_user_id not in user_posts:
+            user_posts[clerk_user_id] = []
+
+        existing_contents = {p.get("content") for p in user_posts[clerk_user_id]}
         for post in new_posts:
             if post.get("content") not in existing_contents:
-                user_posts[user_id].append(post)
+                user_posts[clerk_user_id].append(post)
         
         print(f"✅ Found {len(new_posts)} new posts out of {len(posts)} scraped for @{username}")
         
@@ -3254,17 +3487,17 @@ async def scrape_posts_docker(data: dict):
                     await websocket.send_json({
                         "type": "IMPORT_COMPLETE",
                         "imported": 0,
-                        "total": len(user_posts[user_id]),
+                        "total": len(user_posts[clerk_user_id]),
                         "username": username,
                         "message": "Already up to date! No new posts found."
                     })
                 except Exception as ws_err:
                     print(f"   ⚠️ Failed to send message: {ws_err}")
-            
+
             return {
                 "success": True,
                 "imported": 0,
-                "total": len(user_posts[user_id]),
+                "total": len(user_posts[clerk_user_id]),
                 "username": username,
                 "message": "Already up to date"
             }
@@ -3338,26 +3571,23 @@ async def scrape_posts_docker(data: dict):
         
         # Send completion message to user's WebSocket
         websocket = active_connections.get(clerk_user_id)
-        if not websocket and active_connections:
-            websocket = list(active_connections.values())[0]
-            print(f"   ⚠️ Using fallback WebSocket for completion message")
-        
+
         if websocket:
             try:
                 await websocket.send_json({
                     "type": "IMPORT_COMPLETE",
                     "imported": len(new_posts),
-                    "total": len(user_posts[user_id]),
+                    "total": len(user_posts[clerk_user_id]),
                     "username": username
                 })
                 print(f"   📤 Sent completion message")
             except Exception as ws_err:
                 print(f"   ⚠️ Failed to send completion message: {ws_err}")
-        
+
         return {
             "success": True,
             "imported": len(new_posts),
-            "total": len(user_posts[user_id]),
+            "total": len(user_posts[clerk_user_id]),
             "username": username
         }
         
@@ -3381,30 +3611,161 @@ async def scrape_posts_docker(data: dict):
             "error": str(e)
         }
 
+@app.get("/api/debug/check-stored-posts")
+async def debug_check_stored_posts(
+    user_id: str = Depends(get_current_user)
+):
+    """
+    DEBUG: Check what posts are stored for the authenticated user
+    """
+    from langgraph.store.postgres import PostgresStore
+
+    conn_string = os.environ.get("POSTGRES_URI") or os.environ.get("DATABASE_URL") or "postgresql://postgres:password@localhost:5433/xgrowth"
+
+    with PostgresStore.from_conn_string(conn_string) as store:
+        posts_namespace = (user_id, "writing_samples")
+        stored_posts = list(store.search(posts_namespace, limit=10))
+
+        return {
+            "success": True,
+            "clerk_user_id": user_id,
+            "total_posts_found": len(stored_posts),
+            "sample_posts": [
+                {
+                    "content": p.value.get("content", "")[:200],
+                    "user_id": p.value.get("user_id"),
+                    "timestamp": p.value.get("timestamp")
+                }
+                for p in stored_posts[:5]
+            ]
+        }
+
+@app.delete("/api/debug/delete-all-posts")
+async def debug_delete_all_posts(
+    user_id: str = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    DEBUG: Delete ALL posts stored for the authenticated user from BOTH storage locations
+    WARNING: This is irreversible!
+
+    Deletes from:
+    1. LangGraph Store (writing_samples namespace) - used for AI style learning
+    2. Postgres UserPost table - used for post count/metadata
+    """
+    from langgraph.store.postgres import PostgresStore
+    from database.models import UserPost
+
+    conn_string = os.environ.get("POSTGRES_URI") or os.environ.get("DATABASE_URL") or "postgresql://postgres:password@localhost:5433/xgrowth"
+
+    # ============= DELETE FROM LANGGRAPH STORE =============
+    langgraph_deleted = 0
+    with PostgresStore.from_conn_string(conn_string) as store:
+        posts_namespace = (user_id, "writing_samples")
+
+        # Get ALL posts without limit
+        all_posts = list(store.search(posts_namespace, limit=10000))
+
+        # Delete each one
+        for post in all_posts:
+            store.delete(posts_namespace, post.key)
+            langgraph_deleted += 1
+
+        print(f"🗑️ Deleted {langgraph_deleted} posts from LangGraph store for user_id: {user_id}")
+
+    # ============= DELETE FROM POSTGRES DATABASE =============
+    postgres_deleted = 0
+    try:
+        # Get all X accounts for this user
+        x_accounts = db.query(XAccount).filter(XAccount.user_id == user_id).all()
+
+        for x_account in x_accounts:
+            # Delete all UserPosts for this X account
+            posts_to_delete = db.query(UserPost).filter(UserPost.x_account_id == x_account.id).all()
+            postgres_deleted += len(posts_to_delete)
+
+            for post in posts_to_delete:
+                db.delete(post)
+
+            print(f"🗑️ Deleted {len(posts_to_delete)} posts from Postgres for @{x_account.username}")
+
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        print(f"❌ Error deleting from Postgres: {e}")
+
+    return {
+        "success": True,
+        "clerk_user_id": user_id,
+        "langgraph_deleted": langgraph_deleted,
+        "postgres_deleted": postgres_deleted,
+        "total_deleted": langgraph_deleted + postgres_deleted,
+        "message": f"Deleted {langgraph_deleted} from LangGraph + {postgres_deleted} from Postgres = {langgraph_deleted + postgres_deleted} total posts"
+    }
+
 @app.post("/api/import-posts")
-async def import_posts(data: dict):
+async def import_posts(
+    data: dict,
+    user_id: str = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
     """
-    Import user's X posts for writing style learning
+    Import authenticated user's X posts for writing style learning
+
+    SECURITY: Validates that posts being imported match the user's connected X account
     """
-    user_id = data.get("user_id", "default_user")
+    # Use authenticated user_id instead of untrusted data
     posts = data.get("posts", [])
-    
+    x_handle_from_request = data.get("x_handle")  # X handle from the extension
+
     if not posts:
         return {
             "success": False,
             "error": "No posts provided"
         }
-    
+
+    # ==================== SECURITY CHECK ====================
+    # Verify that the X handle matches the authenticated user's connected account
+    x_account = db.query(XAccount).filter(
+        XAccount.user_id == user_id,
+        XAccount.is_connected == True
+    ).first()
+
+    if x_account:
+        # User has a connected X account - verify it matches
+        if x_handle_from_request and x_handle_from_request.lower() != x_account.username.lower():
+            print(f"⚠️ SECURITY ALERT: User {user_id} attempted to import posts from @{x_handle_from_request}")
+            print(f"   But their connected X account is @{x_account.username}")
+            return {
+                "success": False,
+                "error": f"Security Error: You are trying to import posts from @{x_handle_from_request}, but your connected account is @{x_account.username}. Please import posts from your own account only."
+            }
+        print(f"✅ Security check passed: Importing posts for @{x_account.username} (user_id: {user_id})")
+    else:
+        # No X account in database yet - this might be first import
+        # Store the handle for future reference
+        if x_handle_from_request:
+            print(f"⚠️ No X account found for user {user_id}, importing posts for @{x_handle_from_request}")
+            print(f"   Creating X account entry...")
+            x_account = XAccount(
+                user_id=user_id,
+                username=x_handle_from_request,
+                is_connected=True
+            )
+            db.add(x_account)
+            db.commit()
+    # ========================================================
+
     # Store posts for this user
     if user_id not in user_posts:
         user_posts[user_id] = []
-    
+
     # Add new posts (avoid duplicates by content)
     existing_contents = {p.get("content") for p in user_posts[user_id]}
     new_posts = [p for p in posts if p.get("content") not in existing_contents]
     user_posts[user_id].extend(new_posts)
-    
-    print(f"✅ Imported {len(new_posts)} posts for user {user_id}")
+
+    print(f"✅ Imported {len(new_posts)} posts for user {user_id} (@{x_handle_from_request or 'unknown'})")
     print(f"📊 Total posts for {user_id}: {len(user_posts[user_id])}")
     
     # Store in LangGraph Store with embeddings for persistent memory
@@ -3443,14 +3804,13 @@ async def import_posts(data: dict):
     }
 
 @app.post("/api/automate/like-post")
-async def like_post(data: dict):
+async def like_post(data: dict, user_id: str = Depends(get_current_user)):
     """
     Endpoint called by your dashboard
     Forwards command to extension
     """
-    user_id = data.get("user_id")
     post_url = data.get("post_url")
-    
+
     if user_id not in active_connections:
         return {
             "success": False,
@@ -3472,11 +3832,10 @@ async def like_post(data: dict):
     }
 
 @app.post("/api/automate/follow-user")
-async def follow_user(data: dict):
+async def follow_user(data: dict, user_id: str = Depends(get_current_user)):
     """Follow a user"""
-    user_id = data.get("user_id")
     username = data.get("username")
-    
+
     if user_id not in active_connections:
         return {"success": False, "error": "Extension not connected"}
     
@@ -3489,9 +3848,8 @@ async def follow_user(data: dict):
     return {"success": True, "message": "Command sent to extension"}
 
 @app.post("/api/automate/comment-on-post")
-async def comment_on_post(data: dict):
+async def comment_on_post(data: dict, user_id: str = Depends(get_current_user)):
     """Comment on a post"""
-    user_id = data.get("user_id")
     post_url = data.get("post_url")
     comment_text = data.get("comment_text")
     
@@ -3527,7 +3885,7 @@ class UpdateScheduledPostRequest(BaseModel):
 
 @app.get("/api/scheduled-posts")
 async def get_scheduled_posts(
-    user_id: str,
+    user_id: str = Depends(get_current_user),
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
     db: Session = Depends(get_db)
@@ -3586,13 +3944,15 @@ async def get_scheduled_posts(
 @app.post("/api/scheduled-posts")
 async def create_scheduled_post(
     request: CreateScheduledPostRequest,
+    user_id: str = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """Create a new scheduled post"""
     try:
+        # SECURITY: Use authenticated user_id instead of request
         # Get user's primary X account
         x_account = db.query(XAccount).filter(
-            XAccount.user_id == request.user_id,
+            XAccount.user_id == user_id,
             XAccount.is_connected == True
         ).first()
 
@@ -3636,14 +3996,27 @@ async def create_scheduled_post(
 async def update_scheduled_post(
     post_id: int,
     request: UpdateScheduledPostRequest,
+    user_id: str = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """Update an existing scheduled post"""
     try:
-        post = db.query(ScheduledPost).filter(ScheduledPost.id == post_id).first()
+        # SECURITY: Verify post belongs to user before allowing update
+        post = (
+            db.query(ScheduledPost)
+            .join(XAccount, ScheduledPost.x_account_id == XAccount.id)
+            .filter(
+                ScheduledPost.id == post_id,
+                XAccount.user_id == user_id  # CRITICAL: Verify ownership
+            )
+            .first()
+        )
 
         if not post:
-            raise HTTPException(status_code=404, detail="Post not found")
+            raise HTTPException(
+                status_code=404,
+                detail="Post not found or access denied"  # Don't reveal if post exists
+            )
 
         old_status = post.status
         needs_rescheduling = False
@@ -3730,14 +4103,27 @@ async def update_scheduled_post(
 @app.delete("/api/scheduled-posts/{post_id}")
 async def delete_scheduled_post(
     post_id: int,
+    user_id: str = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """Delete a scheduled post"""
     try:
-        post = db.query(ScheduledPost).filter(ScheduledPost.id == post_id).first()
+        # SECURITY: Verify post belongs to user before allowing deletion
+        post = (
+            db.query(ScheduledPost)
+            .join(XAccount, ScheduledPost.x_account_id == XAccount.id)
+            .filter(
+                ScheduledPost.id == post_id,
+                XAccount.user_id == user_id  # CRITICAL: Verify ownership
+            )
+            .first()
+        )
 
         if not post:
-            raise HTTPException(status_code=404, detail="Post not found")
+            raise HTTPException(
+                status_code=404,
+                detail="Post not found or access denied"  # Don't reveal if post exists
+            )
 
         # Cancel scheduled job if post was scheduled
         if post.status == "scheduled":
@@ -3759,29 +4145,47 @@ async def delete_scheduled_post(
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/upload")
-async def upload_media(file: UploadFile = File(...)):
+async def upload_media(
+    user_id: str = Depends(get_current_user), file: UploadFile = File(...)):
     """
-    Upload media file (image/video) for scheduled post
-    Saves to local uploads directory (in production would use S3/Cloudinary)
+    Upload media file (image/video) to Google Cloud Storage.
+    Returns a public URL for the uploaded file.
     """
     try:
-        # Create uploads directory if it doesn't exist
-        upload_dir = "uploads/media"
-        os.makedirs(upload_dir, exist_ok=True)
+        import uuid
+        from google.cloud import storage
 
         # Generate unique filename
-        import uuid
-        file_extension = os.path.splitext(file.filename)[1]
+        file_extension = os.path.splitext(file.filename)[1] if file.filename else ".bin"
         unique_filename = f"{uuid.uuid4()}{file_extension}"
-        file_path = os.path.join(upload_dir, unique_filename)
 
-        # Save file
-        with open(file_path, "wb") as buffer:
-            content = await file.read()
-            buffer.write(content)
+        # Read file content as bytes
+        content = await file.read()
 
-        # Return URL (in production this would be S3/Cloudinary URL)
-        file_url = f"/uploads/media/{unique_filename}"
+        # Debug: Check if file is corrupted on arrival
+        if len(content) > 0:
+            first_bytes = content[:4].hex()
+            print(f"[UPLOAD DEBUG] First 4 bytes: {first_bytes}, size: {len(content)}")
+
+        # Upload to GCS
+        gcs_bucket = os.getenv("GCS_BUCKET", "parallel-universe-prod-assets")
+        gcp_project = os.getenv("GCP_PROJECT", "parallel-universe-prod")
+
+        client = storage.Client(project=gcp_project)
+        bucket = client.bucket(gcs_bucket)
+
+        # Store in user-specific path
+        blob_path = f"uploads/{user_id}/{unique_filename}"
+        blob = bucket.blob(blob_path)
+
+        # Upload raw bytes directly
+        blob.upload_from_string(
+            content,
+            content_type=file.content_type or "application/octet-stream"
+        )
+
+        # Bucket has uniform bucket-level access with public read, so construct URL directly
+        file_url = f"https://storage.googleapis.com/{gcs_bucket}/{blob_path}"
 
         return {
             "success": True,
@@ -3799,40 +4203,56 @@ async def upload_media(file: UploadFile = File(...)):
 
 @app.post("/api/scheduled-posts/generate-ai")
 async def generate_ai_content(
-    user_id: str,
+    request: Request,
+    clerk_user_id: str = Depends(get_current_user),
     count: int = 7,  # Always generate 7 for the week
     db: Session = Depends(get_db)
 ):
     """
     Generate weekly AI content using the Weekly Content Generator Agent
 
+    IMPORTANT: Uses authenticated clerk_user_id from JWT token for multi-tenancy isolation
+
     This uses LangGraph to:
     1. Analyze user's writing style from imported posts
     2. Analyze high-quality competitor posts
-    3. Conduct web research with Perplexity API
+    3. Conduct web research with Anthropic's built-in web search (latest trends, insights, gaps)
     4. Strategize content for growth
-    5. Generate 7 posts for next week
+    5. Generate 7 posts for next week in user's exact writing style
     """
     try:
+        # ==================== SECURITY AUDIT LOGGING ====================
+        print("=" * 80)
+        print("🔒 SECURITY AUDIT: AI Content Generation Request")
+        print("=" * 80)
+        print(f"📋 Request URL: {request.url}")
+        print(f"📋 Query Params: {dict(request.query_params)}")
+        print(f"🔐 Authenticated clerk_user_id from JWT: {clerk_user_id}")
+        print(f"📊 Count parameter: {count}")
+        print("=" * 80)
+        # ================================================================
+
         from weekly_content_generator import generate_weekly_content
         from langgraph.store.postgres import PostgresStore
 
         # Get user's X account to get username
         x_account = db.query(XAccount).filter(
-            XAccount.user_id == user_id,
+            XAccount.user_id == clerk_user_id,
             XAccount.is_connected == True
         ).first()
 
         if x_account:
             user_handle = x_account.username
+            print(f"✅ Found X account in database: @{user_handle} for clerk_user_id: {clerk_user_id}")
         else:
             # Fallback: Try to get username from social graph data
-            print("⚠️  No X account found, trying to get username from social graph...")
-            conn_string = os.getenv("POSTGRES_CONNECTION_STRING",
-                                   "postgresql://postgres:password@localhost:5433/xgrowth")
+            print(f"⚠️  No X account found for clerk_user_id: {clerk_user_id}, trying social graph...")
+            # Use same DB_URI as main store connection (POSTGRES_URI or DATABASE_URL)
+            conn_string = os.environ.get("POSTGRES_URI") or os.environ.get("DATABASE_URL") or "postgresql://postgres:password@localhost:5433/xgrowth"
 
             with PostgresStore.from_conn_string(conn_string) as store:
-                graph_namespace = (user_id, "social_graph")
+                graph_namespace = (clerk_user_id, "social_graph")
+                print(f"🔍 Looking up social graph with namespace: {graph_namespace}")
                 graph_item = (store.get(graph_namespace, "graph_data") or
                             store.get(graph_namespace, "latest") or
                             store.get(graph_namespace, "current"))
@@ -3841,13 +4261,15 @@ async def generate_ai_content(
                     user_handle = graph_item.value.get("user_handle")
                     print(f"✅ Found username from social graph: @{user_handle}")
                 else:
+                    print(f"❌ Could not find user_handle in social graph for clerk_user_id: {clerk_user_id}")
                     raise HTTPException(status_code=404, detail="Could not determine user's X handle")
 
-        print(f"🚀 Generating weekly content for @{user_handle}...")
+        print(f"🚀 GENERATING CONTENT - clerk_user_id: {clerk_user_id}, user_handle: @{user_handle}")
+        print(f"📝 This will use posts from @{user_handle}'s imported X posts ONLY")
 
-        # Run the weekly content generator agent
+        # Run the weekly content generator agent with AUTHENTICATED user_id
         generated_posts = await generate_weekly_content(
-            user_id=user_id,
+            user_id=clerk_user_id,
             user_handle=user_handle
         )
 
@@ -3858,9 +4280,20 @@ async def generate_ai_content(
 
         # Get or create x_account
         if not x_account:
+            # Ensure user exists in database (in case webhook hasn't run yet)
+            user = db.query(User).filter(User.id == clerk_user_id).first()
+            if not user:
+                user = User(
+                    id=clerk_user_id,
+                    email=f"{clerk_user_id}@temp.com"  # Temporary email, will be updated by webhook
+                )
+                db.add(user)
+                db.commit()
+                print(f"✅ Created user {clerk_user_id} in database")
+
             # Create a temporary x_account entry if it doesn't exist
             x_account = XAccount(
-                user_id=user_id,
+                user_id=clerk_user_id,
                 username=user_handle,
                 is_connected=True
             )
@@ -3948,13 +4381,23 @@ async def create_cron_job(
             db.commit()
             print(f"✅ Created user {user_id} in database")
 
+        # Validate that at least workflow_id OR custom_prompt is provided
+        workflow_id = request.get("workflow_id")
+        custom_prompt = request.get("custom_prompt")
+
+        if not workflow_id and not custom_prompt:
+            raise HTTPException(
+                status_code=400,
+                detail="Either 'workflow_id' or 'custom_prompt' must be provided"
+            )
+
         # Create cron job in database
         cron_job = CronJob(
             user_id=user_id,
             name=request["name"],
             schedule=request["schedule"],
-            workflow_id=request.get("workflow_id"),
-            custom_prompt=request.get("custom_prompt"),
+            workflow_id=workflow_id,
+            custom_prompt=custom_prompt,
             input_config=request.get("input_config", {}),
             is_active=True
         )
@@ -4002,6 +4445,142 @@ async def list_cron_jobs(
         }
     except Exception as e:
         print(f"Error listing cron jobs: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.put("/api/cron-jobs/{cron_job_id}/pause")
+async def pause_cron_job(
+    cron_job_id: int,
+    user_id: str = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Pause a cron job (stops execution but keeps the job)"""
+    try:
+        from cron_job_executor import get_cron_executor
+
+        cron_job = db.query(CronJob).filter(
+            CronJob.id == cron_job_id,
+            CronJob.user_id == user_id
+        ).first()
+
+        if not cron_job:
+            raise HTTPException(status_code=404, detail="Cron job not found")
+
+        if not cron_job.is_active:
+            return {"message": "Cron job is already paused", "is_active": False}
+
+        # Remove from scheduler
+        executor = await get_cron_executor()
+        executor.cancel_cron_job(cron_job_id)
+
+        # Update database
+        cron_job.is_active = False
+        cron_job.updated_at = datetime.utcnow()
+        db.commit()
+
+        print(f"⏸️ Paused cron job {cron_job_id}: {cron_job.name}")
+        return {
+            "message": "Cron job paused successfully",
+            "is_active": False,
+            "cron_job_id": cron_job_id
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error pausing cron job: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.put("/api/cron-jobs/{cron_job_id}/resume")
+async def resume_cron_job(
+    cron_job_id: int,
+    user_id: str = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Resume a paused cron job"""
+    try:
+        from cron_job_executor import get_cron_executor
+
+        cron_job = db.query(CronJob).filter(
+            CronJob.id == cron_job_id,
+            CronJob.user_id == user_id
+        ).first()
+
+        if not cron_job:
+            raise HTTPException(status_code=404, detail="Cron job not found")
+
+        if cron_job.is_active:
+            return {"message": "Cron job is already active", "is_active": True}
+
+        # Update database first
+        cron_job.is_active = True
+        cron_job.updated_at = datetime.utcnow()
+        db.commit()
+
+        # Re-schedule the job
+        executor = await get_cron_executor()
+        executor.schedule_cron_job(cron_job)
+
+        print(f"▶️ Resumed cron job {cron_job_id}: {cron_job.name}")
+        return {
+            "message": "Cron job resumed successfully",
+            "is_active": True,
+            "cron_job_id": cron_job_id,
+            "next_run_at": cron_job.next_run_at.isoformat() if cron_job.next_run_at else None
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error resuming cron job: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.put("/api/cron-jobs/{cron_job_id}/toggle")
+async def toggle_cron_job(
+    cron_job_id: int,
+    user_id: str = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Toggle a cron job's active status (pause if active, resume if paused)"""
+    try:
+        from cron_job_executor import get_cron_executor
+
+        cron_job = db.query(CronJob).filter(
+            CronJob.id == cron_job_id,
+            CronJob.user_id == user_id
+        ).first()
+
+        if not cron_job:
+            raise HTTPException(status_code=404, detail="Cron job not found")
+
+        executor = await get_cron_executor()
+
+        if cron_job.is_active:
+            # Pause: remove from scheduler
+            executor.cancel_cron_job(cron_job_id)
+            cron_job.is_active = False
+            action = "paused"
+            print(f"⏸️ Toggled OFF cron job {cron_job_id}: {cron_job.name}")
+        else:
+            # Resume: add back to scheduler
+            cron_job.is_active = True
+            executor.schedule_cron_job(cron_job)
+            action = "resumed"
+            print(f"▶️ Toggled ON cron job {cron_job_id}: {cron_job.name}")
+
+        cron_job.updated_at = datetime.utcnow()
+        db.commit()
+
+        return {
+            "message": f"Cron job {action} successfully",
+            "is_active": cron_job.is_active,
+            "cron_job_id": cron_job_id,
+            "next_run_at": cron_job.next_run_at.isoformat() if cron_job.next_run_at and cron_job.is_active else None
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error toggling cron job: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -4119,9 +4698,106 @@ async def get_scheduler_status(user_id: str = Depends(get_current_user)):
         }
 
 
+# ============================================================================
+# AUTOMATIONS API - Aliases for frontend compatibility
+# ============================================================================
+# Frontend uses /api/automations, backend uses /api/cron-jobs
+# These are aliases to support both naming conventions
+
+@app.get("/api/automations")
+async def list_automations(
+    user_id: str = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Get all automations for authenticated user (alias for /api/cron-jobs)"""
+    try:
+        cron_jobs = db.query(CronJob).filter(
+            CronJob.user_id == user_id
+        ).order_by(CronJob.created_at.desc()).all()
+
+        return {
+            "automations": [
+                {
+                    "id": job.id,
+                    "name": job.name,
+                    "schedule": job.schedule,
+                    "workflow_id": job.workflow_id,
+                    "is_active": job.is_active,
+                    "last_run_at": job.last_run_at.isoformat() if job.last_run_at else None,
+                    "created_at": job.created_at.isoformat()
+                }
+                for job in cron_jobs
+            ]
+        }
+    except Exception as e:
+        print(f"Error listing automations: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/automations")
+async def create_automation(
+    request: dict,
+    user_id: str = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Create a new automation (alias for /api/cron-jobs)"""
+    return await create_cron_job(request, user_id, db)
+
+
+@app.delete("/api/automations/{automation_id}")
+async def delete_automation(
+    automation_id: int,
+    user_id: str = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Delete an automation (alias for /api/cron-jobs/{cron_job_id})"""
+    return await delete_cron_job(automation_id, user_id, db)
+
+
+@app.get("/api/automations/{automation_id}/runs")
+async def get_automation_runs(
+    automation_id: int,
+    limit: int = 10,
+    user_id: str = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Get runs for an automation (alias for /api/cron-jobs/{cron_job_id}/runs)"""
+    return await get_cron_job_runs(automation_id, limit, user_id, db)
+
+
+@app.put("/api/automations/{automation_id}/pause")
+async def pause_automation(
+    automation_id: int,
+    user_id: str = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Pause an automation (alias for /api/cron-jobs/{cron_job_id}/pause)"""
+    return await pause_cron_job(automation_id, user_id, db)
+
+
+@app.put("/api/automations/{automation_id}/resume")
+async def resume_automation(
+    automation_id: int,
+    user_id: str = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Resume an automation (alias for /api/cron-jobs/{cron_job_id}/resume)"""
+    return await resume_cron_job(automation_id, user_id, db)
+
+
+@app.put("/api/automations/{automation_id}/toggle")
+async def toggle_automation(
+    automation_id: int,
+    user_id: str = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Toggle an automation's active status (alias for /api/cron-jobs/{cron_job_id}/toggle)"""
+    return await toggle_cron_job(automation_id, user_id, db)
+
+
 @app.get("/api/scheduled-posts/ai-drafts")
 async def get_ai_drafts(
-    user_id: str,
+    user_id: str = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """
@@ -4172,7 +4848,7 @@ async def get_ai_drafts(
 # ============================================================================
 
 @app.post("/api/agent/run")
-async def run_agent(data: dict):
+async def run_agent(data: dict, user_id: str = Depends(get_current_user)):
     """
     Run the X Growth Deep Agent with streaming updates
     
@@ -4185,10 +4861,26 @@ async def run_agent(data: dict):
     user_id = data.get("user_id")
     task = data.get("task", "Help me grow my X account")
     thread_id = data.get("thread_id")  # Optional: continue existing thread
-    
+
     if not user_id:
         return {"success": False, "error": "user_id is required"}
-    
+
+    # Check if user has enough credits before starting
+    db = SessionLocal()
+    try:
+        billing = BillingService(db)
+        min_credits = AGENT_SESSION_COSTS.get("x_growth", 10)
+        has_credits, reason = billing.check_credits(user_id, min_credits)
+        if not has_credits:
+            print(f"⚠️ User {user_id} has insufficient credits: {reason}")
+            return {
+                "success": False,
+                "error": reason,
+                "credits_exhausted": True
+            }
+    finally:
+        db.close()
+
     try:
         # Use provided thread_id or create/get thread for this user
         if thread_id:
@@ -4284,6 +4976,10 @@ async def stream_agent_execution(user_id: str, thread_id: str, task: str, use_ro
 
         # Track the last sent content to calculate diffs
         last_content = ""
+
+        # Track LLM message count for credit consumption
+        llm_message_count = 0
+        session_start_time = datetime.now()
 
         # Mark this run as active (will be populated with run_id once we get it)
         active_runs[user_id] = {
@@ -4418,6 +5114,8 @@ async def stream_agent_execution(user_id: str, thread_id: str, task: str, use_ro
                                                 "token": current_content
                                             })
                                             print(f"📤 Sent full content: {current_content[:50]}...")
+                                            # Count as a new LLM message for credit tracking
+                                            llm_message_count += 1
 
                                         last_content = current_content
                         except Exception as e:
@@ -4451,7 +5149,46 @@ async def stream_agent_execution(user_id: str, thread_id: str, task: str, use_ro
             # Clean up active run
             if user_id in active_runs:
                 del active_runs[user_id]
-            
+
+            # Usage-based billing: charge credits based on actual LangSmith costs
+            db = SessionLocal()
+            try:
+                billing = BillingService(db)
+
+                if run_id:
+                    # Preferred: Use LangSmith to get actual cost
+                    print(f"💳 Getting actual cost from LangSmith for run {run_id}...")
+                    billing_result = billing.consume_credits_from_langsmith(
+                        user_id=user_id,
+                        run_id=run_id,
+                        agent_type="x_growth",
+                        description=f"X Growth session: {task[:50]}"
+                    )
+                    print(f"💳 Charged {billing_result['credits_charged']} credits "
+                          f"(${billing_result['actual_cost']:.2f} actual, "
+                          f"{billing_result['tokens']} tokens)")
+                else:
+                    # Fallback: Use fixed estimate if no run_id
+                    print(f"⚠️ No run_id available, using fallback billing")
+                    session_duration_minutes = (datetime.now() - session_start_time).total_seconds() / 60
+                    base_cost = AGENT_SESSION_COSTS.get("x_growth", 10)
+                    message_cost = llm_message_count * CREDIT_COSTS.get("sonnet_message", 1)
+                    computer_use_cost = int(session_duration_minutes * CREDIT_COSTS.get("computer_use_minute", 5)) if vnc_url else 0
+                    total_credits = base_cost + message_cost + computer_use_cost
+
+                    billing.consume_credits(
+                        user_id=user_id,
+                        credits=total_credits,
+                        description=f"X Growth session: {task[:50]}",
+                        agent_type="x_growth"
+                    )
+                    print(f"💳 Fallback billing: {total_credits} credits")
+
+            except Exception as credit_error:
+                print(f"⚠️ Failed to consume credits: {credit_error}")
+            finally:
+                db.close()
+
             print(f"✅ Agent completed for user {user_id}")
         
         except Exception as stream_error:
@@ -4503,8 +5240,8 @@ async def stream_agent_execution(user_id: str, thread_id: str, task: str, use_ro
 # Just send a new message while agent is running and it will automatically
 # use multitask_strategy="rollback" to cancel the previous run
 
-@app.get("/api/agent/status/{user_id}")
-async def get_agent_status(user_id: str):
+@app.get("/api/agent/status")
+async def get_agent_status(user_id: str = Depends(get_current_user)):
     """
     Check if an agent is currently running for a user
     """
@@ -4525,7 +5262,7 @@ async def get_agent_status(user_id: str):
         return {"success": False, "error": str(e)}
 
 @app.get("/api/agent/history/{thread_id}")
-async def get_agent_history(thread_id: str):
+async def get_agent_history(thread_id: str, user_id: str = Depends(get_current_user)):
     """
     Get agent execution history for a thread
     """
@@ -4550,7 +5287,7 @@ async def get_agent_history(thread_id: str):
         return {"success": False, "error": str(e)}
 
 @app.get("/api/agent/state/{thread_id}")
-async def get_agent_state(thread_id: str):
+async def get_agent_state(thread_id: str, user_id: str = Depends(get_current_user)):
     """
     Get current state of an agent thread
     """
@@ -4569,15 +5306,11 @@ async def get_agent_state(thread_id: str):
         return {"success": False, "error": str(e)}
 
 @app.post("/api/agent/threads/new")
-async def create_new_thread(data: dict):
+async def create_new_thread(data: dict, user_id: str = Depends(get_current_user)):
     """
     Create a new thread for a user (starts fresh conversation)
     """
-    user_id = data.get("user_id")
     title = data.get("title", "New Chat")
-    
-    if not user_id:
-        return {"success": False, "error": "user_id is required"}
     
     try:
         # Create new thread with metadata
@@ -4613,8 +5346,8 @@ async def create_new_thread(data: dict):
         traceback.print_exc()
         return {"success": False, "error": str(e)}
 
-@app.get("/api/agent/threads/list/{user_id}")
-async def list_user_threads(user_id: str):
+@app.get("/api/agent/threads/list")
+async def list_user_threads(user_id: str = Depends(get_current_user)):
     """
     List all threads for a user using LangGraph SDK
     """
@@ -4733,8 +5466,8 @@ async def list_user_threads(user_id: str):
         traceback.print_exc()
         return {"success": False, "error": str(e)}
 
-@app.get("/api/agent/threads/{user_id}")
-async def get_user_thread(user_id: str):
+@app.get("/api/agent/threads")
+async def get_user_thread(user_id: str = Depends(get_current_user)):
     """
     Get the current active thread ID for a user
     """
@@ -4753,7 +5486,7 @@ async def get_user_thread(user_id: str):
     }
 
 @app.get("/api/agent/threads/{thread_id}/messages")
-async def get_thread_messages(thread_id: str):
+async def get_thread_messages(thread_id: str, user_id: str = Depends(get_current_user)):
     """
     Fetch all messages for a specific thread from LangGraph's PostgreSQL store
     """
@@ -4842,7 +5575,7 @@ workflow_executions: dict[str, dict[str, any]] = {}
 
 
 @app.get("/api/workflows")
-async def list_workflows_endpoint():
+async def list_workflows_endpoint(user_id: str = Depends(get_current_user)):
     """List all available workflow templates"""
     try:
         workflows = list_available_workflows()
@@ -4855,7 +5588,7 @@ async def list_workflows_endpoint():
 
 
 @app.get("/api/workflows/{workflow_id}")
-async def get_workflow_endpoint(workflow_id: str):
+async def get_workflow_endpoint(workflow_id: str, user_id: str = Depends(get_current_user)):
     """Get a specific workflow template"""
     try:
         workflows = list_available_workflows()
@@ -4875,7 +5608,7 @@ async def get_workflow_endpoint(workflow_id: str):
 
 
 @app.post("/api/workflow/execute")
-async def execute_workflow_endpoint(workflow_json: dict, user_id: Optional[str] = None, thread_id: Optional[str] = None):
+async def execute_workflow_endpoint(workflow_json: dict, user_id: str = Depends(get_current_user), thread_id: Optional[str] = None):
     """
     Execute a workflow (non-streaming) via LangGraph Platform
 
@@ -4919,10 +5652,21 @@ async def execute_workflow_endpoint(workflow_json: dict, user_id: Optional[str] 
             try:
                 vnc_manager = await get_vnc_manager()
                 if vnc_manager:
-                    vnc_session = await vnc_manager.get_session(user_id)
+                    vnc_session = await vnc_manager.get_or_create_session(user_id)
                     if vnc_session:
                         vnc_url = vnc_session.get("https_url") or vnc_session.get("service_url")
                         print(f"🖥️ Workflow: Using VNC URL for agent: {vnc_url}")
+
+                        # CRITICAL: Inject cookies into the VNC browser session before workflow starts
+                        try:
+                            print(f"🍪 Workflow: Injecting cookies for user {user_id}")
+                            inject_result = await _inject_cookies_internal(user_id, user_id)
+                            if inject_result.get("success"):
+                                print(f"✅ Workflow: Cookies injected successfully for @{inject_result.get('username')}")
+                            else:
+                                print(f"⚠️ Workflow: Cookie injection failed: {inject_result.get('error')}")
+                        except Exception as cookie_err:
+                            print(f"⚠️ Workflow: Cookie injection error: {cookie_err}")
             except Exception as e:
                 print(f"⚠️ Workflow: Could not get VNC session for agent: {e}")
 
@@ -5004,7 +5748,7 @@ async def execute_workflow_endpoint(workflow_json: dict, user_id: Optional[str] 
 
 
 @app.get("/api/workflow/execution/{execution_id}")
-async def get_execution_status_endpoint(execution_id: str):
+async def get_execution_status_endpoint(execution_id: str, user_id: str = Depends(get_current_user)):
     """Get status of a workflow execution"""
     if execution_id not in workflow_executions:
         raise HTTPException(status_code=404, detail=f"Execution {execution_id} not found")
@@ -5096,10 +5840,37 @@ async def execute_workflow_stream_endpoint(websocket: WebSocket):
             try:
                 vnc_manager = await get_vnc_manager()
                 if vnc_manager:
-                    vnc_session = await vnc_manager.get_session(user_id)
+                    vnc_session = await vnc_manager.get_or_create_session(user_id)
                     if vnc_session:
                         vnc_url = vnc_session.get("https_url") or vnc_session.get("service_url")
                         print(f"🖥️ Workflow WS: Using VNC URL for agent: {vnc_url}")
+
+                        # CRITICAL: Inject cookies into the VNC browser session before workflow starts
+                        # This ensures the agent can access X as the authenticated user
+                        try:
+                            print(f"🍪 Workflow WS: Injecting cookies for user {user_id}")
+                            # Use the same user_id for both extension and clerk since the extension
+                            # connects with the Clerk user ID passed from the dashboard
+                            inject_result = await _inject_cookies_internal(user_id, user_id)
+                            if inject_result.get("success"):
+                                print(f"✅ Workflow WS: Cookies injected successfully for @{inject_result.get('username')}")
+                                await websocket.send_json({
+                                    "type": "cookies_injected",
+                                    "success": True,
+                                    "username": inject_result.get("username"),
+                                    "logged_in": inject_result.get("logged_in")
+                                })
+                            else:
+                                print(f"⚠️ Workflow WS: Cookie injection failed: {inject_result.get('error')}")
+                                await websocket.send_json({
+                                    "type": "cookies_injected",
+                                    "success": False,
+                                    "error": inject_result.get("error")
+                                })
+                        except Exception as cookie_err:
+                            print(f"⚠️ Workflow WS: Cookie injection error: {cookie_err}")
+                            import traceback
+                            traceback.print_exc()
             except Exception as e:
                 print(f"⚠️ Workflow WS: Could not get VNC session for agent: {e}")
 
@@ -5352,7 +6123,7 @@ async def execute_workflow_stream_endpoint(websocket: WebSocket):
 # ============================================================================
 
 @app.get("/api/workflow/execution/{execution_id}/status")
-async def get_workflow_execution_status(execution_id: str):
+async def get_workflow_execution_status(execution_id: str, user_id: str = Depends(get_current_user)):
     """
     Get the status of a workflow execution.
     Enables frontend to check execution state and reconnect if needed.
@@ -5393,7 +6164,7 @@ async def get_workflow_execution_status(execution_id: str):
 
 
 @app.get("/api/workflow/execution/{execution_id}")
-async def get_workflow_execution(execution_id: str):
+async def get_workflow_execution(execution_id: str, user_id: str = Depends(get_current_user)):
     """
     Get full workflow execution details including logs (if stored).
     Enables frontend to restore execution history.
@@ -5433,7 +6204,7 @@ async def get_workflow_execution(execution_id: str):
 # ============================================================================
 
 @app.post("/api/migrate-posts-to-langgraph")
-async def migrate_posts_to_langgraph(data: dict):
+async def migrate_posts_to_langgraph(data: dict, user_id: str = Depends(get_current_user)):
     """
     Migrate user posts from PostgreSQL to LangGraph Store for style learning.
 

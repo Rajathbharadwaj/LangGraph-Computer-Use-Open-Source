@@ -1,0 +1,40 @@
+# UGC Ad Factory Dependencies
+
+# Core Framework
+fastapi>=0.109.0
+uvicorn[standard]>=0.27.0
+pydantic>=2.5.0
+pydantic-settings>=2.1.0
+
+# LangGraph
+langgraph>=0.2.0
+langchain>=0.3.0
+langchain-anthropic>=0.3.0
+langchain-core>=0.3.0
+
+# Async HTTP
+aiohttp>=3.9.0
+httpx>=0.26.0
+
+# Google Cloud Storage
+google-cloud-storage>=2.14.0
+
+# FFmpeg wrapper (for video assembly)
+ffmpeg-python>=0.2.0
+
+# Image processing
+pillow>=10.2.0
+
+# Utilities
+python-dotenv>=1.0.0
+python-multipart>=0.0.6
+
+# WebSockets
+websockets>=12.0
+
+# Logging
+structlog>=24.1.0
+
+# Testing (optional)
+pytest>=7.4.0
+pytest-asyncio>=0.23.0

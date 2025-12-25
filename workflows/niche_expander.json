@@ -1,0 +1,226 @@
+{
+  "workflow_id": "niche_expander",
+  "name": "Niche Expander",
+  "description": "Build authority in adjacent niches for broader reach. Identifies 3-5 related niches based on user's expertise and systematically builds presence there to expand audience beyond core followers.",
+  "category": "growth",
+  "difficulty": "intermediate",
+  "estimated_time_minutes": 45,
+  "expected_roi": "high",
+  "version": "1.0",
+  "goal": "expand_reach",
+  "schedule": {
+    "frequency": "daily",
+    "optimal_times": ["5pm", "10pm"],
+    "engagements_per_niche": 10
+  },
+  "config": {
+    "target_niches_count": 3,
+    "engagements_per_niche_per_session": 10,
+    "action_delay_min_seconds": 20,
+    "action_delay_max_seconds": 50,
+    "track_follower_conversion": true,
+    "build_relationships": true
+  },
+  "niche_discovery": {
+    "method": "Based on user's core niche, identify adjacent niches where their expertise is valuable",
+    "examples": {
+      "AI_engineer": ["devtools", "startup founders", "product managers", "tech leads"],
+      "startup_founder": ["VCs", "indie hackers", "growth marketing", "product"],
+      "developer": ["tech Twitter", "open source", "productivity", "career advice"],
+      "marketer": ["creators", "agencies", "entrepreneurs", "copywriting"]
+    },
+    "criteria": [
+      "Overlap with user's expertise",
+      "Active community (lots of engagement)",
+      "Potential for mutual value",
+      "Not saturated with low-quality content"
+    ]
+  },
+  "engagement_approach": {
+    "quality_over_quantity": "Each engagement must add genuine value",
+    "relationship_focus": "Remember key accounts and build ongoing relationships",
+    "no_self_promotion": "Never promote yourself directly in adjacent niches",
+    "establish_expertise": "Let your insights speak for themselves"
+  },
+  "steps": [
+    {
+      "id": "step_1",
+      "type": "safety_check",
+      "action": "check_rate_limits",
+      "params": {},
+      "description": "Check for warnings before starting",
+      "on_warning": "abort_session",
+      "next": "step_2"
+    },
+    {
+      "id": "step_2",
+      "type": "analysis",
+      "action": "identify_adjacent_niches",
+      "params": {
+        "user_niche": "{{user.niche}}",
+        "num_niches": "{{config.target_niches_count}}",
+        "check_previous_success": true
+      },
+      "description": "Identify 3 adjacent niches based on user's expertise",
+      "next": "step_3"
+    },
+    {
+      "id": "step_3",
+      "type": "loop",
+      "loop_count": "{{adjacent_niches.length}}",
+      "description": "Engage with each adjacent niche",
+      "children": [
+        {
+          "id": "step_3a",
+          "type": "navigate",
+          "action": "navigate_to_url",
+          "params": {
+            "url": "https://x.com/search?q={{niche_keywords}}&f=live"
+          },
+          "description": "Navigate to live search for this niche",
+          "next": "step_3b"
+        },
+        {
+          "id": "step_3b",
+          "type": "analyze",
+          "action": "get_comprehensive_context",
+          "params": {},
+          "description": "Analyze posts in this niche",
+          "next": "step_3c"
+        },
+        {
+          "id": "step_3c",
+          "type": "filter",
+          "action": "find_engagement_opportunities",
+          "params": {
+            "criteria": "posts_where_user_expertise_adds_value",
+            "min_likes": 20,
+            "max_likes": 1000,
+            "max_age_hours": 12
+          },
+          "description": "Find posts where user's expertise from core niche adds unique value",
+          "next": "step_3d"
+        },
+        {
+          "id": "step_3d",
+          "type": "inner_loop",
+          "loop_count": "{{config.engagements_per_niche_per_session}}",
+          "description": "Engage with selected posts",
+          "children": [
+            {
+              "id": "step_3d1",
+              "type": "analysis",
+              "action": "determine_value_add",
+              "params": {
+                "post_content": "{{post_content}}",
+                "user_expertise": "{{user.niche}}"
+              },
+              "description": "Determine how user's expertise can add unique value to this post",
+              "next": "step_3d2"
+            },
+            {
+              "id": "step_3d2",
+              "type": "action",
+              "action": "like_and_comment",
+              "params": {
+                "post_identifier": "{{post_author}}",
+                "comment_angle": "cross_niche_expertise",
+                "show_value_not_promotion": true
+              },
+              "description": "Comment with insight from user's niche that adds value to this conversation",
+              "next": "step_3d3"
+            },
+            {
+              "id": "step_3d3",
+              "type": "delay",
+              "action": "random_delay",
+              "params": {
+                "min_seconds": "{{config.action_delay_min_seconds}}",
+                "max_seconds": "{{config.action_delay_max_seconds}}"
+              },
+              "description": "Human-like random delay",
+              "next": "step_3d4"
+            },
+            {
+              "id": "step_3d4",
+              "type": "memory",
+              "action": "track_cross_niche_engagement",
+              "params": {
+                "niche": "{{current_niche}}",
+                "post_author": "{{post_author}}",
+                "engagement_type": "comment",
+                "track_for_relationship": true
+              },
+              "description": "Track engagement for relationship building and conversion analytics"
+            }
+          ],
+          "next": "step_3e"
+        },
+        {
+          "id": "step_3e",
+          "type": "relationship",
+          "action": "identify_key_accounts",
+          "params": {
+            "niche": "{{current_niche}}",
+            "criteria": ["engaged with us", "high influence", "potential for collaboration"]
+          },
+          "description": "Identify key accounts in this niche for ongoing relationship building"
+        }
+      ],
+      "next": "step_4"
+    },
+    {
+      "id": "step_4",
+      "type": "safety_check",
+      "action": "check_rate_limits",
+      "params": {},
+      "description": "Check for warnings after engagement",
+      "on_warning": "pause_session",
+      "next": "step_5"
+    },
+    {
+      "id": "step_5",
+      "type": "analytics",
+      "action": "analyze_cross_niche_performance",
+      "params": {
+        "metrics": ["engagement_rate", "follower_conversion", "relationship_quality"]
+      },
+      "description": "Analyze which niches are converting best",
+      "next": "step_6"
+    },
+    {
+      "id": "step_6",
+      "type": "learning",
+      "action": "update_niche_strategy",
+      "params": {
+        "prioritize_high_converting_niches": true,
+        "deprioritize_low_engagement_niches": true
+      },
+      "description": "Update strategy based on what's working",
+      "next": "step_7"
+    },
+    {
+      "id": "step_7",
+      "type": "end",
+      "description": "Niche expansion session complete"
+    }
+  ],
+  "success_metrics": {
+    "niches_engaged": "count",
+    "total_engagements": "count",
+    "engagement_rate": "metric",
+    "new_followers_from_niches": "metric",
+    "key_relationships_built": "count"
+  },
+  "learning_enabled": true,
+  "learning_rules": {
+    "niche_prioritization": "Prioritize niches with highest follower conversion rate",
+    "comment_effectiveness": "Learn which types of cross-niche insights get most engagement",
+    "relationship_tracking": "Track key accounts across sessions for relationship continuity"
+  },
+  "notes": {
+    "why_niche_expansion_works": "Your expertise from niche A is often novel and valuable in niche B. AI engineer insights are fresh in startup founder conversations. This cross-pollination builds authority faster than staying in one lane.",
+    "relationship_focus": "The goal isn't just impressions - it's building relationships with key figures in adjacent niches. These relationships can lead to collaborations, referrals, and amplification.",
+    "authenticity_critical": "Never be a tourist. Only engage where you genuinely add value. Fake expertise is obvious and damages credibility."
+  }
+}

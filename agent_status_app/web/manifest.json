@@ -1,0 +1,21 @@
+{
+  "name": "Agent Status",
+  "short_name": "AgentStatus",
+  "start_url": ".",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#4E8DF2",
+  "description": "Monitor and control the Parallel Universe deep agent.",
+  "icons": [
+    {
+      "src": "icons/Icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "icons/Icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}

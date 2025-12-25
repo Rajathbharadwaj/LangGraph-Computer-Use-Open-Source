@@ -1,0 +1,113 @@
+{
+  "mode": "ecom_product",
+  "description": "Visual style presets for e-commerce product videos",
+  "visual_styles": [
+    {
+      "id": "clean_minimal",
+      "name": "Clean Minimal",
+      "description": "Modern, minimalist aesthetic with plenty of white space",
+      "background": "white, light gray, or soft gradient",
+      "lighting": "soft diffused studio lighting, even illumination",
+      "color_grade": "neutral with slight warmth, high key",
+      "mood": "premium, trustworthy, sophisticated",
+      "best_for": ["tech", "skincare", "premium products"],
+      "prompt_modifiers": "clean white background, minimalist composition, soft shadows, studio lighting, commercial quality"
+    },
+    {
+      "id": "bold_vibrant",
+      "name": "Bold Vibrant",
+      "description": "High-energy, saturated colors, dynamic feel",
+      "background": "saturated colors, bold gradients, neon accents",
+      "lighting": "high contrast, dramatic shadows",
+      "color_grade": "punchy saturation, high contrast",
+      "mood": "exciting, youthful, energetic",
+      "best_for": ["fashion", "food", "fitness", "youth-targeted"],
+      "prompt_modifiers": "vibrant colors, bold composition, dynamic lighting, high saturation, energetic mood"
+    },
+    {
+      "id": "natural_organic",
+      "name": "Natural Organic",
+      "description": "Earthy, authentic, nature-inspired",
+      "background": "natural textures, wood, stone, plants",
+      "lighting": "natural daylight, golden hour warmth",
+      "color_grade": "warm earth tones, muted greens, natural",
+      "mood": "authentic, sustainable, wholesome",
+      "best_for": ["organic products", "wellness", "eco-friendly"],
+      "prompt_modifiers": "natural lighting, earth tones, organic textures, authentic lifestyle, sustainable aesthetic"
+    },
+    {
+      "id": "luxury_premium",
+      "name": "Luxury Premium",
+      "description": "High-end, sophisticated, aspirational",
+      "background": "dark backgrounds, marble, gold accents",
+      "lighting": "dramatic rim lighting, elegant shadows",
+      "color_grade": "rich, deep tones, subtle warmth",
+      "mood": "luxurious, exclusive, aspirational",
+      "best_for": ["jewelry", "high-end fashion", "luxury goods"],
+      "prompt_modifiers": "luxury aesthetic, dramatic lighting, dark elegant background, premium quality, sophisticated mood"
+    },
+    {
+      "id": "ugc_authentic",
+      "name": "UGC Authentic",
+      "description": "Genuine, relatable, user-generated content feel",
+      "background": "real home environments, natural settings",
+      "lighting": "natural window light, phone camera quality",
+      "color_grade": "slightly warm, natural tones, realistic",
+      "mood": "relatable, trustworthy, genuine",
+      "best_for": ["any product needing social proof"],
+      "prompt_modifiers": "authentic UGC style, natural lighting, real home environment, casual composition, phone camera aesthetic"
+    }
+  ],
+  "text_styles": {
+    "hook": {
+      "fontsize": 72,
+      "fontweight": "bold",
+      "fontcolor": "white",
+      "background": "semi-transparent dark",
+      "position": "center",
+      "animation": "pop_in"
+    },
+    "benefit": {
+      "fontsize": 48,
+      "fontweight": "semibold",
+      "fontcolor": "white",
+      "background": "subtle shadow",
+      "position": "bottom_third",
+      "animation": "slide_up"
+    },
+    "cta": {
+      "fontsize": 56,
+      "fontweight": "bold",
+      "fontcolor": "yellow or brand_color",
+      "background": "gradient",
+      "position": "bottom",
+      "animation": "pulse"
+    }
+  },
+  "music_moods": [
+    {
+      "id": "upbeat",
+      "name": "Upbeat & Energetic",
+      "bpm_range": "120-140",
+      "best_for": ["problem_solution", "hack_discovery", "unboxing"]
+    },
+    {
+      "id": "chill",
+      "name": "Chill & Relaxed",
+      "bpm_range": "80-100",
+      "best_for": ["lifestyle", "day_in_life", "natural_organic style"]
+    },
+    {
+      "id": "dramatic",
+      "name": "Dramatic & Impactful",
+      "bpm_range": "90-110",
+      "best_for": ["before_after", "luxury_premium style", "reveals"]
+    },
+    {
+      "id": "trending",
+      "name": "Trending Sound",
+      "bpm_range": "varies",
+      "best_for": ["social_proof", "viral potential"]
+    }
+  ]
+}

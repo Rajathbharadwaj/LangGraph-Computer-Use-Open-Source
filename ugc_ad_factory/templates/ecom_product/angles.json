@@ -1,0 +1,110 @@
+{
+  "mode": "ecom_product",
+  "description": "Angle patterns for e-commerce product ads",
+  "angle_patterns": [
+    {
+      "id": "problem_solution",
+      "name": "Problem-Solution",
+      "hook_template": "Struggling with {{pain_point}}? {{product_name}} solves it instantly.",
+      "emotional_trigger": "frustration_to_relief",
+      "effectiveness_weight": 0.9,
+      "best_for": ["lifestyle products", "tools", "solutions"],
+      "example_hooks": [
+        "POV: You just found the solution to [problem]",
+        "Tired of [problem]? Watch this...",
+        "Stop doing [old way]. Try this instead."
+      ]
+    },
+    {
+      "id": "social_proof",
+      "name": "Social Proof",
+      "hook_template": "{{number}} people already love {{product_name}}. Here's why...",
+      "emotional_trigger": "fomo",
+      "effectiveness_weight": 0.85,
+      "best_for": ["trending products", "bestsellers"],
+      "example_hooks": [
+        "This went viral for a reason",
+        "Everyone's been asking about this",
+        "TikTok made me buy it - was it worth it?"
+      ]
+    },
+    {
+      "id": "before_after",
+      "name": "Before/After Transformation",
+      "hook_template": "Watch what happens when you use {{product_name}}...",
+      "emotional_trigger": "aspiration",
+      "effectiveness_weight": 0.88,
+      "best_for": ["beauty", "fitness", "home improvement"],
+      "example_hooks": [
+        "Before vs After using this for 30 days",
+        "This transformation is unreal",
+        "I can't believe the difference"
+      ]
+    },
+    {
+      "id": "urgency_scarcity",
+      "name": "Urgency/Scarcity",
+      "hook_template": "Last chance: {{offer}} ends tonight!",
+      "emotional_trigger": "urgency",
+      "effectiveness_weight": 0.82,
+      "best_for": ["limited editions", "sales", "seasonal"],
+      "example_hooks": [
+        "This is selling out FAST",
+        "Limited stock alert",
+        "Don't miss this deal"
+      ]
+    },
+    {
+      "id": "unboxing_reveal",
+      "name": "Unboxing Reveal",
+      "hook_template": "You won't believe what's inside...",
+      "emotional_trigger": "curiosity",
+      "effectiveness_weight": 0.75,
+      "best_for": ["premium products", "subscription boxes", "gifts"],
+      "example_hooks": [
+        "Unboxing the [product] everyone's talking about",
+        "Let's see what's in the box",
+        "First impressions + honest review"
+      ]
+    },
+    {
+      "id": "hack_discovery",
+      "name": "Hack/Discovery",
+      "hook_template": "I wish I knew about {{product_name}} sooner...",
+      "emotional_trigger": "discovery",
+      "effectiveness_weight": 0.87,
+      "best_for": ["productivity", "life hacks", "hidden gems"],
+      "example_hooks": [
+        "The [product] hack that changed everything",
+        "Why didn't anyone tell me about this?",
+        "Game-changing discovery"
+      ]
+    },
+    {
+      "id": "comparison",
+      "name": "Comparison/Alternative",
+      "hook_template": "Forget {{competitor}}. This is better and cheaper.",
+      "emotional_trigger": "validation",
+      "effectiveness_weight": 0.80,
+      "best_for": ["alternatives", "dupes", "value products"],
+      "example_hooks": [
+        "Better than the expensive version",
+        "[Product] vs [Alternative] - which is better?",
+        "The dupe that beats the original"
+      ]
+    },
+    {
+      "id": "day_in_life",
+      "name": "Day in the Life",
+      "hook_template": "A day in my life with {{product_name}}",
+      "emotional_trigger": "relatability",
+      "effectiveness_weight": 0.78,
+      "best_for": ["lifestyle", "routines", "everyday products"],
+      "example_hooks": [
+        "Morning routine with my new [product]",
+        "How I use this every single day",
+        "GRWM featuring [product]"
+      ]
+    }
+  ]
+}

@@ -114,6 +114,14 @@ def verify_clerk_token(authorization: str = Header(None)) -> dict:
                 # Log the full payload to debug
                 print(f"⚠️ JWT sub is external ID: {user_id}")
                 print(f"   Full payload keys: {list(payload.keys())}")
+                print(f"   Full payload: {payload}")
+
+                # CRITICAL: If we can't find Clerk user ID, we MUST fail
+                # Using external OAuth ID will cause multi-tenancy leakage
+                raise HTTPException(
+                    status_code=401,
+                    detail=f"JWT token does not contain Clerk user ID. Found external ID: {user_id}. Please ensure your frontend is sending the correct JWT token with Clerk user ID."
+                )
 
         if not user_id:
             raise HTTPException(

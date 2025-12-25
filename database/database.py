@@ -42,6 +42,44 @@ def init_db():
     Initialize database tables
     """
     from .models import User, XAccount, UserCookies, UserPost, APIUsage, ScheduledPost
+    # Import billing models to ensure they're created
+    from .models import Subscription, CreditBalance, CreditTransaction, FeatureUsage
     Base.metadata.create_all(bind=engine)
     print("✅ Database tables created")
+
+    # Run migrations for columns that create_all won't add to existing tables
+    run_migrations()
+
+
+def run_migrations():
+    """
+    Run manual migrations for columns that create_all doesn't handle
+    """
+    from sqlalchemy import text
+
+    migrations = [
+        # Add stripe_customer_id to users table if it doesn't exist
+        """
+        DO $$
+        BEGIN
+            IF NOT EXISTS (
+                SELECT 1 FROM information_schema.columns
+                WHERE table_name = 'users' AND column_name = 'stripe_customer_id'
+            ) THEN
+                ALTER TABLE users ADD COLUMN stripe_customer_id VARCHAR(255);
+            END IF;
+        END $$;
+        """,
+    ]
+
+    with engine.connect() as conn:
+        for migration in migrations:
+            try:
+                conn.execute(text(migration))
+                conn.commit()
+            except Exception as e:
+                print(f"Migration warning: {e}")
+                conn.rollback()
+
+    print("✅ Database migrations complete")
 
