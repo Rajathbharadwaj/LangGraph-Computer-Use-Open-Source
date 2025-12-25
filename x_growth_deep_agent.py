@@ -86,6 +86,14 @@ from x_growth_workflows import get_workflow_prompt, list_workflows, WORKFLOWS
 # Import YouTube transcript tools
 from youtube_transcript_tool import analyze_youtube_transcript
 
+# Import Anthropic native tools (web_fetch, web_search, memory)
+from anthropic_native_tools import (
+    create_web_fetch_tool,
+    create_web_search_tool as create_native_web_search_tool,
+    create_memory_tool,
+    get_research_tools,
+)
+
 
 # ============================================================================
 # WEB SEARCH TOOL (Tavily - Legacy, kept for backwards compatibility)
@@ -826,16 +834,50 @@ def get_atomic_subagents(store=None, user_id=None, model=None):
         user_data_tools = [user_profile_tool, user_posts_tool, competitor_posts_tool, pending_drafts_tool, mark_draft_tool]
         print(f"✅ Added user data tools to subagents: get_my_profile, get_my_posts, get_high_performing_competitor_posts, get_pending_drafts, mark_draft_as_used")
 
+    # Create Anthropic native tools for subagents (if model is available)
+    native_web_fetch_tool = None
+    native_web_search_tool = None
+    if model:
+        native_web_fetch_tool = create_web_fetch_tool(model)
+        native_web_search_tool = create_native_web_search_tool(model)
+        print(f"✅ Created Anthropic native tools for subagents: web_fetch, web_search")
+
     # WRAP comment_on_post and create_post_on_x with AUTOMATIC style transfer + activity logging
-    print(f"🔍 [Activity Logging] Checking prerequisites: store={store is not None}, user_id={user_id}, model={model is not None}")
-    if store and user_id and model:
+    # NOTE: ActivityLogger is now initialized LAZILY at tool execution time
+    # because store is auto-provisioned by LangGraph Platform and only available via runtime.store
+    print(f"🔍 [Activity Logging] Will initialize ActivityLogger at runtime (store available via runtime.store)")
+
+    # Always wrap tools - ActivityLogger will be created at runtime when store is available
+    if model:
         from langchain.tools import ToolRuntime
         from x_writing_style_learner import XWritingStyleManager
         from activity_logger import ActivityLogger
 
-        # Initialize activity logger
-        activity_logger = ActivityLogger(store, user_id)
-        print(f"✅ [Activity Logging] ActivityLogger initialized for user {user_id} with namespace {activity_logger.namespace}")
+        def get_activity_logger_from_runtime(runtime):
+            """Get ActivityLogger using runtime's store and user_id from config"""
+            if not runtime:
+                print("⚠️ [Activity Logging] No runtime available")
+                return None
+
+            # Get store from runtime
+            runtime_store = getattr(runtime, 'store', None)
+            if not runtime_store:
+                print("⚠️ [Activity Logging] No store in runtime")
+                return None
+
+            # Get user_id from config (passed as x-user-id header)
+            runtime_config = getattr(runtime, 'config', {})
+            configurable = runtime_config.get('configurable', {}) if isinstance(runtime_config, dict) else {}
+            runtime_user_id = configurable.get('x-user-id') or configurable.get('user_id')
+
+            if not runtime_user_id:
+                print("⚠️ [Activity Logging] No user_id in runtime config")
+                return None
+
+            print(f"✅ [Activity Logging] Creating ActivityLogger for user {runtime_user_id}")
+            return ActivityLogger(runtime_store, runtime_user_id)
+
+        print(f"✅ [Activity Logging] Activity logging helper ready (will initialize at runtime)")
 
         # Get the original tools
         original_comment_tool = tool_dict["comment_on_post"]
@@ -1013,18 +1055,22 @@ Write a comment that sounds EXACTLY like the user wrote it themselves.
                 "comment_text": generated_comment
             })
 
-            # Step 3: Log activity
+            # Step 3: Log activity (using runtime's store)
             status = "success" if ("successfully" in result.lower() or "✅" in result) else "failed"
             error_msg = result if status == "failed" else None
             print(f"📝 [Activity Logging] Logging comment: target={author_or_content}, status={status}")
             try:
-                activity_id = activity_logger.log_comment(
-                    target=author_or_content,
-                    content=generated_comment,
-                    status=status,
-                    error=error_msg
-                )
-                print(f"✅ [Activity Logging] Comment logged successfully with ID: {activity_id}")
+                activity_logger = get_activity_logger_from_runtime(runtime)
+                if activity_logger:
+                    activity_id = activity_logger.log_comment(
+                        target=author_or_content,
+                        content=generated_comment,
+                        status=status,
+                        error=error_msg
+                    )
+                    print(f"✅ [Activity Logging] Comment logged successfully with ID: {activity_id}")
+                else:
+                    print("⚠️ [Activity Logging] Could not create ActivityLogger from runtime")
             except Exception as e:
                 print(f"❌ [Activity Logging] FAILED to log comment: {e}")
                 import traceback
@@ -1033,52 +1079,88 @@ Write a comment that sounds EXACTLY like the user wrote it themselves.
             return result
 
         @tool
-        async def _styled_create_post_on_x(topic_or_context: str) -> str:
+        async def _styled_create_post_on_x(
+            post_text: str,
+            media_urls: list = None,
+            generate_style: bool = True,
+            runtime: ToolRuntime = None
+        ) -> str:
             """
-            Create a post on X. AUTOMATICALLY generates the post in YOUR writing style!
+            Create a post on X with optional media attachments.
 
             Args:
-                topic_or_context: What you want to post about
+                post_text: The text to post (or topic to generate post about)
+                media_urls: Optional list of media URLs to attach (images/videos from GCS)
+                generate_style: If True, auto-generates post in user's style. If False, posts exact text.
+                runtime: Tool runtime context (injected by LangGraph)
+
+            For scheduled posts with exact content, set generate_style=False.
+            For organic posting where you want style transfer, set generate_style=True (default).
             """
-            # Step 0: Do BACKGROUND RESEARCH before creating post
-            # This uses Anthropic's built-in web search for informed, valuable content
-            research_context = ""
+            # Handle media_urls
+            if media_urls is None:
+                media_urls = []
 
-            try:
-                print(f"🔬 [Background Research] Researching topic before posting...")
-                research_context = await do_background_research(topic_or_context, model)
+            # Determine if we should generate styled content or use exact text
+            # Skip style generation if:
+            # 1. generate_style is explicitly False
+            # 2. post_text looks like final content (short, no instructions)
+            # 3. media is attached (scheduled posts typically have exact content)
+            should_generate = generate_style
+            if media_urls and len(post_text) < 300:
+                # Likely a scheduled post with exact content + media
+                should_generate = False
+                print(f"📎 Media attached - using exact text (skipping style generation)")
+
+            if should_generate:
+                # Step 0: Do BACKGROUND RESEARCH before creating post
+                research_context = ""
+                try:
+                    print(f"🔬 [Background Research] Researching topic before posting...")
+                    research_context = await do_background_research(post_text, model)
+                    if research_context:
+                        print(f"✅ [Background Research] Got {len(research_context)} chars of research context")
+                    else:
+                        print("⚠️ [Background Research] No research results, proceeding without")
+                except Exception as research_error:
+                    print(f"⚠️ [Background Research] Research failed: {research_error}, proceeding without")
+
+                # Build enhanced context with research
+                enhanced_topic = post_text
                 if research_context:
-                    print(f"✅ [Background Research] Got {len(research_context)} chars of research context")
-                else:
-                    print("⚠️ [Background Research] No research results, proceeding without")
-            except Exception as research_error:
-                print(f"⚠️ [Background Research] Research failed: {research_error}, proceeding without")
-
-            # Build enhanced context with research
-            enhanced_topic = topic_or_context
-            if research_context:
-                enhanced_topic = f"""{topic_or_context}
+                    enhanced_topic = f"""{post_text}
 
 BACKGROUND RESEARCH (use this to write an informed, valuable post):
 {research_context[:1500]}
 
 Use the research above to write a post that demonstrates expertise and provides real value."""
 
-            # Step 1: Auto-generate post in user's style
-            print(f"🎨 Auto-generating post in your style about: {topic_or_context[:100]}...")
+                # Auto-generate post in user's style
+                print(f"🎨 Auto-generating post in your style about: {post_text[:100]}...")
 
-            generated_post = topic_or_context[:280]
-            try:
-                style_manager = XWritingStyleManager(store, user_id)
-                few_shot_prompt = style_manager.generate_few_shot_prompt(enhanced_topic, "post", num_examples=10)
-                response = model.invoke(few_shot_prompt)
-                generated_post = response.content.strip()
-                print(f"✍️ Generated post using 10 examples: {generated_post}")
-            except Exception as e:
-                print(f"❌ Style generation failed: {e}")
+                generated_post = post_text[:280]
+                try:
+                    style_manager = XWritingStyleManager(store, user_id)
+                    few_shot_prompt = style_manager.generate_few_shot_prompt(enhanced_topic, "post", num_examples=10)
+                    response = model.invoke(few_shot_prompt)
+                    generated_post = response.content.strip()
+                    print(f"✍️ Generated post using 10 examples: {generated_post}")
+                except Exception as e:
+                    print(f"❌ Style generation failed: {e}")
 
-            # Step 2: Post using original tool
-            result = await original_post_tool.ainvoke({"post_text": generated_post})
+                final_post_text = generated_post
+            else:
+                # Use exact text as provided (for scheduled posts)
+                final_post_text = post_text
+                print(f"📝 Using exact text (no style generation): {post_text[:100]}...")
+
+            # Post using original tool with media support
+            invoke_args = {"post_text": final_post_text}
+            if media_urls:
+                invoke_args["media_urls"] = media_urls
+                print(f"📸 Attaching {len(media_urls)} media file(s)")
+
+            result = await original_post_tool.ainvoke(invoke_args)
 
             # Step 3: Log activity
             status = "success" if ("successfully" in result.lower() or "✅" in result) else "failed"
@@ -1093,19 +1175,62 @@ Use the research above to write a post that demonstrates expertise and provides 
 
             print(f"📝 [Activity Logging] Logging post: status={status}, url={post_url}")
             try:
-                activity_id = activity_logger.log_post(
-                    content=generated_post,
-                    status=status,
-                    post_url=post_url,
-                    error=error_msg
-                )
-                print(f"✅ [Activity Logging] Post logged successfully with ID: {activity_id}")
+                activity_logger = get_activity_logger_from_runtime(runtime)
+                if activity_logger:
+                    activity_id = activity_logger.log_post(
+                        content=final_post_text,
+                        status=status,
+                        post_url=post_url,
+                        error=error_msg,
+                        media_count=len(media_urls) if media_urls else 0
+                    )
+                    print(f"✅ [Activity Logging] Post logged successfully with ID: {activity_id}")
+                else:
+                    print("⚠️ [Activity Logging] Could not create ActivityLogger from runtime")
             except Exception as e:
                 print(f"❌ [Activity Logging] FAILED to log post: {e}")
                 import traceback
                 traceback.print_exc()
 
             return result
+
+        # Get original like_post tool for wrapping
+        original_like_tool = tool_dict.get("like_post")
+
+        if original_like_tool:
+            @tool
+            async def _logged_like_post(post_identifier: str, runtime: ToolRuntime = None) -> str:
+                """
+                Like a post with activity logging.
+
+                Args:
+                    post_identifier: The post to like (author name, post URL, or content snippet)
+                    runtime: Tool runtime context (injected by LangGraph)
+                """
+                result = await original_like_tool.ainvoke({"post_identifier": post_identifier})
+
+                # Log activity (using runtime's store)
+                status = "success" if ("successfully" in result.lower() or "✅" in result or "liked" in result.lower()) else "failed"
+                print(f"📝 [Activity Logging] Logging like: target={post_identifier}, status={status}")
+                try:
+                    activity_logger = get_activity_logger_from_runtime(runtime)
+                    if activity_logger:
+                        activity_id = activity_logger.log_like(
+                            target=post_identifier,
+                            status=status
+                        )
+                        print(f"✅ [Activity Logging] Like logged successfully with ID: {activity_id}")
+                    else:
+                        print("⚠️ [Activity Logging] Could not create ActivityLogger from runtime")
+                except Exception as e:
+                    print(f"❌ [Activity Logging] FAILED to log like: {e}")
+                    import traceback
+                    traceback.print_exc()
+
+                return result
+
+            tool_dict["like_post"] = _logged_like_post
+            print(f"✅ Wrapped like_post with activity logging!")
 
         # Replace tools with wrapped versions
         tool_dict["comment_on_post"] = _styled_comment_on_post
@@ -1421,17 +1546,25 @@ NOTE: If you analyzed a YouTube video, the summary is already in your context - 
 
         {
             "name": "create_post",
-            "description": "Create a new post on X (Twitter) with the provided text",
+            "description": "Create a new post on X (Twitter) with text and optional media attachments",
             "system_prompt": """You are a post creation specialist.
 
-Your ONLY job: Create a new post on X with the exact text provided.
+Your ONLY job: Create a new post on X with the text provided, optionally with media attachments.
 
 Steps:
 1. Call get_comprehensive_context to see current state BEFORE posting
-2. Call create_post_on_x with the post text (uses Playwright for reliable posting)
+2. Call create_post_on_x with the post text and media_urls if provided
+   - Text only: create_post_on_x(post_text="Your text here")
+   - With media: create_post_on_x(post_text="Your text", media_urls=["https://..."])
 3. Call get_comprehensive_context to verify the post appeared AFTER posting
 4. Check if your new post is visible at the top of your profile/timeline
 5. Return success/failure based on visual verification
+
+📸 MEDIA ATTACHMENTS:
+- If media_urls are provided, pass them to create_post_on_x
+- Supported: images (jpg, png, gif, webp) and videos (mp4)
+- Media is downloaded from URL and attached automatically
+- Wait for media preview to appear before confirming success
 
 🚨🚨🚨 BANNED AI PHRASES - NEVER USE IN POSTS 🚨🚨🚨
 - "Here's the thing..." / "The thing is..."
@@ -1450,12 +1583,15 @@ CRITICAL RULES:
 - Do NOT trust tool feedback alone - verify with screenshots
 - If post doesn't appear in the after-screenshot, report failure
 
-Example:
+Examples:
 User: "Create a post: Just shipped a new feature! 🚀"
-You: Screenshot → Call create_post_on_x("Just shipped a new feature! 🚀") → Screenshot → Verify
+You: Screenshot → Call create_post_on_x(post_text="Just shipped a new feature! 🚀") → Screenshot → Verify
+
+User: "Post with image: Check this out! Media: ['https://storage.../image.jpg']"
+You: Screenshot → Call create_post_on_x(post_text="Check this out!", media_urls=["https://storage.../image.jpg"]) → Screenshot → Verify
 
 That's it. ONE post only.""",
-            "tools": [tool_dict["create_post_on_x"], tool_dict["get_comprehensive_context"]],
+            "tools": [tool_dict["create_post_on_x"], tool_dict["get_comprehensive_context"]] + ([native_web_search_tool] if native_web_search_tool else []),
             "middleware": [screenshot_middleware]
         },
 
@@ -1761,19 +1897,24 @@ These are the BEST posts to engage with for maximum impact!""",
         # ========================================================================
         {
             "name": "research_topic",
-            "description": "Research a topic using Anthropic's built-in web search to get current information, trends, and facts",
-            "system_prompt": f"""You are a research specialist with web search access.
+            "description": "Research a topic using web search and fetch specific URLs for current information, trends, and facts",
+            "system_prompt": f"""You are a research specialist with web search AND web fetch access.
 
 📅 {date_time_str}
 
 Your ONLY job: Research the specified topic and return comprehensive findings.
 
+AVAILABLE TOOLS:
+1. anthropic_web_search - Search the web for current information
+2. web_fetch - Fetch and analyze content from specific URLs (documentation, articles, blogs)
+
 Steps:
 1. Call anthropic_web_search with the topic/query
    - Include the current month/year in searches for recent information
    - Example: "[topic] {current_time.strftime('%B %Y')}" or "[topic] latest news"
-2. Analyze the search results
-3. Synthesize findings into a concise summary with:
+2. If you find interesting URLs in search results, use web_fetch to get full content
+3. Analyze the search results and fetched content
+4. Synthesize findings into a concise summary with:
    - Key facts and trends
    - Important statistics or data points
    - Relevant context for the topic
@@ -1784,9 +1925,10 @@ Use this to:
 - Gather facts to make comments more valuable
 - Understand context before engaging with technical topics
 - Find current information on breaking news or events
+- Fetch full documentation or articles for in-depth analysis
 
 Keep your summary under 300 words for clean context.""",
-            "tools": [create_anthropic_web_search_tool()]
+            "tools": [create_anthropic_web_search_tool()] + ([native_web_fetch_tool] if native_web_fetch_tool else [])
         },
 
         # ========================================================================
@@ -1972,7 +2114,7 @@ OUTPUT FORMAT:
 Focus on ideas that will STOP THE SCROLL - but sound HUMAN, not AI!""",
             "tools": [
                 create_anthropic_web_search_tool(),  # For trend research
-            ] + user_data_tools  # get_my_posts, get_my_profile, get_high_performing_competitor_posts
+            ] + ([native_web_fetch_tool] if native_web_fetch_tool else []) + user_data_tools  # get_my_posts, get_my_profile, get_high_performing_competitor_posts
         },
 
         {
@@ -2876,7 +3018,20 @@ Just call the tools normally - the style transfer happens AUTOMATICALLY inside t
     # Create data access tools if user_id available
     # These tools access runtime.store at execution time
     main_tools = [comprehensive_context_tool]
+
+    # Add Anthropic native tools (web_fetch, web_search)
+    native_web_fetch = create_web_fetch_tool(model)
+    native_web_search = create_native_web_search_tool(model)
+    main_tools.append(native_web_fetch)
+    main_tools.append(native_web_search)
+    print(f"✅ Added Anthropic native web_fetch and web_search tools to main agent")
+
     if user_id:
+        # Add Anthropic native memory tool (requires user_id)
+        native_memory = create_memory_tool(user_id)
+        main_tools.append(native_memory)
+        print(f"✅ Added Anthropic native memory tool to main agent")
+
         # Competitor posts tool - learn from high-performing competitors
         competitor_tool = create_competitor_learning_tool(user_id)
         main_tools.append(competitor_tool)
