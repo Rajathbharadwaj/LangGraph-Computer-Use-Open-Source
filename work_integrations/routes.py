@@ -505,6 +505,257 @@ async def setup_github_webhook(
 
 
 # =============================================================================
+# Slack-specific Routes
+# =============================================================================
+
+@router.get("/{integration_id}/slack/channels")
+async def list_slack_channels(
+    integration_id: int,
+    user_id: str = Depends(get_current_user_id),
+    db: AsyncSession = Depends(get_db_session),
+):
+    """List available Slack channels for selection."""
+    from .clients.slack_client import get_slack_client
+
+    result = await db.execute(
+        select(WorkIntegration)
+        .options(selectinload(WorkIntegration.credentials))
+        .where(
+            and_(
+                WorkIntegration.id == integration_id,
+                WorkIntegration.user_id == user_id,
+                WorkIntegration.platform == "slack",
+            )
+        )
+    )
+    integration = result.scalar_one_or_none()
+
+    if not integration:
+        raise HTTPException(404, "Slack integration not found")
+
+    if not integration.credentials:
+        raise HTTPException(400, "No credentials found for integration")
+
+    access_token = decrypt_data(integration.credentials.encrypted_access_token)
+    client = get_slack_client(access_token)
+
+    channels = await client.list_channels()
+
+    return {
+        "channels": [
+            {
+                "id": c["id"],
+                "name": c["name"],
+                "is_private": c.get("is_private", False),
+                "num_members": c.get("num_members", 0),
+            }
+            for c in channels
+        ],
+        "total": len(channels),
+    }
+
+
+# =============================================================================
+# Linear-specific Routes
+# =============================================================================
+
+@router.get("/{integration_id}/linear/teams")
+async def list_linear_teams(
+    integration_id: int,
+    user_id: str = Depends(get_current_user_id),
+    db: AsyncSession = Depends(get_db_session),
+):
+    """List available Linear teams for selection."""
+    from .clients.linear_client import get_linear_client
+
+    result = await db.execute(
+        select(WorkIntegration)
+        .options(selectinload(WorkIntegration.credentials))
+        .where(
+            and_(
+                WorkIntegration.id == integration_id,
+                WorkIntegration.user_id == user_id,
+                WorkIntegration.platform == "linear",
+            )
+        )
+    )
+    integration = result.scalar_one_or_none()
+
+    if not integration:
+        raise HTTPException(404, "Linear integration not found")
+
+    if not integration.credentials:
+        raise HTTPException(400, "No credentials found for integration")
+
+    access_token = decrypt_data(integration.credentials.encrypted_access_token)
+    client = get_linear_client(access_token)
+
+    teams = await client.list_teams()
+
+    return {
+        "teams": [
+            {
+                "id": t["id"],
+                "name": t["name"],
+                "key": t["key"],
+                "description": t.get("description"),
+            }
+            for t in teams
+        ],
+        "total": len(teams),
+    }
+
+
+@router.post("/{integration_id}/linear/webhook")
+async def setup_linear_webhook(
+    integration_id: int,
+    team_id: Optional[str] = None,
+    user_id: str = Depends(get_current_user_id),
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Set up webhook for Linear organization."""
+    from .clients.linear_client import get_linear_client
+
+    settings = get_work_integrations_settings()
+
+    result = await db.execute(
+        select(WorkIntegration)
+        .options(selectinload(WorkIntegration.credentials))
+        .where(
+            and_(
+                WorkIntegration.id == integration_id,
+                WorkIntegration.user_id == user_id,
+                WorkIntegration.platform == "linear",
+            )
+        )
+    )
+    integration = result.scalar_one_or_none()
+
+    if not integration:
+        raise HTTPException(404, "Linear integration not found")
+
+    access_token = decrypt_data(integration.credentials.encrypted_access_token)
+    client = get_linear_client(access_token)
+
+    webhook_url = f"{settings.backend_url}/api/work-integrations/webhooks/linear"
+
+    webhook = await client.create_webhook(
+        url=webhook_url,
+        team_id=team_id,
+        label="Parallel Universe",
+    )
+
+    integration.webhook_registered = True
+    if team_id:
+        integration.linear_team_id = team_id
+    integration.updated_at = datetime.utcnow()
+    await db.commit()
+
+    return {"success": True, "webhook_id": webhook.get("id")}
+
+
+# =============================================================================
+# Notion-specific Routes
+# =============================================================================
+
+@router.get("/{integration_id}/notion/databases")
+async def list_notion_databases(
+    integration_id: int,
+    user_id: str = Depends(get_current_user_id),
+    db: AsyncSession = Depends(get_db_session),
+):
+    """List available Notion databases for selection."""
+    from .clients.notion_client import get_notion_client
+
+    result = await db.execute(
+        select(WorkIntegration)
+        .options(selectinload(WorkIntegration.credentials))
+        .where(
+            and_(
+                WorkIntegration.id == integration_id,
+                WorkIntegration.user_id == user_id,
+                WorkIntegration.platform == "notion",
+            )
+        )
+    )
+    integration = result.scalar_one_or_none()
+
+    if not integration:
+        raise HTTPException(404, "Notion integration not found")
+
+    if not integration.credentials:
+        raise HTTPException(400, "No credentials found for integration")
+
+    access_token = decrypt_data(integration.credentials.encrypted_access_token)
+    client = get_notion_client(access_token)
+
+    databases = await client.list_databases()
+
+    return {
+        "databases": [
+            {
+                "id": d["id"],
+                "title": d.get("title", [{}])[0].get("plain_text", "Untitled") if d.get("title") else "Untitled",
+                "url": d.get("url"),
+                "icon": d.get("icon", {}).get("emoji") if d.get("icon") else None,
+            }
+            for d in databases
+        ],
+        "total": len(databases),
+    }
+
+
+# =============================================================================
+# Figma-specific Routes
+# =============================================================================
+
+@router.get("/{integration_id}/figma/projects")
+async def list_figma_projects(
+    integration_id: int,
+    team_id: str,
+    user_id: str = Depends(get_current_user_id),
+    db: AsyncSession = Depends(get_db_session),
+):
+    """List available Figma projects for a team."""
+    from .clients.figma_client import get_figma_client
+
+    result = await db.execute(
+        select(WorkIntegration)
+        .options(selectinload(WorkIntegration.credentials))
+        .where(
+            and_(
+                WorkIntegration.id == integration_id,
+                WorkIntegration.user_id == user_id,
+                WorkIntegration.platform == "figma",
+            )
+        )
+    )
+    integration = result.scalar_one_or_none()
+
+    if not integration:
+        raise HTTPException(404, "Figma integration not found")
+
+    if not integration.credentials:
+        raise HTTPException(400, "No credentials found for integration")
+
+    access_token = decrypt_data(integration.credentials.encrypted_access_token)
+    client = get_figma_client(access_token)
+
+    projects = await client.list_team_projects(team_id)
+
+    return {
+        "projects": [
+            {
+                "id": p["id"],
+                "name": p["name"],
+            }
+            for p in projects
+        ],
+        "total": len(projects),
+    }
+
+
+# =============================================================================
 # Activity Routes
 # =============================================================================
 
