@@ -310,6 +310,18 @@ async def lifespan(app: FastAPI):
         import traceback
         traceback.print_exc()
 
+    # Initialize work integrations services (polling + daily digest)
+    try:
+        from work_integrations.services.polling_service import start_polling_service
+        from work_integrations.services.daily_digest_executor import get_daily_digest_executor
+        await start_polling_service()
+        await get_daily_digest_executor()
+        print("✅ Work integrations polling and daily digest services initialized")
+    except Exception as e:
+        print(f"⚠️ Failed to initialize work integrations services: {e}")
+        import traceback
+        traceback.print_exc()
+
     backend_url = os.getenv('BACKEND_API_URL', 'http://localhost:8000')
     ws_url = backend_url.replace('https://', 'wss://').replace('http://', 'ws://')
     print(f"📡 WebSocket: {ws_url}/ws/extension/{{user_id}}")
