@@ -139,7 +139,8 @@ ACTIVITY_TYPES = {
 }
 
 # Activity significance base scores (0.0 - 1.0)
-SIGNIFICANCE_SCORES = {
+# Alias for backward compatibility
+ACTIVITY_SIGNIFICANCE = SIGNIFICANCE_SCORES = {
     # GitHub - code shipping is most significant
     "release_published": 1.0,
     "pr_merged": 0.8,
