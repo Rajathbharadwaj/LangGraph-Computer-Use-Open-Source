@@ -178,6 +178,9 @@ class DailyDigestExecutor:
         total_users = 0
         total_drafts = 0
         errors = 0
+        emails_sent = 0
+
+        email_service = get_email_notification_service()
 
         async with self.async_session() as db:
             # Get all users with active integrations
@@ -191,6 +194,46 @@ class DailyDigestExecutor:
                 try:
                     drafts_created = await self.process_user_digest(db, user_id, target_date)
                     total_drafts += drafts_created
+
+                    # Send email notification if drafts were created
+                    if drafts_created > 0:
+                        try:
+                            # Get user email
+                            user_result = await db.execute(
+                                select(User).where(User.id == user_id)
+                            )
+                            user = user_result.scalar_one_or_none()
+
+                            if user and user.email:
+                                # Get created drafts for email content
+                                from database.models import ActivityDraft
+                                drafts_result = await db.execute(
+                                    select(ActivityDraft).where(
+                                        and_(
+                                            ActivityDraft.user_id == user_id,
+                                            ActivityDraft.digest_date == target_date,
+                                            ActivityDraft.status == "pending",
+                                        )
+                                    )
+                                )
+                                drafts = drafts_result.scalars().all()
+
+                                draft_info = [
+                                    {"theme": d.digest_theme, "content": d.content}
+                                    for d in drafts
+                                ]
+
+                                success = await email_service.send_new_drafts_notification(
+                                    to_email=user.email,
+                                    user_name=user.name or "there",
+                                    drafts=draft_info,
+                                )
+                                if success:
+                                    emails_sent += 1
+
+                        except Exception as email_error:
+                            logger.warning(f"Failed to send email to user {user_id}: {email_error}")
+
                 except Exception as e:
                     logger.error(f"Failed to process user {user_id}: {e}")
                     errors += 1
@@ -200,12 +243,13 @@ class DailyDigestExecutor:
         logger.info(
             f"✅ Daily digest complete: "
             f"{total_users} users, {total_drafts} drafts created, "
-            f"{errors} errors, {duration:.2f}s"
+            f"{emails_sent} emails sent, {errors} errors, {duration:.2f}s"
         )
 
         return {
             "users_processed": total_users,
             "drafts_created": total_drafts,
+            "emails_sent": emails_sent,
             "errors": errors,
             "duration_seconds": duration,
         }
