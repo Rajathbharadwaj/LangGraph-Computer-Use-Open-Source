@@ -358,6 +358,9 @@ app.include_router(crm_router)
 app.include_router(billing_router)
 app.include_router(stripe_webhook_router)
 
+# Include Work integrations router
+app.include_router(work_integrations_router)
+
 # Store active connections
 active_connections = {}
 
