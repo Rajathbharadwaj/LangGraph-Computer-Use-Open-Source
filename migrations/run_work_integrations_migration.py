@@ -15,9 +15,23 @@ from sqlalchemy import create_engine, text
 
 def run_migration():
     database_url = os.environ.get("DATABASE_URL") or os.environ.get("POSTGRES_URI")
+
+    # Support building URL from components (for Cloud Run Jobs)
     if not database_url:
-        print("ERROR: DATABASE_URL or POSTGRES_URI not set")
-        sys.exit(1)
+        db_password = os.environ.get("DB_PASSWORD")
+        db_host = os.environ.get("POSTGRES_HOST", "10.97.0.3")
+        db_user = os.environ.get("POSTGRES_USER", "postgres")
+        db_name = os.environ.get("POSTGRES_DB", "parallel_universe_db")
+
+        if db_password:
+            # URL-encode the password to handle special characters
+            from urllib.parse import quote
+            encoded_password = quote(db_password, safe='')
+            database_url = f"postgresql://{db_user}:{encoded_password}@{db_host}:5432/{db_name}"
+            print(f"Built DATABASE_URL from components (host: {db_host})")
+        else:
+            print("ERROR: DATABASE_URL/POSTGRES_URI not set and DB_PASSWORD not available")
+            sys.exit(1)
 
     # Ensure sync driver for migration
     if "+asyncpg" in database_url:
