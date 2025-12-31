@@ -55,6 +55,8 @@ from .models import (
 from .services.oauth_manager import get_work_oauth_manager
 from .clients.github_client import get_github_client
 from .webhooks.github_webhook import process_github_webhook
+from .webhooks.slack_webhook import get_slack_webhook_handler
+from .webhooks.linear_webhook import get_linear_webhook_handler
 
 logger = logging.getLogger(__name__)
 
