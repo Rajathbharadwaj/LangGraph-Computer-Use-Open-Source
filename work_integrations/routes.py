@@ -899,3 +899,54 @@ async def get_integration_stats(
         drafts_generated=0,  # TODO: Track properly
         drafts_approved=0,
     )
+
+
+# =============================================================================
+# Manual Digest Trigger (for testing)
+# =============================================================================
+
+@router.post("/digest/trigger")
+async def trigger_digest(
+    user_id: str = Depends(get_current_user_id),
+    db: AsyncSession = Depends(get_db_session),
+):
+    """
+    Manually trigger digest generation for the current user.
+
+    Useful for testing without waiting for the scheduled job.
+    """
+    from .services.activity_aggregator import ActivityAggregator
+    from .services.draft_generator import DraftGenerator
+
+    # Create aggregator and generator
+    aggregator = ActivityAggregator(db)
+    generator = DraftGenerator(db)
+
+    # Prepare digest
+    digest = await aggregator.prepare_digest(user_id)
+
+    if not digest:
+        return {
+            "success": False,
+            "message": "No activities to aggregate or insufficient activity",
+        }
+
+    # Generate drafts
+    drafts = await generator.generate_and_save_drafts(digest, num_drafts=1)
+
+    await db.commit()
+
+    return {
+        "success": True,
+        "message": f"Generated {len(drafts)} draft(s)",
+        "drafts": [
+            {
+                "id": d.id,
+                "content": d.content,
+                "theme": d.digest_theme,
+            }
+            for d in drafts
+        ],
+        "activities_used": len(digest["activity_ids"]),
+        "theme": digest["theme"],
+    }
