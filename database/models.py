@@ -1176,3 +1176,215 @@ class LearnedStyleRule(Base):
     # Relationships
     user = relationship("User", backref="learned_style_rules")
 
+
+# =============================================================================
+# Work Integrations Models - Build in Public Automation
+# =============================================================================
+
+
+class WorkIntegration(Base):
+    """
+    Connected work platforms for automatic activity capture.
+
+    Each integration represents a connection to a developer platform
+    (GitHub, Slack, Notion, Linear, Figma) where user activity is tracked
+    and used to generate "build in public" X posts.
+
+    Similar to AdsPlatform, but focused on work activity capture.
+    """
+    __tablename__ = "work_integrations"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(String, ForeignKey("users.id"), nullable=False)
+
+    # Platform identification
+    platform = Column(String(20), nullable=False)  # github, slack, notion, linear, figma
+    external_account_id = Column(String(100))  # Platform's account/org ID
+    external_account_name = Column(String(255))  # Display name (GitHub username, Slack workspace, etc.)
+
+    # Platform-specific configuration
+    github_repos = Column(JSON, default=[])  # List of repo names to track ["owner/repo1", "owner/repo2"]
+    github_org = Column(String(100))  # GitHub organization name (optional)
+    slack_channels = Column(JSON, default=[])  # List of channel IDs to monitor
+    slack_workspace_id = Column(String(50))  # Slack workspace ID
+    notion_database_ids = Column(JSON, default=[])  # List of database IDs to track
+    linear_team_id = Column(String(50))  # Linear team ID
+    figma_project_ids = Column(JSON, default=[])  # List of Figma project IDs
+
+    # Webhook configuration
+    webhook_secret = Column(String(64))  # For verifying incoming webhooks
+    webhook_registered = Column(Boolean, default=False)  # Has webhook been set up on platform?
+    webhook_url = Column(String(500))  # The webhook URL we gave to the platform
+
+    # Status
+    is_connected = Column(Boolean, default=True)
+    is_active = Column(Boolean, default=True)  # Can be paused without disconnecting
+    connection_error = Column(Text)  # Last error message if connection failed
+    scopes = Column(JSON, default=[])  # OAuth scopes granted
+
+    # Activity capture settings
+    capture_commits = Column(Boolean, default=True)
+    capture_prs = Column(Boolean, default=True)
+    capture_releases = Column(Boolean, default=True)
+    capture_issues = Column(Boolean, default=True)
+    capture_comments = Column(Boolean, default=True)
+
+    # Billing (credits consumed per month)
+    credits_per_month = Column(Integer, default=100)
+
+    # Timestamps
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    last_synced_at = Column(DateTime)
+    last_activity_at = Column(DateTime)  # When last activity was captured
+
+    # Relationships
+    user = relationship("User", backref="work_integrations")
+    credentials = relationship("WorkIntegrationCredential", back_populates="integration", uselist=False, cascade="all, delete-orphan")
+    activities = relationship("WorkActivity", back_populates="integration", cascade="all, delete-orphan")
+
+
+class WorkIntegrationCredential(Base):
+    """
+    Encrypted OAuth tokens for work integrations.
+
+    Follows same pattern as AdsCredential - uses Fernet encryption
+    via services/cookie_encryption.py.
+    """
+    __tablename__ = "work_integration_credentials"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    integration_id = Column(Integer, ForeignKey("work_integrations.id"), nullable=False)
+
+    # Encrypted tokens (use services/cookie_encryption.py)
+    encrypted_access_token = Column(Text)
+    encrypted_refresh_token = Column(Text)
+
+    # Token metadata
+    token_expires_at = Column(DateTime)
+    scopes = Column(JSON)  # List of granted permissions
+
+    # Timestamps
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    # Relationships
+    integration = relationship("WorkIntegration", back_populates="credentials")
+
+
+class WorkActivity(Base):
+    """
+    Captured work activities normalized across platforms.
+
+    All activities from GitHub, Slack, Notion, Linear, Figma are stored
+    in this unified format for processing by the draft generator.
+
+    Activity lifecycle:
+    1. Captured from webhook/poll → processed=False
+    2. Daily aggregator scores and groups activities
+    3. Draft generator creates ActivityDraft from activities
+    4. Activities marked as processed=True
+    """
+    __tablename__ = "work_activities"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    integration_id = Column(Integer, ForeignKey("work_integrations.id"), nullable=False)
+    user_id = Column(String, ForeignKey("users.id"), nullable=False)
+
+    # Activity identification
+    platform = Column(String(20), nullable=False)  # github, slack, notion, linear, figma
+    external_id = Column(String(100))  # Platform's unique ID for this activity
+    activity_type = Column(String(50), nullable=False)  # pr_merged, commit_pushed, release_published, issue_closed, etc.
+    category = Column(String(30), default="progress")  # code_shipped, progress, collaboration
+
+    # Content
+    title = Column(String(500), nullable=False)  # Short title of activity
+    description = Column(Text)  # Longer description if available
+    url = Column(String(500))  # Link to the activity on the platform
+    repo_or_project = Column(String(200))  # Repository name, project name, etc.
+
+    # Metrics (for significance scoring)
+    lines_added = Column(Integer, default=0)
+    lines_removed = Column(Integer, default=0)
+    files_changed = Column(Integer, default=0)
+    comments_count = Column(Integer, default=0)
+    reactions_count = Column(Integer, default=0)
+
+    # Significance scoring (calculated by aggregator)
+    significance_score = Column(Float, default=0.0)  # 0.0 - 1.0
+
+    # Raw payload (for debugging/reprocessing)
+    raw_payload = Column(JSON, default={})
+
+    # Processing status
+    processed = Column(Boolean, default=False)
+    processed_at = Column(DateTime)
+    draft_id = Column(Integer, ForeignKey("activity_drafts.id", use_alter=True), nullable=True)  # Which draft used this activity
+
+    # Timestamps
+    activity_at = Column(DateTime, nullable=False)  # When the activity happened on the platform
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    # Relationships
+    integration = relationship("WorkIntegration", back_populates="activities")
+    user = relationship("User", backref="work_activities")
+
+
+class ActivityDraft(Base):
+    """
+    AI-generated post drafts from work activities.
+
+    Created by the daily aggregator + draft generator service.
+    Users review drafts in the UI and can approve, edit, or reject.
+
+    Draft lifecycle:
+    1. pending: Just created, waiting for user review
+    2. approved: User approved, becomes a ScheduledPost
+    3. edited: User modified and approved
+    4. rejected: User rejected, will not be posted
+    5. expired: 7 days passed without action
+    """
+    __tablename__ = "activity_drafts"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(String, ForeignKey("users.id"), nullable=False)
+    x_account_id = Column(Integer, ForeignKey("x_accounts.id"), nullable=False)
+
+    # Generated content
+    content = Column(Text, nullable=False)  # The draft post content
+    ai_rationale = Column(Text)  # Why AI wrote it this way
+
+    # Source activities
+    source_activity_ids = Column(JSON, default=[])  # List of WorkActivity IDs used
+    activity_summary = Column(Text)  # Summary of activities used for generation
+
+    # Digest metadata
+    digest_date = Column(Date, nullable=False)  # Which day's activities this covers
+    digest_theme = Column(String(100))  # Theme detected (shipping, debugging, learning, etc.)
+
+    # Status
+    status = Column(String(20), default="pending")  # pending, approved, edited, rejected, expired, scheduled, posted
+    user_edited_content = Column(Text)  # If user edited before approving
+
+    # Scheduling (if approved)
+    scheduled_post_id = Column(Integer, ForeignKey("scheduled_posts.id"), nullable=True)
+    scheduled_at = Column(DateTime)
+    posted_at = Column(DateTime)
+
+    # Expiration
+    expires_at = Column(DateTime)  # 7 days after creation by default
+
+    # User feedback for style learning
+    feedback_rating = Column(Integer)  # 1-5 stars
+    feedback_text = Column(Text)
+
+    # Timestamps
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    reviewed_at = Column(DateTime)  # When user took action
+
+    # Relationships
+    user = relationship("User", backref="activity_drafts")
+    x_account = relationship("XAccount", backref="activity_drafts")
+    scheduled_post = relationship("ScheduledPost", backref="activity_draft")
+
