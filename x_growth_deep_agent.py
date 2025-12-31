@@ -3371,7 +3371,78 @@ Same for task("create_post", "Post about the new feature I shipped"):
 
 Just call the tools normally - the style transfer happens AUTOMATICALLY inside them!
 """
-    
+
+            # =================================================================
+            # ONBOARDING GUARDRAILS INJECTION
+            # These are hard rules the user set during preferences onboarding
+            # =================================================================
+            if preferences.preferences_onboarding_completed:
+                never_engage = preferences.get_never_engage_topics()
+                blocked = preferences.get_blocked_accounts()
+                reply_limits = preferences.get_reply_limits()
+                voice_styles = preferences.get_voice_styles()
+                priority_types = preferences.get_priority_post_types()
+
+                guardrails_prompt = f"""
+
+⛔ HARD GUARDRAILS (NON-NEGOTIABLE - ENFORCED BY USER):
+These are topics and accounts you MUST NEVER engage with. Skip any posts that touch these.
+
+Topics to NEVER engage with (skip these posts entirely):
+{', '.join(never_engage) if never_engage else 'None specified'}
+
+Blocked accounts (NEVER reply to these handles):
+{', '.join(['@' + a for a in blocked]) if blocked else 'None specified'}
+
+Debate policy: {preferences.debate_preference}
+- "avoid": NEVER disagree or debate, even politely
+- "light": Only gentle corrections with extreme care
+- "balanced": Respectful disagreement OK if clearly right
+- "case_by_case": Use careful judgment
+
+🎯 ENGAGEMENT BOUNDARIES (Enforced daily limits):
+Reply frequency: {preferences.reply_frequency}
+- Max replies: {reply_limits.get('replies', 3)}/day
+- Max likes: {reply_limits.get('likes', 10)}/day
+
+Active hours: {preferences.active_hours_type}
+{f"Active hours range: {preferences.active_hours_range.get('start')} - {preferences.active_hours_range.get('end')} ({preferences.active_hours_range.get('tz')})" if preferences.active_hours_range else ""}
+
+Priority post types: {', '.join(priority_types) if priority_types else 'All relevant posts'}
+
+⚠️ RISK CALIBRATION (How to handle uncertainty):
+When uncertain: {preferences.uncertainty_action}
+- "do_nothing": Silence is preferred. Skip if ANY doubt. Default to safety.
+- "save_review": Queue uncertain posts for human review
+- "reply_cautious": Proceed with extra care, very neutral tone
+- "dynamic": Assess each situation but lean conservative
+
+Emotional posts: {preferences.emotional_post_handling}
+- "never": SKIP all emotional content completely
+- "observe": Watch but don't interact at all
+- "neutral_only": Respond only with neutral, supportive tone (no matching emotion)
+
+User's priority: {"⚠️ SAFETY FIRST - I'd rather miss 100 opportunities than post ONE thing off-brand" if preferences.worse_outcome == "post_off" else "Balance - Don't miss good opportunities, acceptable risk"}
+
+🎨 VOICE PROFILE:
+Voice styles: {', '.join(voice_styles) if voice_styles else 'Match imported posts (learn from examples)'}
+Primary intent: {preferences.primary_intent}
+AI initiation comfort: {preferences.ai_initiation_comfort}
+
+🔒 ENFORCEMENT REMINDERS:
+1. Before ANY engagement: Check if topic/account is blocked
+2. Before replying: Check daily reply count hasn't exceeded limit
+3. If uncertain: Default to "{preferences.uncertainty_action}"
+4. When in doubt: SILENCE IS A VALID OUTCOME
+5. You are a junior assistant TERRIFIED of embarrassing the user
+"""
+                system_prompt += guardrails_prompt
+                print(f"✅ [Guardrails] Injected onboarding preferences for user {user_id}")
+                print(f"   - Never engage topics: {len(never_engage)} topics blocked")
+                print(f"   - Blocked accounts: {len(blocked)} accounts")
+                print(f"   - Reply limit: {reply_limits.get('replies', 3)}/day")
+                print(f"   - Uncertainty action: {preferences.uncertainty_action}")
+
     # Get atomic subagents with AUTOMATIC style transfer if user_id exists
     subagents = get_atomic_subagents(store_for_agent, user_id, model, model_provider)
 
