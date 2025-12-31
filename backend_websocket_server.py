@@ -84,6 +84,171 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"⚠️ Database initialization warning: {e}")
 
+    # Run migrations to add new tables and columns if they don't exist
+    try:
+        from database.database import engine
+        from sqlalchemy import text
+        with engine.connect() as conn:
+            # Create user_comments table if it doesn't exist
+            conn.execute(text("""
+                CREATE TABLE IF NOT EXISTS user_comments (
+                    id SERIAL PRIMARY KEY,
+                    x_account_id INTEGER REFERENCES x_accounts(id),
+                    content TEXT NOT NULL,
+                    comment_url VARCHAR(500),
+                    target_post_url VARCHAR(500),
+                    target_post_author VARCHAR(100),
+                    target_post_content_preview VARCHAR(500),
+                    likes INTEGER DEFAULT 0,
+                    replies INTEGER DEFAULT 0,
+                    retweets INTEGER DEFAULT 0,
+                    impressions INTEGER DEFAULT 0,
+                    source VARCHAR(20) DEFAULT 'imported',
+                    last_scraped_at TIMESTAMP,
+                    scrape_status VARCHAR(20) DEFAULT 'pending',
+                    scrape_error TEXT,
+                    commented_at TIMESTAMP,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+            """))
+
+            # Create received_comments table if it doesn't exist
+            conn.execute(text("""
+                CREATE TABLE IF NOT EXISTS received_comments (
+                    id SERIAL PRIMARY KEY,
+                    user_post_id INTEGER REFERENCES user_posts(id),
+                    commenter_username VARCHAR(100),
+                    commenter_display_name VARCHAR(255),
+                    comment_url VARCHAR(500),
+                    content TEXT,
+                    likes INTEGER DEFAULT 0,
+                    replies INTEGER DEFAULT 0,
+                    we_replied BOOLEAN DEFAULT FALSE,
+                    our_reply_url VARCHAR(500),
+                    commented_at TIMESTAMP,
+                    last_scraped_at TIMESTAMP,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+            """))
+
+            # Add source column to user_posts if missing
+            conn.execute(text("""
+                DO $$
+                BEGIN
+                    IF NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_name = 'user_posts' AND column_name = 'source'
+                    ) THEN
+                        ALTER TABLE user_posts ADD COLUMN source VARCHAR(20) DEFAULT 'imported';
+                    END IF;
+                END $$;
+            """))
+
+            # Add source column to user_comments if missing (handles existing tables)
+            conn.execute(text("""
+                DO $$
+                BEGIN
+                    IF NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_name = 'user_comments' AND column_name = 'source'
+                    ) THEN
+                        ALTER TABLE user_comments ADD COLUMN source VARCHAR(20) DEFAULT 'imported';
+                    END IF;
+                END $$;
+            """))
+
+            # Add retweets column to user_comments if missing
+            conn.execute(text("""
+                DO $$
+                BEGIN
+                    IF NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_name = 'user_comments' AND column_name = 'retweets'
+                    ) THEN
+                        ALTER TABLE user_comments ADD COLUMN retweets INTEGER DEFAULT 0;
+                    END IF;
+                END $$;
+            """))
+
+            # ================================================================
+            # Style Learning Tables (Continual Learning System)
+            # ================================================================
+
+            # Create style_feedback table for tracking user feedback
+            conn.execute(text("""
+                CREATE TABLE IF NOT EXISTS style_feedback (
+                    id SERIAL PRIMARY KEY,
+                    user_id VARCHAR(255) NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                    x_account_id INTEGER REFERENCES x_accounts(id) ON DELETE SET NULL,
+                    generation_type VARCHAR(20) NOT NULL,
+                    generation_id VARCHAR(100),
+                    original_content TEXT NOT NULL,
+                    edited_content TEXT,
+                    action VARCHAR(20) NOT NULL,
+                    edit_distance FLOAT,
+                    rating INTEGER,
+                    feedback_text TEXT,
+                    feedback_tags JSONB DEFAULT '[]',
+                    removed_phrases JSONB DEFAULT '[]',
+                    added_phrases JSONB DEFAULT '[]',
+                    learned_patterns JSONB DEFAULT '{}',
+                    processed BOOLEAN DEFAULT FALSE,
+                    processed_at TIMESTAMP,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+            """))
+
+            # Create style_evolution_snapshots table
+            conn.execute(text("""
+                CREATE TABLE IF NOT EXISTS style_evolution_snapshots (
+                    id SERIAL PRIMARY KEY,
+                    user_id VARCHAR(255) NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                    snapshot_id VARCHAR(50) UNIQUE NOT NULL,
+                    profile_json JSONB NOT NULL,
+                    post_count_at_snapshot INTEGER DEFAULT 0,
+                    comment_count_at_snapshot INTEGER DEFAULT 0,
+                    trigger VARCHAR(50) DEFAULT 'manual',
+                    drift_from_previous FLOAT,
+                    drift_details JSONB DEFAULT '{}',
+                    is_active BOOLEAN DEFAULT TRUE,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+            """))
+
+            # Create learned_style_rules table
+            conn.execute(text("""
+                CREATE TABLE IF NOT EXISTS learned_style_rules (
+                    id SERIAL PRIMARY KEY,
+                    user_id VARCHAR(255) NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                    rule_type VARCHAR(30) NOT NULL,
+                    rule_content TEXT NOT NULL,
+                    confidence FLOAT DEFAULT 0.5,
+                    source_feedback_count INTEGER DEFAULT 1,
+                    source_feedback_ids JSONB DEFAULT '[]',
+                    priority INTEGER DEFAULT 1,
+                    is_active BOOLEAN DEFAULT TRUE,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    last_applied_at TIMESTAMP
+                );
+            """))
+
+            # Create indexes for efficient queries
+            conn.execute(text("""
+                CREATE INDEX IF NOT EXISTS idx_style_feedback_user ON style_feedback(user_id);
+                CREATE INDEX IF NOT EXISTS idx_style_feedback_processed ON style_feedback(processed);
+                CREATE INDEX IF NOT EXISTS idx_style_snapshots_user ON style_evolution_snapshots(user_id);
+                CREATE INDEX IF NOT EXISTS idx_style_rules_user ON learned_style_rules(user_id);
+                CREATE INDEX IF NOT EXISTS idx_style_rules_active ON learned_style_rules(user_id, is_active);
+            """))
+
+            conn.commit()
+            print("✅ Database migrations completed (including style learning tables)")
+    except Exception as e:
+        print(f"⚠️ Database migration warning: {e}")
+
     # Initialize PostgresStore with a connection pool
     # This is the proper way to use PostgresStore in a long-running server
     # LangGraph uses POSTGRES_URI, backend-api uses DATABASE_URL - check both
@@ -385,11 +550,16 @@ async def save_feedback(data: dict, clerk_user_id: str = Depends(get_current_use
         feedback_text = data.get("feedback", "")
         original_content = data.get("original_content", "")
         context = data.get("context", "")
+        edited_content = data.get("edited_content", "")
+        rating = data.get("rating")  # 1-5 or thumbs up/down
+        action = data.get("action", "feedback")  # approved, edited, rejected, feedback
+        generation_type = data.get("generation_type", "comment")  # post, comment, thread
+        tags = data.get("tags", [])  # ["too_formal", "ai_sounding", etc.]
 
-        if not clerk_user_id or not feedback_text:
-            return {"success": False, "error": "Missing authentication or feedback"}
+        if not clerk_user_id:
+            return {"success": False, "error": "Missing authentication"}
 
-        print(f"💬 Saving feedback for authenticated user: {clerk_user_id}")
+        print(f"💬 Saving style feedback for user: {clerk_user_id}")
 
         # Store feedback in the store using AUTHENTICATED clerk_user_id
         namespace = (clerk_user_id, "style_feedback")
@@ -400,25 +570,408 @@ async def save_feedback(data: dict, clerk_user_id: str = Depends(get_current_use
             "user_id": clerk_user_id,
             "feedback": feedback_text,
             "original_content": original_content,
+            "edited_content": edited_content,
             "context": context,
+            "rating": rating,
+            "action": action,
+            "generation_type": generation_type,
+            "tags": tags,
             "timestamp": datetime.now().isoformat()
         }
-        
+
         store.put(namespace, feedback_id, feedback_data)
-        
-        print(f"✅ Saved feedback: {feedback_text[:50]}...")
-        
+
+        # Integrate with FeedbackProcessor for continual learning
+        try:
+            from feedback_processor import FeedbackProcessor
+            processor = FeedbackProcessor(store, clerk_user_id)
+
+            # If content was edited, learn from the differences
+            if edited_content and original_content and edited_content != original_content:
+                learning_result = await processor.learn_from_edit(
+                    original=original_content,
+                    edited=edited_content,
+                    content_type=generation_type
+                )
+                feedback_data["learning_result"] = learning_result
+                print(f"📚 Learned from edit: {learning_result.get('learned_patterns', [])}")
+
+            # If explicit feedback provided, process it
+            if feedback_text or rating:
+                await processor.process_explicit_feedback(
+                    feedback_id=feedback_id,
+                    rating=rating,
+                    feedback_text=feedback_text,
+                    tags=tags,
+                    original_content=original_content
+                )
+                print(f"📝 Processed explicit feedback: rating={rating}")
+
+        except ImportError:
+            print("⚠️ FeedbackProcessor not available, skipping continual learning")
+        except Exception as fp_error:
+            print(f"⚠️ FeedbackProcessor error: {fp_error}")
+
+        # Also save to database for persistence
+        try:
+            from database.database import SessionLocal
+            from database.models import StyleFeedback
+            from difflib import SequenceMatcher
+
+            db = SessionLocal()
+            try:
+                # Calculate edit distance if content was edited
+                edit_distance = None
+                if edited_content and original_content:
+                    edit_distance = 1.0 - SequenceMatcher(None, original_content, edited_content).ratio()
+
+                db_feedback = StyleFeedback(
+                    user_id=clerk_user_id,
+                    generation_type=generation_type,
+                    original_content=original_content,
+                    edited_content=edited_content if edited_content else None,
+                    action=action if action else "feedback",
+                    edit_distance=edit_distance,
+                    rating=rating,
+                    feedback_text=feedback_text,
+                    feedback_tags=tags
+                )
+                db.add(db_feedback)
+                db.commit()
+                print(f"💾 Saved feedback to database: {db_feedback.id}")
+            finally:
+                db.close()
+        except Exception as db_error:
+            print(f"⚠️ Database save warning: {db_error}")
+
+        print(f"✅ Saved feedback: {feedback_text[:50] if feedback_text else action}...")
+
         return {
             "success": True,
             "feedback_id": feedback_id,
-            "message": "Feedback saved successfully"
+            "message": "Feedback saved and processed successfully",
+            "learning_applied": True
         }
-        
+
     except Exception as e:
         print(f"❌ Error saving feedback: {e}")
         import traceback
         traceback.print_exc()
         return {"success": False, "error": str(e)}
+
+
+# ============================================================================
+# STYLE LEARNING API (Continual Learning System)
+# ============================================================================
+
+@app.get("/api/style/profile")
+async def get_style_profile(clerk_user_id: str = Depends(get_current_user)):
+    """
+    Get user's deep writing style profile.
+
+    Returns the DeepStyleProfile with multi-dimensional analysis including:
+    - Tone scores (professional, casual, technical, etc.)
+    - Signature phrases and colloquialisms
+    - Punctuation and emoji patterns
+    - Vocabulary complexity metrics
+
+    Use this to display style insights to the user.
+    """
+    try:
+        if not clerk_user_id or not store:
+            raise HTTPException(status_code=401, detail="Authentication required")
+
+        from x_writing_style_learner import XWritingStyleManager
+
+        style_manager = XWritingStyleManager(store, clerk_user_id)
+
+        # Try to get existing deep profile
+        deep_profile = style_manager.get_deep_style_profile()
+
+        if not deep_profile:
+            # Calculate on demand (may be slow first time)
+            deep_profile = style_manager.deep_analyze_writing_style(use_llm_for_tone=False)
+
+        return {
+            "success": True,
+            "profile": deep_profile.to_dict() if deep_profile else None,
+            "summary": deep_profile.get_style_summary() if deep_profile else None
+        }
+
+    except Exception as e:
+        print(f"❌ Error getting style profile: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/style/recalculate")
+async def recalculate_style_profile(clerk_user_id: str = Depends(get_current_user)):
+    """
+    Force recalculation of user's style profile.
+
+    Call this after importing new posts or if the user feels the
+    style matching is off.
+    """
+    try:
+        if not clerk_user_id or not store:
+            raise HTTPException(status_code=401, detail="Authentication required")
+
+        from x_writing_style_learner import XWritingStyleManager
+        from style_evolution_tracker import StyleEvolutionTracker
+
+        style_manager = XWritingStyleManager(store, clerk_user_id)
+
+        # Recalculate deep profile
+        deep_profile = style_manager.deep_analyze_writing_style(use_llm_for_tone=False)
+
+        # Create snapshot for versioning
+        tracker = StyleEvolutionTracker(store, clerk_user_id)
+        snapshot_id = tracker.snapshot_style(
+            profile=deep_profile.to_dict(),
+            trigger="manual_recalculation"
+        )
+
+        return {
+            "success": True,
+            "message": "Style profile recalculated",
+            "snapshot_id": snapshot_id,
+            "profile_summary": deep_profile.get_style_summary()
+        }
+
+    except Exception as e:
+        print(f"❌ Error recalculating style profile: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/style/rules")
+async def get_learned_rules(clerk_user_id: str = Depends(get_current_user)):
+    """
+    Get all learned style rules from user feedback.
+
+    Returns rules that have been learned from:
+    - User edits (removed phrases become banned)
+    - Explicit feedback ("I never say this")
+    - Pattern analysis from approvals/rejections
+    """
+    try:
+        if not clerk_user_id:
+            raise HTTPException(status_code=401, detail="Authentication required")
+
+        from database.database import SessionLocal
+        from database.models import LearnedStyleRule
+
+        db = SessionLocal()
+        try:
+            rules = db.query(LearnedStyleRule).filter(
+                LearnedStyleRule.user_id == clerk_user_id,
+                LearnedStyleRule.is_active == True
+            ).order_by(LearnedStyleRule.priority.desc()).all()
+
+            return {
+                "success": True,
+                "rules": [
+                    {
+                        "id": r.id,
+                        "type": r.rule_type,
+                        "content": r.rule_content,
+                        "confidence": r.confidence,
+                        "source_count": r.source_feedback_count
+                    }
+                    for r in rules
+                ],
+                "total": len(rules)
+            }
+        finally:
+            db.close()
+
+    except Exception as e:
+        print(f"❌ Error getting learned rules: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/style/banned-phrases")
+async def get_banned_phrases(clerk_user_id: str = Depends(get_current_user)):
+    """
+    Get all banned phrases (global + user-specific).
+
+    Returns phrases that should never appear in generated content.
+    """
+    try:
+        if not clerk_user_id or not store:
+            raise HTTPException(status_code=401, detail="Authentication required")
+
+        from banned_patterns_manager import BannedPatternsManager
+
+        manager = BannedPatternsManager(store, clerk_user_id)
+        all_banned = manager.get_all_banned(clerk_user_id)
+
+        return {
+            "success": True,
+            "banned_phrases": [
+                {
+                    "phrase": bp.phrase,
+                    "category": bp.category,
+                    "source": bp.source,
+                    "confidence": bp.confidence
+                }
+                for bp in all_banned
+            ],
+            "total": len(all_banned)
+        }
+
+    except Exception as e:
+        print(f"❌ Error getting banned phrases: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/style/banned-phrases")
+async def add_banned_phrase(
+    data: dict,
+    clerk_user_id: str = Depends(get_current_user)
+):
+    """
+    Add a phrase to user's banned list.
+
+    Request body:
+    {
+        "phrase": "I never say this",
+        "category": "generic"  // optional: generic, formal, slang
+    }
+    """
+    try:
+        if not clerk_user_id or not store:
+            raise HTTPException(status_code=401, detail="Authentication required")
+
+        phrase = data.get("phrase", "").strip()
+        category = data.get("category", "user_specified")
+
+        if not phrase:
+            raise HTTPException(status_code=400, detail="Phrase is required")
+
+        from banned_patterns_manager import BannedPatternsManager
+
+        manager = BannedPatternsManager(store, clerk_user_id)
+        manager.add_user_banned_phrase(phrase, category)
+
+        return {
+            "success": True,
+            "message": f"Added '{phrase}' to banned phrases",
+            "phrase": phrase
+        }
+
+    except Exception as e:
+        print(f"❌ Error adding banned phrase: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/style/evolution")
+async def get_style_evolution(clerk_user_id: str = Depends(get_current_user)):
+    """
+    Get style evolution history and drift analysis.
+
+    Shows how the user's writing style has changed over time.
+    """
+    try:
+        if not clerk_user_id:
+            raise HTTPException(status_code=401, detail="Authentication required")
+
+        from database.database import SessionLocal
+        from database.models import StyleEvolutionSnapshot
+
+        db = SessionLocal()
+        try:
+            snapshots = db.query(StyleEvolutionSnapshot).filter(
+                StyleEvolutionSnapshot.user_id == clerk_user_id
+            ).order_by(StyleEvolutionSnapshot.created_at.desc()).limit(10).all()
+
+            return {
+                "success": True,
+                "snapshots": [
+                    {
+                        "id": s.snapshot_id,
+                        "trigger": s.trigger,
+                        "drift_score": s.drift_from_previous,
+                        "post_count": s.post_count_at_snapshot,
+                        "is_active": s.is_active,
+                        "created_at": s.created_at.isoformat() if s.created_at else None
+                    }
+                    for s in snapshots
+                ],
+                "total": len(snapshots)
+            }
+        finally:
+            db.close()
+
+    except Exception as e:
+        print(f"❌ Error getting style evolution: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/style/feedback-stats")
+async def get_feedback_stats(clerk_user_id: str = Depends(get_current_user)):
+    """
+    Get statistics about user's feedback on generated content.
+
+    Useful for showing the user how well the AI is matching their style.
+    """
+    try:
+        if not clerk_user_id:
+            raise HTTPException(status_code=401, detail="Authentication required")
+
+        from database.database import SessionLocal
+        from database.models import StyleFeedback
+        from sqlalchemy import func
+
+        db = SessionLocal()
+        try:
+            # Count by action type
+            action_counts = db.query(
+                StyleFeedback.action,
+                func.count(StyleFeedback.id)
+            ).filter(
+                StyleFeedback.user_id == clerk_user_id
+            ).group_by(StyleFeedback.action).all()
+
+            # Average edit distance for edited content
+            avg_edit = db.query(
+                func.avg(StyleFeedback.edit_distance)
+            ).filter(
+                StyleFeedback.user_id == clerk_user_id,
+                StyleFeedback.action == "edited"
+            ).scalar()
+
+            # Average rating
+            avg_rating = db.query(
+                func.avg(StyleFeedback.rating)
+            ).filter(
+                StyleFeedback.user_id == clerk_user_id,
+                StyleFeedback.rating.isnot(None)
+            ).scalar()
+
+            total = sum(count for _, count in action_counts)
+
+            return {
+                "success": True,
+                "stats": {
+                    "total_feedback": total,
+                    "by_action": {action: count for action, count in action_counts},
+                    "approval_rate": (
+                        dict(action_counts).get("approved", 0) / total * 100
+                        if total > 0 else 0
+                    ),
+                    "average_edit_distance": float(avg_edit) if avg_edit else None,
+                    "average_rating": float(avg_rating) if avg_rating else None
+                }
+            }
+        finally:
+            db.close()
+
+    except Exception as e:
+        print(f"❌ Error getting feedback stats: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # ============================================================================
@@ -1300,6 +1853,118 @@ async def activity_websocket(websocket: WebSocket, user_id: str):
         print(f"🔌 [Activity WS] Client {user_id} disconnected")
     except Exception as e:
         print(f"❌ [Activity WS] Error: {e}")
+
+
+# DEBUG ENDPOINT - List all store data for a user across all namespaces (NO AUTH - TEMPORARY)
+@app.get("/api/debug/store-data/{user_id}")
+async def debug_store_data(user_id: str):
+    """
+    DEBUG: List all store data for a user across different namespaces.
+    This helps identify where activity data might be stored.
+    """
+    try:
+        if not store:
+            return {"success": False, "error": "Store not initialized"}
+
+        namespaces_to_check = [
+            (user_id, "activity"),
+            (user_id, "filesystem"),
+            (user_id, "writing_samples"),
+            (user_id, "social_graph"),
+            (user_id, "style_feedback"),
+            (user_id,),  # Just user_id as namespace
+            ("activity",),
+            ("filesystem",),
+            # Try assistant_id based namespaces (default StoreBackend behavior)
+            ("x_growth_deep_agent", "filesystem"),
+            ("deep_agent", "filesystem"),
+            ("assistant", "filesystem"),
+            # Try empty/root namespaces
+            (),
+        ]
+
+        results = {}
+        for ns in namespaces_to_check:
+            try:
+                items = list(store.search(ns, limit=10))
+                if items:
+                    results[str(ns)] = {
+                        "count": len(items),
+                        "keys": [item.key for item in items[:5]],
+                        "sample": items[0].value if items else None
+                    }
+            except Exception as e:
+                results[str(ns)] = {"error": str(e)}
+
+        # Also try to list all namespaces if possible
+        try:
+            # Try searching with just prefix
+            all_items = list(store.search((user_id,), limit=100))
+
+            # Group by namespace
+            ns_groups = {}
+            for item in all_items:
+                ns_str = str(item.namespace)
+                if ns_str not in ns_groups:
+                    ns_groups[ns_str] = []
+                ns_groups[ns_str].append(item.key)
+
+            # Check for /memories/ or action_history in keys
+            memory_keys = [item.key for item in all_items if 'memor' in item.key.lower() or 'action' in item.key.lower() or 'history' in item.key.lower()]
+
+            results["all_user_items"] = {
+                "count": len(all_items),
+                "namespaces": ns_groups,
+                "memory_related_keys": memory_keys
+            }
+        except Exception as e:
+            results["all_user_items"] = {"error": str(e)}
+
+        # GLOBAL SEARCH: Find action_history in ANY namespace (including UUID-based ones)
+        try:
+            # Search with empty prefix to get everything
+            global_items = list(store.search((), limit=500))
+
+            # Find items with action_history or /memories/ in key
+            action_history_items = []
+            for item in global_items:
+                key_lower = item.key.lower()
+                if 'action' in key_lower or 'history' in key_lower or '/memories' in key_lower or 'memor' in key_lower:
+                    action_history_items.append({
+                        "namespace": str(item.namespace),
+                        "key": item.key,
+                        "value_type": type(item.value).__name__,
+                        "value_preview": str(item.value)[:300] if item.value else None
+                    })
+
+            # Also find any namespace that contains "filesystem"
+            filesystem_items = []
+            for item in global_items:
+                ns_str = str(item.namespace).lower()
+                if 'filesystem' in ns_str:
+                    filesystem_items.append({
+                        "namespace": str(item.namespace),
+                        "key": item.key,
+                    })
+
+            # Get unique namespaces
+            unique_namespaces = list(set(str(item.namespace) for item in global_items))
+
+            results["global_search"] = {
+                "total_items_scanned": len(global_items),
+                "unique_namespaces": unique_namespaces[:30],
+                "action_history_matches": action_history_items,
+                "filesystem_namespace_items": filesystem_items[:20]
+            }
+        except Exception as e:
+            results["global_search"] = {"error": str(e)}
+
+        return {"success": True, "user_id": user_id, "namespaces": results}
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return {"success": False, "error": str(e)}
 
 
 # LEGACY ENDPOINT - For backwards compatibility with /memories/action_history.json format
@@ -3356,14 +4021,15 @@ async def scrape_posts_docker(
                         const timeEl = tweet.querySelector('time');
                         const likeBtn = tweet.querySelector('[data-testid="like"]');
                         const replyBtn = tweet.querySelector('[data-testid="reply"]');
-                        
+                        const repostBtn = tweet.querySelector('[data-testid="retweet"]');
+
                         return {
                             content: text,
                             timestamp: timeEl ? timeEl.getAttribute('datetime') : new Date().toISOString(),
                             engagement: {
                                 likes: parseInt(likeBtn?.getAttribute('aria-label')?.match(/\\d+/)?.[0] || '0'),
                                 replies: parseInt(replyBtn?.getAttribute('aria-label')?.match(/\\d+/)?.[0] || '0'),
-                                reposts: 0
+                                reposts: parseInt(repostBtn?.getAttribute('aria-label')?.match(/\\d+/)?.[0] || '0')
                             }
                         };
                     }).filter(p => p.content);
@@ -3524,7 +4190,17 @@ async def scrape_posts_docker(
             from database.database import SessionLocal
             
             db = SessionLocal()
-            
+
+            # BLOCKER: One user can only have one X account linked
+            existing_user_account = db.query(XAccount).filter(XAccount.user_id == clerk_user_id).first()
+            if existing_user_account and existing_user_account.username.lower() != username.lower():
+                db.close()
+                print(f"❌ User {clerk_user_id} already has X account @{existing_user_account.username} linked")
+                return {
+                    "success": False,
+                    "error": f"You already have @{existing_user_account.username} linked. One account per user. Please disconnect it first in Settings before linking @{username}."
+                }
+
             # Get or create X account
             x_account = db.query(XAccount).filter(XAccount.username == username).first()
             if not x_account:
@@ -3553,7 +4229,7 @@ async def scrape_posts_docker(
                         content=post["content"],
                         post_url=post.get("url"),
                         likes=post.get("engagement", {}).get("likes", 0),
-                        retweets=post.get("engagement", {}).get("retweets", 0),
+                        retweets=post.get("engagement", {}).get("reposts", 0),  # JS returns "reposts"
                         replies=post.get("engagement", {}).get("replies", 0),
                         posted_at=post.get("timestamp")
                     )
@@ -3725,28 +4401,28 @@ async def import_posts(
         }
 
     # ==================== SECURITY CHECK ====================
-    # Verify that the X handle matches the authenticated user's connected account
-    x_account = db.query(XAccount).filter(
-        XAccount.user_id == user_id,
-        XAccount.is_connected == True
-    ).first()
+    # BLOCKER: One user can only have one X account linked
+    # Check for ANY existing account (connected or not)
+    x_account = db.query(XAccount).filter(XAccount.user_id == user_id).first()
 
     if x_account:
-        # User has a connected X account - verify it matches
+        # User has an X account - verify it matches
         if x_handle_from_request and x_handle_from_request.lower() != x_account.username.lower():
             print(f"⚠️ SECURITY ALERT: User {user_id} attempted to import posts from @{x_handle_from_request}")
-            print(f"   But their connected X account is @{x_account.username}")
+            print(f"   But their linked X account is @{x_account.username}")
             return {
                 "success": False,
-                "error": f"Security Error: You are trying to import posts from @{x_handle_from_request}, but your connected account is @{x_account.username}. Please import posts from your own account only."
+                "error": f"You already have @{x_account.username} linked. One account per user. Please disconnect it first in Settings before linking @{x_handle_from_request}."
             }
+        # Ensure it's marked as connected
+        if not x_account.is_connected:
+            x_account.is_connected = True
+            db.commit()
         print(f"✅ Security check passed: Importing posts for @{x_account.username} (user_id: {user_id})")
     else:
-        # No X account in database yet - this might be first import
-        # Store the handle for future reference
+        # No X account in database yet - this is first link
         if x_handle_from_request:
-            print(f"⚠️ No X account found for user {user_id}, importing posts for @{x_handle_from_request}")
-            print(f"   Creating X account entry...")
+            print(f"📝 First X account for user {user_id}, linking @{x_handle_from_request}")
             x_account = XAccount(
                 user_id=user_id,
                 username=x_handle_from_request,
@@ -3790,18 +4466,19 @@ async def import_posts(
         # Bulk save to store
         style_manager.bulk_import_posts(writing_samples)
         print(f"💾 Saved {len(writing_samples)} posts to LangGraph Store with embeddings")
-        
+
     except Exception as e:
         print(f"⚠️ Error saving to store: {e}")
         import traceback
         traceback.print_exc()
-    
+
     return {
         "success": True,
         "imported": len(new_posts),
         "total": len(user_posts[user_id]),
         "message": f"Imported {len(new_posts)} new posts"
     }
+
 
 @app.post("/api/automate/like-post")
 async def like_post(data: dict, user_id: str = Depends(get_current_user)):
@@ -4201,6 +4878,100 @@ async def upload_media(
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
+
+class GenerateAIImageRequest(BaseModel):
+    post_content: str
+    aspect_ratio: str = "1:1"
+
+
+@app.post("/api/generate-ai-image")
+async def generate_ai_image(
+    request: GenerateAIImageRequest,
+    user_id: str = Depends(get_current_user)
+):
+    """
+    Generate an AI image for a post using KIE AI's Nano Banana Pro model.
+
+    This endpoint:
+    1. Checks feature access and credits
+    2. Uses Claude to generate an optimized prompt
+    3. Calls KIE AI to generate the image
+    4. Charges credits and increments feature usage
+    5. Returns the image URL
+
+    Cost: 27 credits (18 KIE credits × 1.5 markup)
+    """
+    from services.kie_image_service import generate_ai_image_for_post
+    from services.billing_service import BillingService
+    from services.stripe_service import CREDIT_COSTS
+
+    AI_IMAGE_CREDITS = CREDIT_COSTS.get("ai_image_generation", 27)
+
+    db = next(get_db())
+    try:
+        billing = BillingService(db)
+
+        # Check feature access (image_generations limit per plan)
+        has_access, reason = billing.check_feature_access(user_id, "image_generations")
+        if not has_access:
+            raise HTTPException(status_code=403, detail=reason)
+
+        # Check if user has enough credits
+        has_credits, credit_reason = billing.check_credits(user_id, AI_IMAGE_CREDITS)
+        if not has_credits:
+            raise HTTPException(status_code=403, detail=credit_reason)
+
+        print(f"🎨 Generating AI image for user {user_id}")
+        print(f"📝 Post content: {request.post_content[:100]}...")
+
+        result = await generate_ai_image_for_post(
+            post_content=request.post_content,
+            aspect_ratio=request.aspect_ratio
+        )
+
+        if result.get("success"):
+            # Charge credits ONLY on success
+            billing.consume_credits(
+                user_id=user_id,
+                credits=AI_IMAGE_CREDITS,
+                description=f"AI image generation (KIE Nano Banana Pro)",
+                endpoint="/api/generate-ai-image",
+                agent_type="ai_image"
+            )
+
+            # Increment feature usage counter
+            billing.increment_feature_usage(user_id, "image_generations")
+
+            print(f"✅ AI image generated: {result.get('image_url')}")
+            print(f"📝 Generated prompt: {result.get('prompt', '')[:100]}...")
+            print(f"💳 Charged {AI_IMAGE_CREDITS} credits")
+
+            return {
+                "success": True,
+                "image_url": result.get("image_url"),
+                "task_id": result.get("task_id"),
+                "cost_time_ms": result.get("cost_time_ms"),
+                "prompt": result.get("prompt"),
+                "credits_charged": AI_IMAGE_CREDITS
+            }
+        else:
+            print(f"❌ AI image generation failed: {result.get('error')}")
+            raise HTTPException(
+                status_code=500,
+                detail=result.get("error", "Image generation failed")
+            )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"❌ Error generating AI image: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        db.close()
+
+
 @app.post("/api/scheduled-posts/generate-ai")
 async def generate_ai_content(
     request: Request,
@@ -4280,25 +5051,39 @@ async def generate_ai_content(
 
         # Get or create x_account
         if not x_account:
-            # Ensure user exists in database (in case webhook hasn't run yet)
-            user = db.query(User).filter(User.id == clerk_user_id).first()
-            if not user:
-                user = User(
-                    id=clerk_user_id,
-                    email=f"{clerk_user_id}@temp.com"  # Temporary email, will be updated by webhook
-                )
-                db.add(user)
+            # BLOCKER: Check if user has ANY X account (connected or not)
+            existing_account = db.query(XAccount).filter(XAccount.user_id == clerk_user_id).first()
+            if existing_account:
+                if existing_account.username.lower() != user_handle.lower():
+                    # User has a different account linked - block
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"You already have @{existing_account.username} linked. One account per user. Please disconnect it first in Settings before using @{user_handle}."
+                    )
+                # Same account, just not marked as connected - use it
+                x_account = existing_account
+                x_account.is_connected = True
                 db.commit()
-                print(f"✅ Created user {clerk_user_id} in database")
+            else:
+                # Ensure user exists in database (in case webhook hasn't run yet)
+                user = db.query(User).filter(User.id == clerk_user_id).first()
+                if not user:
+                    user = User(
+                        id=clerk_user_id,
+                        email=f"{clerk_user_id}@temp.com"  # Temporary email, will be updated by webhook
+                    )
+                    db.add(user)
+                    db.commit()
+                    print(f"✅ Created user {clerk_user_id} in database")
 
-            # Create a temporary x_account entry if it doesn't exist
-            x_account = XAccount(
-                user_id=clerk_user_id,
-                username=user_handle,
-                is_connected=True
-            )
-            db.add(x_account)
-            db.flush()  # Get the ID without committing
+                # Create x_account entry - this is first link for this user
+                x_account = XAccount(
+                    user_id=clerk_user_id,
+                    username=user_handle,
+                    is_connected=True
+                )
+                db.add(x_account)
+                db.flush()  # Get the ID without committing
 
         for post_data in generated_posts:
             scheduled_post = ScheduledPost(
@@ -4584,6 +5369,29 @@ async def toggle_cron_job(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.post("/api/cron-jobs/{cron_job_id}/run")
+async def run_cron_job_now(
+    cron_job_id: int,
+    user_id: str = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Manually trigger a cron job to run immediately"""
+    try:
+        from cron_job_executor import get_cron_executor
+
+        # Get executor and run the job
+        executor = await get_cron_executor()
+        result = await executor.run_now(cron_job_id, user_id)
+
+        return result
+    except ValueError as e:
+        # Validation errors (not found, cooldown, already running)
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        print(f"Error running cron job: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.delete("/api/cron-jobs/{cron_job_id}")
 async def delete_cron_job(
     cron_job_id: int,
@@ -4827,7 +5635,8 @@ async def get_ai_drafts(
                 "scheduled_at": draft.scheduled_at.isoformat(),
                 "confidence": draft.ai_confidence / 100.0 if draft.ai_confidence else 1.0,
                 "ai_generated": True,
-                "metadata": draft.ai_metadata or {}
+                "metadata": draft.ai_metadata or {},
+                "media_urls": draft.media_urls or []  # Include saved media URLs
             })
 
         return {
@@ -5700,6 +6509,11 @@ async def execute_workflow_endpoint(workflow_json: dict, user_id: str = Depends(
         print(f"🔍 [Backend-Workflow] DEBUG: FINAL cua_host = {repr(cua_host)}")
         print(f"🔍 [Backend-Workflow] DEBUG: FINAL cua_port = {repr(cua_port)}")
 
+        # Extract model parameters from workflow_json (defaults to Anthropic Claude)
+        model_name = workflow_json.get("model_name", "claude-sonnet-4-5-20250929")
+        model_provider = workflow_json.get("model_provider", "anthropic")
+        print(f"🤖 [Backend-Workflow] Using model: {model_name} (provider: {model_provider})")
+
         config = {
             "configurable": {
                 "user_id": user_id,
@@ -5707,6 +6521,8 @@ async def execute_workflow_endpoint(workflow_json: dict, user_id: str = Depends(
                 "use_longterm_memory": True if user_id else False,
                 "x-cua-host": cua_host,
                 "x-cua-port": cua_port,
+                "model_name": model_name,
+                "model_provider": model_provider,
             }
         }
 
@@ -5912,6 +6728,11 @@ async def execute_workflow_stream_endpoint(websocket: WebSocket):
         print(f"🔍 [Backend-Workflow] DEBUG: FINAL cua_host = {repr(cua_host)}")
         print(f"🔍 [Backend-Workflow] DEBUG: FINAL cua_port = {repr(cua_port)}")
 
+        # Extract model parameters from workflow_json (defaults to Anthropic Claude)
+        model_name = workflow_json.get("model_name", "claude-sonnet-4-5-20250929")
+        model_provider = workflow_json.get("model_provider", "anthropic")
+        print(f"🤖 [Backend-Workflow-Stream] Using model: {model_name} (provider: {model_provider})")
+
         config = {
             "configurable": {
                 "user_id": user_id,
@@ -5919,6 +6740,8 @@ async def execute_workflow_stream_endpoint(websocket: WebSocket):
                 "use_longterm_memory": True if user_id else False,
                 "x-cua-host": cua_host,
                 "x-cua-port": cua_port,
+                "model_name": model_name,
+                "model_provider": model_provider,
             }
         }
 
@@ -6274,6 +7097,1029 @@ async def migrate_posts_to_langgraph(data: dict, user_id: str = Depends(get_curr
         import traceback
         traceback.print_exc()
         return {"success": False, "error": str(e)}
+
+
+# ============================================================================
+# ANALYTICS ENDPOINTS
+# ============================================================================
+
+@app.get("/api/analytics/debug")
+async def get_analytics_debug(user_id: str = Depends(get_current_user)):
+    """Debug endpoint to check what data exists for analytics."""
+    from database.models import UserPost, XAccount
+    from database.database import SessionLocal
+
+    db = SessionLocal()
+    try:
+        # Get user's X accounts
+        x_accounts = db.query(XAccount).filter(XAccount.user_id == user_id).all()
+        accounts_info = [{"id": acc.id, "username": acc.username, "user_id": acc.user_id} for acc in x_accounts]
+        x_account_ids = [acc.id for acc in x_accounts]
+
+        # Get posts count and sample
+        total_posts = db.query(UserPost).filter(UserPost.x_account_id.in_(x_account_ids)).count() if x_account_ids else 0
+
+        sample_posts = []
+        if x_account_ids:
+            posts = db.query(UserPost).filter(UserPost.x_account_id.in_(x_account_ids)).limit(5).all()
+            sample_posts = [
+                {
+                    "id": p.id,
+                    "x_account_id": p.x_account_id,
+                    "likes": p.likes,
+                    "retweets": p.retweets,
+                    "replies": p.replies,
+                    "posted_at": str(p.posted_at) if p.posted_at else None,
+                    "imported_at": str(p.imported_at) if p.imported_at else None,
+                    "content_preview": p.content[:100] if p.content else None
+                }
+                for p in posts
+            ]
+
+        return {
+            "user_id": user_id,
+            "x_accounts": accounts_info,
+            "x_account_ids": x_account_ids,
+            "total_posts": total_posts,
+            "sample_posts": sample_posts
+        }
+    except Exception as e:
+        return {"error": str(e), "user_id": user_id}
+    finally:
+        db.close()
+
+
+@app.post("/api/analytics/restore-posts")
+async def restore_posts_to_analytics(user_id: str = Depends(get_current_user)):
+    """
+    Restore posts from LangGraph Store to UserPost table for analytics.
+    Posts are stored in two places - this syncs them.
+    """
+    from database.models import UserPost, XAccount
+    from database.database import SessionLocal
+    from dateutil import parser as date_parser
+
+    db = SessionLocal()
+    try:
+        # Get user's X account
+        x_account = db.query(XAccount).filter(XAccount.user_id == user_id).first()
+        if not x_account:
+            return {"success": False, "error": "No X account linked"}
+
+        # Get posts from LangGraph Store
+        style_manager = XWritingStyleManager(store, user_id)
+        namespace = (user_id, "writing_samples")
+        all_items = list(store.search(namespace, limit=1000))
+
+        if not all_items:
+            return {"success": False, "error": "No posts found in LangGraph Store"}
+
+        # Copy to UserPost table
+        restored = 0
+        skipped = 0
+        for item in all_items:
+            post_data = item.value
+            content = post_data.get("content", "")
+
+            # Check if already exists
+            existing = db.query(UserPost).filter(
+                UserPost.x_account_id == x_account.id,
+                UserPost.content == content
+            ).first()
+
+            if existing:
+                skipped += 1
+                continue
+
+            # Parse timestamp
+            posted_at = None
+            timestamp_str = post_data.get("timestamp")
+            if timestamp_str:
+                try:
+                    posted_at = date_parser.parse(timestamp_str)
+                except:
+                    pass
+
+            engagement = post_data.get("engagement", {})
+            user_post = UserPost(
+                x_account_id=x_account.id,
+                content=content,
+                likes=engagement.get("likes", 0),
+                retweets=engagement.get("reposts", engagement.get("retweets", 0)),
+                replies=engagement.get("replies", 0),
+                posted_at=posted_at
+            )
+            db.add(user_post)
+            restored += 1
+
+        db.commit()
+        return {
+            "success": True,
+            "restored": restored,
+            "skipped": skipped,
+            "total_in_store": len(all_items)
+        }
+    except Exception as e:
+        db.rollback()
+        return {"success": False, "error": str(e)}
+    finally:
+        db.close()
+
+
+@app.delete("/api/x-account/{username}")
+async def delete_x_account(username: str, user_id: str = Depends(get_current_user)):
+    """Remove an X account and its posts from user's linked accounts."""
+    from database.models import UserPost, XAccount
+    from database.database import SessionLocal
+
+    db = SessionLocal()
+    try:
+        # Find the X account
+        x_account = db.query(XAccount).filter(
+            XAccount.user_id == user_id,
+            XAccount.username == username
+        ).first()
+
+        if not x_account:
+            raise HTTPException(status_code=404, detail=f"X account @{username} not found for your user")
+
+        # Delete associated posts first
+        posts_deleted = db.query(UserPost).filter(UserPost.x_account_id == x_account.id).delete()
+
+        # Delete the X account
+        db.delete(x_account)
+        db.commit()
+
+        return {
+            "success": True,
+            "message": f"Removed @{username} and {posts_deleted} associated posts"
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        return {"success": False, "error": str(e)}
+    finally:
+        db.close()
+
+
+@app.get("/api/analytics/summary")
+async def get_analytics_summary(
+    period: str = "7d",
+    user_id: str = Depends(get_current_user)
+):
+    """
+    Get aggregated engagement metrics from UserPost PostgreSQL table.
+    """
+    from datetime import timedelta
+    from sqlalchemy import func
+    from database.models import UserPost, XAccount
+    from database.database import SessionLocal
+
+    db = SessionLocal()
+    try:
+        # Get user's X accounts
+        x_accounts = db.query(XAccount).filter(XAccount.user_id == user_id).all()
+        x_account_ids = [acc.id for acc in x_accounts]
+
+        if not x_account_ids:
+            return {
+                "total_likes": 0,
+                "total_retweets": 0,
+                "total_replies": 0,
+                "total_posts": 0,
+                "total_engagement": 0,
+                "engagement_rate": 0,
+                "period": period
+            }
+
+        # Period to days
+        days = {"7d": 7, "30d": 30, "90d": 90, "all": 36500}.get(period, 7)
+        cutoff = datetime.utcnow() - timedelta(days=days)
+
+        # Build query
+        query = db.query(
+            func.coalesce(func.sum(UserPost.likes), 0).label('total_likes'),
+            func.coalesce(func.sum(UserPost.retweets), 0).label('total_retweets'),
+            func.coalesce(func.sum(UserPost.replies), 0).label('total_replies'),
+            func.count(UserPost.id).label('post_count')
+        ).filter(UserPost.x_account_id.in_(x_account_ids))
+
+        # Apply period filter (skip for "all")
+        # Include posts with NULL posted_at (use imported_at as fallback)
+        if period != "all":
+            from sqlalchemy import or_
+            query = query.filter(
+                or_(
+                    UserPost.posted_at >= cutoff,
+                    UserPost.posted_at.is_(None)  # Include posts without dates
+                )
+            )
+
+        result = query.first()
+
+        total_likes = result.total_likes or 0
+        total_retweets = result.total_retweets or 0
+        total_replies = result.total_replies or 0
+        post_count = result.post_count or 0
+
+        total_engagement = total_likes + total_retweets + total_replies
+        engagement_rate = round(total_engagement / post_count, 2) if post_count else 0
+
+        return {
+            "total_likes": total_likes,
+            "total_retweets": total_retweets,
+            "total_replies": total_replies,
+            "total_posts": post_count,
+            "total_engagement": total_engagement,
+            "engagement_rate": engagement_rate,
+            "period": period
+        }
+    except Exception as e:
+        print(f"❌ Analytics summary error: {e}")
+        return {
+            "total_likes": 0,
+            "total_retweets": 0,
+            "total_replies": 0,
+            "total_posts": 0,
+            "total_engagement": 0,
+            "engagement_rate": 0,
+            "period": period,
+            "error": str(e)
+        }
+    finally:
+        db.close()
+
+
+@app.get("/api/analytics/engagement-timeline")
+async def get_engagement_timeline(
+    period: str = "7d",
+    user_id: str = Depends(get_current_user)
+):
+    """
+    Get daily engagement metrics from UserPost PostgreSQL table for charts.
+    """
+    from datetime import timedelta
+    from sqlalchemy import func, cast, Date
+    from database.models import UserPost, XAccount
+    from database.database import SessionLocal
+
+    db = SessionLocal()
+    try:
+        # Get user's X accounts
+        x_accounts = db.query(XAccount).filter(XAccount.user_id == user_id).all()
+        x_account_ids = [acc.id for acc in x_accounts]
+
+        if not x_account_ids:
+            return {"data": [], "period": period}
+
+        # Period to days
+        days = {"7d": 7, "30d": 30, "90d": 90, "all": 36500}.get(period, 7)
+        cutoff = datetime.utcnow() - timedelta(days=days)
+
+        # Build query - group by date (use imported_at as fallback for NULL posted_at)
+        from sqlalchemy import or_
+        effective_date = func.coalesce(UserPost.posted_at, UserPost.imported_at)
+
+        query = db.query(
+            cast(effective_date, Date).label('date'),
+            func.coalesce(func.sum(UserPost.likes), 0).label('likes'),
+            func.coalesce(func.sum(UserPost.retweets), 0).label('retweets'),
+            func.coalesce(func.sum(UserPost.replies), 0).label('replies'),
+            func.count(UserPost.id).label('posts')
+        ).filter(
+            UserPost.x_account_id.in_(x_account_ids)
+        )
+
+        # Apply period filter
+        if period != "all":
+            query = query.filter(
+                or_(
+                    effective_date >= cutoff,
+                    effective_date.is_(None)
+                )
+            )
+
+        results = query.group_by(
+            cast(effective_date, Date)
+        ).order_by('date').all()
+
+        return {
+            "data": [
+                {
+                    "date": r.date.isoformat() if r.date else None,
+                    "likes": r.likes or 0,
+                    "retweets": r.retweets or 0,
+                    "replies": r.replies or 0,
+                    "posts": r.posts or 0
+                }
+                for r in results
+                if r.date  # Skip null dates
+            ],
+            "period": period
+        }
+    except Exception as e:
+        print(f"❌ Engagement timeline error: {e}")
+        return {"data": [], "period": period, "error": str(e)}
+    finally:
+        db.close()
+
+
+@app.get("/api/analytics/top-posts")
+async def get_top_posts(
+    limit: int = 10,
+    sort_by: str = "engagement",
+    user_id: str = Depends(get_current_user)
+):
+    """
+    Get top performing posts from UserPost PostgreSQL table by engagement.
+    """
+    from database.models import UserPost, XAccount
+    from database.database import SessionLocal
+
+    db = SessionLocal()
+    try:
+        # Get user's X accounts
+        x_accounts = db.query(XAccount).filter(XAccount.user_id == user_id).all()
+        x_account_ids = [acc.id for acc in x_accounts]
+
+        if not x_account_ids:
+            return {"posts": []}
+
+        # Build query with sorting
+        query = db.query(UserPost).filter(UserPost.x_account_id.in_(x_account_ids))
+
+        if sort_by == "likes":
+            query = query.order_by(UserPost.likes.desc())
+        elif sort_by == "retweets":
+            query = query.order_by(UserPost.retweets.desc())
+        else:
+            # Sort by total engagement (likes + retweets + replies)
+            query = query.order_by(
+                (UserPost.likes + UserPost.retweets + UserPost.replies).desc()
+            )
+
+        posts = query.limit(limit).all()
+
+        return {
+            "posts": [
+                {
+                    "id": p.id,
+                    "content": (p.content[:200] + "...") if p.content and len(p.content) > 200 else p.content,
+                    "likes": p.likes or 0,
+                    "retweets": p.retweets or 0,
+                    "replies": p.replies or 0,
+                    "engagement_score": (p.likes or 0) + (p.retweets or 0) + (p.replies or 0),
+                    "posted_at": p.posted_at.isoformat() if p.posted_at else None,
+                    "post_url": p.post_url
+                }
+                for p in posts
+            ]
+        }
+    except Exception as e:
+        print(f"❌ Top posts error: {e}")
+        return {"posts": [], "error": str(e)}
+    finally:
+        db.close()
+
+
+@app.get("/api/analytics/agent-activity")
+async def get_agent_activity(
+    period: str = "7d",
+    user_id: str = Depends(get_current_user)
+):
+    """
+    Get agent activity breakdown from LangGraph Store.
+    """
+    from datetime import timedelta
+    from activity_logger import ActivityLogger
+
+    try:
+        # Get activities from store
+        logger = ActivityLogger(store, user_id)
+        all_activities = logger.get_recent_activity(limit=1000)
+
+        # Period to days
+        days = {"7d": 7, "30d": 30, "90d": 90, "all": 365}.get(period, 7)
+        cutoff = datetime.utcnow() - timedelta(days=days)
+        cutoff_str = cutoff.isoformat()
+
+        # Filter by period and count by type
+        by_type = {}
+        total = 0
+        successful = 0
+
+        for activity in all_activities:
+            timestamp_str = activity.get("timestamp", "")
+            if timestamp_str < cutoff_str:
+                continue
+
+            action_type = activity.get("action_type", "unknown")
+            by_type[action_type] = by_type.get(action_type, 0) + 1
+            total += 1
+
+            if activity.get("status") == "success":
+                successful += 1
+
+        success_rate = round(successful / total * 100, 1) if total else 0
+
+        return {
+            "total_actions": total,
+            "successful_actions": successful,
+            "success_rate": success_rate,
+            "by_type": by_type,
+            "period": period
+        }
+
+    except Exception as e:
+        print(f"❌ Error getting agent activity: {e}")
+        return {
+            "total_actions": 0,
+            "successful_actions": 0,
+            "success_rate": 0,
+            "by_type": {},
+            "period": period,
+            "error": str(e)
+        }
+
+
+@app.get("/api/analytics/automation-performance")
+async def get_automation_performance(
+    period: str = "30d",
+    user_id: str = Depends(get_current_user)
+):
+    """
+    Get automation/cron job performance metrics.
+    """
+    from sqlalchemy import func, cast, Date, case
+    from database.models import CronJob, CronJobRun
+    from datetime import timedelta
+
+    db = SessionLocal()
+    try:
+        # Get user's cron jobs
+        cron_jobs = db.query(CronJob).filter(CronJob.user_id == user_id).all()
+        cron_job_ids = [cj.id for cj in cron_jobs]
+
+        if not cron_job_ids:
+            return {
+                "total_runs": 0,
+                "completed_runs": 0,
+                "failed_runs": 0,
+                "success_rate": 0,
+                "avg_duration_seconds": 0,
+                "runs_by_day": [],
+                "period": period
+            }
+
+        # Period to days
+        days = {"7d": 7, "30d": 30, "90d": 90, "all": 365}.get(period, 30)
+        cutoff = datetime.utcnow() - timedelta(days=days)
+
+        # Get all runs in period
+        runs = db.query(CronJobRun).filter(
+            CronJobRun.cron_job_id.in_(cron_job_ids),
+            CronJobRun.started_at >= cutoff
+        ).all()
+
+        total = len(runs)
+        completed = sum(1 for r in runs if r.status == "completed")
+        failed = sum(1 for r in runs if r.status == "failed")
+
+        # Calculate avg duration (for completed runs)
+        durations = []
+        for r in runs:
+            if r.status == "completed" and r.completed_at and r.started_at:
+                duration = (r.completed_at - r.started_at).total_seconds()
+                durations.append(duration)
+
+        avg_duration = sum(durations) / len(durations) if durations else 0
+
+        # Group by day
+        runs_by_day = db.query(
+            cast(CronJobRun.started_at, Date).label('date'),
+            func.count(CronJobRun.id).label('total'),
+            func.sum(case((CronJobRun.status == "completed", 1), else_=0)).label('completed')
+        ).filter(
+            CronJobRun.cron_job_id.in_(cron_job_ids),
+            CronJobRun.started_at >= cutoff
+        ).group_by(cast(CronJobRun.started_at, Date)).order_by('date').all()
+
+        return {
+            "total_runs": total,
+            "completed_runs": completed,
+            "failed_runs": failed,
+            "success_rate": round(completed / total * 100, 1) if total else 0,
+            "avg_duration_seconds": round(avg_duration, 1),
+            "runs_by_day": [
+                {
+                    "date": r.date.isoformat() if r.date else None,
+                    "total": r.total or 0,
+                    "completed": r.completed or 0
+                }
+                for r in runs_by_day
+            ],
+            "period": period
+        }
+    finally:
+        db.close()
+
+
+# =============================================================================
+# Comment Analytics Endpoints
+# =============================================================================
+
+
+@app.get("/api/analytics/comments/made/summary")
+async def get_comments_made_summary(
+    period: str = "30d",
+    user_id: str = Depends(get_current_user)
+):
+    """
+    Get summary stats for comments WE made on others' posts.
+    """
+    from sqlalchemy import func
+    from database.models import UserComment, XAccount
+    from datetime import timedelta, timezone
+
+    db = SessionLocal()
+    try:
+        x_account = db.query(XAccount).filter(XAccount.user_id == user_id).first()
+        if not x_account:
+            return {
+                "total_comments": 0,
+                "total_likes": 0,
+                "total_replies": 0,
+                "avg_likes": 0,
+                "avg_replies": 0,
+                "comments_with_engagement": 0,
+                "period": period
+            }
+
+        # Period to days
+        days = {"7d": 7, "30d": 30, "90d": 90, "all": 365}.get(period, 30)
+        cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+
+        # Get aggregated stats
+        stats = db.query(
+            func.count(UserComment.id).label('total'),
+            func.coalesce(func.sum(UserComment.likes), 0).label('total_likes'),
+            func.coalesce(func.sum(UserComment.replies), 0).label('total_replies'),
+            func.coalesce(func.avg(UserComment.likes), 0).label('avg_likes'),
+            func.coalesce(func.avg(UserComment.replies), 0).label('avg_replies')
+        ).filter(
+            UserComment.x_account_id == x_account.id,
+            UserComment.commented_at >= cutoff
+        ).first()
+
+        # Count comments with any engagement
+        with_engagement = db.query(func.count(UserComment.id)).filter(
+            UserComment.x_account_id == x_account.id,
+            UserComment.commented_at >= cutoff,
+            (UserComment.likes > 0) | (UserComment.replies > 0)
+        ).scalar() or 0
+
+        return {
+            "total_comments": stats.total or 0,
+            "total_likes": int(stats.total_likes) or 0,
+            "total_replies": int(stats.total_replies) or 0,
+            "avg_likes": round(float(stats.avg_likes), 1) if stats.avg_likes else 0,
+            "avg_replies": round(float(stats.avg_replies), 1) if stats.avg_replies else 0,
+            "comments_with_engagement": with_engagement,
+            "engagement_rate": round(with_engagement / stats.total * 100, 1) if stats.total else 0,
+            "period": period
+        }
+    finally:
+        db.close()
+
+
+@app.get("/api/analytics/comments/made/top")
+async def get_top_comments_made(
+    limit: int = 10,
+    period: str = "30d",
+    user_id: str = Depends(get_current_user)
+):
+    """
+    Get top performing comments WE made (sorted by engagement).
+    """
+    from database.models import UserComment, XAccount
+    from datetime import timedelta, timezone
+
+    db = SessionLocal()
+    try:
+        x_account = db.query(XAccount).filter(XAccount.user_id == user_id).first()
+        if not x_account:
+            return {"comments": [], "period": period}
+
+        days = {"7d": 7, "30d": 30, "90d": 90, "all": 365}.get(period, 30)
+        cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+
+        # Get top comments by total engagement (likes + replies)
+        comments = db.query(UserComment).filter(
+            UserComment.x_account_id == x_account.id,
+            UserComment.commented_at >= cutoff
+        ).order_by(
+            (UserComment.likes + UserComment.replies).desc()
+        ).limit(limit).all()
+
+        return {
+            "comments": [
+                {
+                    "id": c.id,
+                    "content": c.content,
+                    "comment_url": c.comment_url,
+                    "target_author": c.target_post_author,
+                    "target_preview": c.target_post_content_preview[:100] if c.target_post_content_preview else None,
+                    "likes": c.likes or 0,
+                    "replies": c.replies or 0,
+                    "retweets": c.retweets or 0,
+                    "total_engagement": (c.likes or 0) + (c.replies or 0) + (c.retweets or 0),
+                    "commented_at": c.commented_at.isoformat() if c.commented_at else None,
+                    "scrape_status": c.scrape_status
+                }
+                for c in comments
+            ],
+            "period": period
+        }
+    finally:
+        db.close()
+
+
+@app.get("/api/analytics/comments/made/timeline")
+async def get_comments_made_timeline(
+    period: str = "30d",
+    user_id: str = Depends(get_current_user)
+):
+    """
+    Get daily engagement timeline for comments we made.
+    """
+    from sqlalchemy import func, cast, Date
+    from database.models import UserComment, XAccount
+    from datetime import timedelta, timezone
+
+    db = SessionLocal()
+    try:
+        x_account = db.query(XAccount).filter(XAccount.user_id == user_id).first()
+        if not x_account:
+            return {"timeline": [], "period": period}
+
+        days = {"7d": 7, "30d": 30, "90d": 90, "all": 365}.get(period, 30)
+        cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+
+        # Group by day
+        timeline = db.query(
+            cast(UserComment.commented_at, Date).label('date'),
+            func.count(UserComment.id).label('comments'),
+            func.coalesce(func.sum(UserComment.likes), 0).label('likes'),
+            func.coalesce(func.sum(UserComment.replies), 0).label('replies')
+        ).filter(
+            UserComment.x_account_id == x_account.id,
+            UserComment.commented_at >= cutoff
+        ).group_by(cast(UserComment.commented_at, Date)).order_by('date').all()
+
+        return {
+            "timeline": [
+                {
+                    "date": t.date.isoformat() if t.date else None,
+                    "comments": t.comments or 0,
+                    "likes": int(t.likes) or 0,
+                    "replies": int(t.replies) or 0
+                }
+                for t in timeline
+            ],
+            "period": period
+        }
+    finally:
+        db.close()
+
+
+@app.get("/api/analytics/comments/received/summary")
+async def get_comments_received_summary(
+    period: str = "30d",
+    user_id: str = Depends(get_current_user)
+):
+    """
+    Get summary stats for comments OTHERS left on our posts.
+    """
+    from sqlalchemy import func, Integer
+    from database.models import ReceivedComment, XAccount
+    from datetime import timedelta, timezone
+
+    db = SessionLocal()
+    try:
+        x_account = db.query(XAccount).filter(XAccount.user_id == user_id).first()
+        if not x_account:
+            return {
+                "total_comments": 0,
+                "unique_commenters": 0,
+                "total_likes_on_comments": 0,
+                "we_replied_count": 0,
+                "reply_rate": 0,
+                "period": period
+            }
+
+        days = {"7d": 7, "30d": 30, "90d": 90, "all": 365}.get(period, 30)
+        cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+
+        # Get aggregated stats
+        stats = db.query(
+            func.count(ReceivedComment.id).label('total'),
+            func.count(func.distinct(ReceivedComment.commenter_username)).label('unique_commenters'),
+            func.coalesce(func.sum(ReceivedComment.likes), 0).label('total_likes'),
+            func.sum(func.cast(ReceivedComment.we_replied, Integer)).label('we_replied_count')
+        ).filter(
+            ReceivedComment.x_account_id == x_account.id,
+            ReceivedComment.created_at >= cutoff
+        ).first()
+
+        total = stats.total or 0
+        replied = int(stats.we_replied_count or 0)
+
+        return {
+            "total_comments": total,
+            "unique_commenters": stats.unique_commenters or 0,
+            "total_likes_on_comments": int(stats.total_likes) or 0,
+            "we_replied_count": replied,
+            "reply_rate": round(replied / total * 100, 1) if total else 0,
+            "period": period
+        }
+    finally:
+        db.close()
+
+
+@app.get("/api/analytics/comments/received/list")
+async def get_comments_received_list(
+    limit: int = 20,
+    offset: int = 0,
+    period: str = "30d",
+    user_id: str = Depends(get_current_user)
+):
+    """
+    Get list of comments OTHERS left on our posts.
+    """
+    from database.models import ReceivedComment, XAccount
+    from datetime import timedelta, timezone
+
+    db = SessionLocal()
+    try:
+        x_account = db.query(XAccount).filter(XAccount.user_id == user_id).first()
+        if not x_account:
+            return {"comments": [], "total": 0, "period": period}
+
+        days = {"7d": 7, "30d": 30, "90d": 90, "all": 365}.get(period, 30)
+        cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+
+        # Get total count
+        total = db.query(ReceivedComment).filter(
+            ReceivedComment.x_account_id == x_account.id,
+            ReceivedComment.created_at >= cutoff
+        ).count()
+
+        # Get paginated comments
+        comments = db.query(ReceivedComment).filter(
+            ReceivedComment.x_account_id == x_account.id,
+            ReceivedComment.created_at >= cutoff
+        ).order_by(ReceivedComment.created_at.desc()).offset(offset).limit(limit).all()
+
+        return {
+            "comments": [
+                {
+                    "id": c.id,
+                    "commenter_username": c.commenter_username,
+                    "commenter_display_name": c.commenter_display_name,
+                    "content": c.content,
+                    "comment_url": c.comment_url,
+                    "likes": c.likes or 0,
+                    "replies": c.replies or 0,
+                    "we_replied": c.we_replied,
+                    "our_reply_url": c.our_reply_url,
+                    "commented_at": c.commented_at.isoformat() if c.commented_at else None,
+                    "created_at": c.created_at.isoformat() if c.created_at else None
+                }
+                for c in comments
+            ],
+            "total": total,
+            "offset": offset,
+            "limit": limit,
+            "period": period
+        }
+    finally:
+        db.close()
+
+
+@app.post("/api/comments/scrape")
+async def trigger_comment_scrape(user_id: str = Depends(get_current_user)):
+    """
+    Trigger comment engagement scraping.
+    Requires an active browser session via CUA.
+    """
+    try:
+        # Get user's VNC client
+        client = await get_user_vnc_client(user_id)
+
+        from comment_engagement_scraper import CommentEngagementScraper
+        scraper = CommentEngagementScraper(client, user_id)
+
+        # Scrape engagement for comments we made
+        result = await scraper.scrape_comments_we_made(max_comments=20)
+
+        return {
+            "status": "success",
+            "comments_updated": result.get("updated", 0),
+            "comments_checked": result.get("checked", 0),
+            "errors": result.get("errors", [])
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        return {
+            "status": "error",
+            "message": str(e),
+            "tip": "Make sure you have an active browser session with X logged in."
+        }
+
+
+@app.post("/api/historical/import")
+async def import_historical_data(
+    max_posts: int = 50,
+    max_comments: int = 50,
+    user_id: str = Depends(get_current_user)
+):
+    """
+    Import historical posts and comments from user's X profile.
+    Requires an active browser session with X logged in.
+
+    This backfills the analytics database with historical engagement data.
+    All imported content is marked with source='imported'.
+    """
+    try:
+        # Get user's VNC client
+        client = await get_user_vnc_client(user_id)
+
+        from historical_data_importer import HistoricalDataImporter
+        importer = HistoricalDataImporter(client, user_id)
+
+        # Import posts and comments
+        result = await importer.import_all(max_posts=max_posts, max_comments=max_comments)
+
+        posts_stats = result.get("posts", {})
+        comments_stats = result.get("comments", {})
+
+        return {
+            "status": "success",
+            "posts": {
+                "found": posts_stats.get("total_found", 0),
+                "imported": posts_stats.get("imported", 0),
+                "skipped": posts_stats.get("skipped_duplicate", 0),
+                "errors": posts_stats.get("errors", [])
+            },
+            "comments": {
+                "found": comments_stats.get("total_found", 0),
+                "imported": comments_stats.get("imported", 0),
+                "skipped": comments_stats.get("skipped_duplicate", 0),
+                "errors": comments_stats.get("errors", [])
+            }
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to import historical data: {str(e)}"
+        )
+
+
+@app.get("/api/analytics/comments/by-source")
+async def get_comments_by_source(
+    period: str = "30d",
+    user_id: str = Depends(get_current_user)
+):
+    """
+    Get comment analytics broken down by source (agent vs imported/manual).
+
+    This allows comparing AI-generated comment performance vs manual comments.
+    """
+    from sqlalchemy import func
+    from database.models import UserComment, XAccount
+    from datetime import timedelta, timezone
+
+    db = SessionLocal()
+    try:
+        x_account = db.query(XAccount).filter(XAccount.user_id == user_id).first()
+        if not x_account:
+            return {
+                "agent": {"total": 0, "likes": 0, "replies": 0, "avg_engagement": 0},
+                "imported": {"total": 0, "likes": 0, "replies": 0, "avg_engagement": 0},
+                "period": period
+            }
+
+        days = {"7d": 7, "30d": 30, "90d": 90, "all": 365}.get(period, 30)
+        cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+
+        # Get stats grouped by source
+        results = {}
+        for source in ["agent", "imported"]:
+            stats = db.query(
+                func.count(UserComment.id).label('total'),
+                func.coalesce(func.sum(UserComment.likes), 0).label('total_likes'),
+                func.coalesce(func.sum(UserComment.replies), 0).label('total_replies'),
+                func.coalesce(func.avg(UserComment.likes + UserComment.replies), 0).label('avg_engagement')
+            ).filter(
+                UserComment.x_account_id == x_account.id,
+                UserComment.commented_at >= cutoff,
+                UserComment.source == source
+            ).first()
+
+            results[source] = {
+                "total": stats.total or 0,
+                "likes": int(stats.total_likes) or 0,
+                "replies": int(stats.total_replies) or 0,
+                "avg_engagement": round(float(stats.avg_engagement), 2) if stats.avg_engagement else 0
+            }
+
+        return {
+            **results,
+            "period": period
+        }
+    finally:
+        db.close()
+
+
+@app.get("/api/analytics/posts/by-source")
+async def get_posts_by_source(
+    period: str = "30d",
+    user_id: str = Depends(get_current_user)
+):
+    """
+    Get post analytics broken down by source (agent vs imported/manual).
+    """
+    from sqlalchemy import func
+    from database.models import UserPost, XAccount
+    from datetime import timedelta, timezone
+
+    db = SessionLocal()
+    try:
+        x_account = db.query(XAccount).filter(XAccount.user_id == user_id).first()
+        if not x_account:
+            return {
+                "agent": {"total": 0, "likes": 0, "retweets": 0, "replies": 0, "avg_engagement": 0},
+                "imported": {"total": 0, "likes": 0, "retweets": 0, "replies": 0, "avg_engagement": 0},
+                "period": period
+            }
+
+        days = {"7d": 7, "30d": 30, "90d": 90, "all": 365}.get(period, 30)
+        cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+
+        # Get stats grouped by source
+        results = {}
+        for source in ["agent", "imported"]:
+            stats = db.query(
+                func.count(UserPost.id).label('total'),
+                func.coalesce(func.sum(UserPost.likes), 0).label('total_likes'),
+                func.coalesce(func.sum(UserPost.retweets), 0).label('total_retweets'),
+                func.coalesce(func.sum(UserPost.replies), 0).label('total_replies'),
+                func.coalesce(func.avg(UserPost.likes + UserPost.retweets + UserPost.replies), 0).label('avg_engagement')
+            ).filter(
+                UserPost.x_account_id == x_account.id,
+                UserPost.posted_at >= cutoff,
+                UserPost.source == source
+            ).first()
+
+            results[source] = {
+                "total": stats.total or 0,
+                "likes": int(stats.total_likes) or 0,
+                "retweets": int(stats.total_retweets) or 0,
+                "replies": int(stats.total_replies) or 0,
+                "avg_engagement": round(float(stats.avg_engagement), 2) if stats.avg_engagement else 0
+            }
+
+        return {
+            **results,
+            "period": period
+        }
+    finally:
+        db.close()
+
+
+@app.post("/api/import/historical")
+async def trigger_historical_import(user_id: str = Depends(get_current_user)):
+    """
+    Trigger historical data import.
+
+    NOTE: This requires an active browser session with X logged in.
+    In practice, this would be triggered during an active agent session.
+    """
+    return {
+        "status": "info",
+        "message": "Historical import requires an active browser session. Run this during an X Growth session.",
+        "instructions": [
+            "1. Start an X Growth agent session",
+            "2. The import can be triggered via the agent or during session startup",
+            "3. Posts and comments will be imported with source='imported'"
+        ]
+    }
 
 
 if __name__ == "__main__":

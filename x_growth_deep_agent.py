@@ -71,6 +71,7 @@ def _logged_write(self, file_path, content):
 StoreBackend.read = _logged_read
 StoreBackend.write = _logged_write
 from langchain.chat_models import init_chat_model
+from langchain_openai import ChatOpenAI  # For OpenAI GPT-5.2 support
 from langchain_core.tools import tool
 from langchain_community.tools import TavilySearchResults
 
@@ -93,6 +94,15 @@ from anthropic_native_tools import (
     create_memory_tool,
     get_research_tools,
 )
+
+# Import continual learning components for style validation
+try:
+    from banned_patterns_manager import BannedPatternsManager
+    from style_match_scorer import StyleMatchScorer, LLMStyleGrader
+    CONTINUAL_LEARNING_AVAILABLE = True
+except ImportError as e:
+    print(f"⚠️ Continual learning components not available: {e}")
+    CONTINUAL_LEARNING_AVAILABLE = False
 
 
 # ============================================================================
@@ -777,10 +787,16 @@ def create_user_profile_tool(user_id: str):
 # Each subagent executes ONE Playwright action and returns immediately
 # ============================================================================
 
-def get_atomic_subagents(store=None, user_id=None, model=None):
+def get_atomic_subagents(store=None, user_id=None, model=None, model_provider="anthropic"):
     """
     Get atomic subagents with BOTH Playwright AND Extension tools.
     This function is called at runtime to get the actual tool instances.
+
+    Args:
+        store: LangGraph store for persistence
+        user_id: User ID for personalization
+        model: Chat model instance (Claude or GPT)
+        model_provider: "anthropic" or "openai" - determines which native tools to use
 
     Extension tools provide capabilities Playwright doesn't have:
     - Access to React internals and hidden data
@@ -833,6 +849,72 @@ def get_atomic_subagents(store=None, user_id=None, model=None):
 
         user_data_tools = [user_profile_tool, user_posts_tool, competitor_posts_tool, pending_drafts_tool, mark_draft_tool]
         print(f"✅ Added user data tools to subagents: get_my_profile, get_my_posts, get_high_performing_competitor_posts, get_pending_drafts, mark_draft_as_used")
+
+        # Add historical data import tool
+        @tool
+        async def import_historical_data(
+            max_posts: int = 50,
+            max_comments: int = 50,
+            runtime: "ToolRuntime" = None
+        ) -> str:
+            """
+            Import your historical posts and comments from X for analytics tracking.
+            This scrapes your profile to backfill engagement data.
+
+            Args:
+                max_posts: Maximum number of posts to import (default 50)
+                max_comments: Maximum number of comments/replies to import (default 50)
+
+            Returns:
+                Summary of imported data
+            """
+            from historical_data_importer import HistoricalDataImporter
+
+            # Get CUA client from runtime
+            if not runtime:
+                return "Error: No runtime available"
+
+            runtime_config = getattr(runtime, 'config', {})
+            configurable = runtime_config.get('configurable', {}) if isinstance(runtime_config, dict) else {}
+            cua_url = configurable.get('cua_url')
+            runtime_user_id = configurable.get('x-user-id') or user_id
+
+            if not cua_url:
+                return "Error: No CUA URL available. Make sure you have an active browser session."
+
+            # Create async CUA client
+            from async_playwright_tools import AsyncPlaywrightClient
+            client = AsyncPlaywrightClient(cua_url)
+
+            try:
+                importer = HistoricalDataImporter(client, runtime_user_id)
+                result = await importer.import_all(max_posts=max_posts, max_comments=max_comments)
+
+                posts_stats = result.get("posts", {})
+                comments_stats = result.get("comments", {})
+
+                summary = f"""📥 Historical Data Import Complete!
+
+**Posts:**
+- Found: {posts_stats.get('total_found', 0)}
+- Imported: {posts_stats.get('imported', 0)}
+- Already existed: {posts_stats.get('skipped_duplicate', 0)}
+
+**Comments/Replies:**
+- Found: {comments_stats.get('total_found', 0)}
+- Imported: {comments_stats.get('imported', 0)}
+- Already existed: {comments_stats.get('skipped_duplicate', 0)}
+
+Your analytics dashboard will now show engagement data for these items.
+"""
+                return summary
+
+            except Exception as e:
+                return f"Error importing historical data: {str(e)}"
+
+        tool_dict["import_historical_data"] = import_historical_data
+        user_data_tools.append(import_historical_data)
+        print(f"✅ Added import_historical_data tool for analytics backfill")
 
     # Create Anthropic native tools for subagents (if model is available)
     native_web_fetch_tool = None
@@ -909,6 +991,129 @@ CRITICAL FORMATTING RULES (MUST FOLLOW):
 - If you want to list things, weave them into natural sentences instead
 
 Generate a {content_type} that someone would genuinely write if they found this content interesting:"""
+
+        # ============================================================================
+        # CONTINUAL LEARNING VALIDATION GATE
+        # Validates and improves generated content before posting
+        # ============================================================================
+        async def validate_and_improve_comment(
+            generated_comment: str,
+            content_type: str = "comment",
+            style_profile: dict = None,
+            user_examples: list = None,
+            max_improvement_attempts: int = 2
+        ) -> tuple:
+            """
+            Validate generated content through continual learning pipeline.
+
+            Advisory mode: Always returns content (improved if possible, original if not).
+            Never blocks posting - graceful degradation on any failure.
+
+            Returns:
+                (final_comment, validation_result_dict)
+            """
+            if not CONTINUAL_LEARNING_AVAILABLE:
+                return generated_comment, {"passed": True, "method": "skipped", "reason": "components_unavailable"}
+
+            validation_result = {
+                "passed": True,
+                "method": "none",
+                "score": None,
+                "warnings": [],
+                "improvements_made": False
+            }
+
+            try:
+                import json as _json
+                print(f"🔍 [Validation] Starting validation for user={user_id}, content_type={content_type}, "
+                      f"comment_length={len(generated_comment)}, examples_count={len(user_examples or [])}")
+
+                # Step 1: Banned phrase check (SYNC, fast)
+                banned_manager = BannedPatternsManager(store, user_id)
+                is_valid, detected_banned = banned_manager.validate_content(generated_comment)
+
+                if not is_valid and detected_banned:
+                    banned_phrases = [d.get('phrase', str(d))[:30] for d in detected_banned[:5]]
+                    print(f"🚫 [Validation] BANNED_PHRASES_DETECTED count={len(detected_banned)} phrases={banned_phrases}")
+                    validation_result["warnings"].append(f"Banned phrases detected: {len(detected_banned)}")
+                    # Don't remove phrases - let the scorer/grader handle improvement
+                else:
+                    print(f"✅ [Validation] No banned phrases detected")
+
+                # Step 2: Style match scoring (SYNC, NLP-based)
+                style_scorer = StyleMatchScorer(store, user_id)
+                style_score = style_scorer.score_content(
+                    generated_comment,
+                    content_type=content_type,
+                    style_profile=style_profile or {},
+                    user_examples=user_examples or []
+                )
+
+                validation_result["score"] = style_score.overall_score
+                validation_result["method"] = "rule_based"
+
+                # Log detailed scoring breakdown
+                score_breakdown = {
+                    "event": "STYLE_SCORE_BREAKDOWN",
+                    "overall": round(style_score.overall_score, 3),
+                    "confidence": style_score.confidence,
+                    "should_regenerate": style_score.should_regenerate,
+                    "vocabulary_match": getattr(style_score, 'vocabulary_match', None),
+                    "length_match": getattr(style_score, 'length_match', None),
+                    "tone_match": getattr(style_score, 'tone_match', None),
+                    "banned_penalty": getattr(style_score, 'banned_phrase_penalty', None),
+                    "warnings": getattr(style_score, 'warnings', [])[:3]
+                }
+                print(f"📊 [Validation] {_json.dumps(score_breakdown)}")
+
+                # If score >= 0.6 and no banned phrases, pass without LLM grading
+                if style_score.overall_score >= 0.6 and not style_score.should_regenerate:
+                    print(f"✅ [Validation] PASSED_RULE_BASED score={style_score.overall_score:.2f}")
+                    return generated_comment, validation_result
+
+                # Step 3: LLM Style Grading (ASYNC, only if needed)
+                print(f"🤖 [Validation] ESCALATING_TO_LLM reason=score_below_threshold score={style_score.overall_score:.2f}")
+
+                llm_grader = LLMStyleGrader(model, store, user_id)
+                improved_comment, grade_result = await llm_grader.grade_and_improve(
+                    generated_comment,
+                    content_type=content_type,
+                    style_profile=style_profile or {},
+                    user_examples=user_examples or [],
+                    max_attempts=max_improvement_attempts
+                )
+
+                validation_result["method"] = "llm_graded"
+                validation_result["score"] = grade_result.get("overall_score", 0) / 10.0  # Normalize to 0-1
+                validation_result["passed"] = grade_result.get("pass", False)
+
+                # Log LLM grading result
+                llm_grade_log = {
+                    "event": "LLM_GRADING_RESULT",
+                    "overall_score": grade_result.get("overall_score"),
+                    "pass": grade_result.get("pass"),
+                    "issues_count": len(grade_result.get("issues", [])),
+                    "detected_ai_phrases": grade_result.get("detected_ai_phrases", [])[:3],
+                    "improvement_made": improved_comment != generated_comment
+                }
+                print(f"🤖 [Validation] {_json.dumps(llm_grade_log)}")
+
+                if improved_comment != generated_comment:
+                    validation_result["improvements_made"] = True
+                    print(f"📝 [Validation] COMMENT_IMPROVED")
+                    print(f"   Before: {generated_comment[:100]}...")
+                    print(f"   After:  {improved_comment[:100]}...")
+
+                return improved_comment, validation_result
+
+            except Exception as e:
+                # Graceful degradation - use original comment
+                import traceback
+                print(f"⚠️ [Validation] VALIDATION_ERROR error={str(e)[:200]}")
+                print(f"   Traceback: {traceback.format_exc()[:300]}")
+                validation_result["method"] = "fallback"
+                validation_result["warnings"].append(f"Validation error: {str(e)[:100]}")
+                return generated_comment, validation_result
 
         # Create wrapper that auto-generates content in user's style
         @tool
@@ -1041,6 +1246,82 @@ Write a comment that sounds EXACTLY like the user wrote it themselves.
                         generated_comment = response.content.strip()
 
                     print(f"✍️ Generated comment ({len(generated_comment)} chars): {generated_comment}")
+
+                    # ═══════════════════════════════════════════════════════════════
+                    # CONTINUAL LEARNING VALIDATION GATE
+                    # Validates and improves comment before posting (advisory mode)
+                    # ═══════════════════════════════════════════════════════════════
+                    try:
+                        # Prepare user examples for validation
+                        validation_examples = []
+                        if samples and len(samples) > 0:
+                            validation_examples = [
+                                s.value.get('content', '')[:200]
+                                for s in samples[:10]
+                                if hasattr(s, 'value') and s.value.get('content')
+                            ]
+
+                        # Prepare style profile for validation
+                        style_profile_dict = None
+                        try:
+                            profile = style_manager.get_style_profile()
+                            if profile:
+                                style_profile_dict = {
+                                    "tone": getattr(profile, 'tone', 'casual'),
+                                    "avg_comment_length": getattr(profile, 'avg_comment_length', 50),
+                                    "avg_sentence_length": getattr(profile, 'avg_sentence_length', 15),
+                                    "uses_emojis": getattr(profile, 'uses_emojis', False),
+                                    "punctuation_patterns": getattr(profile, 'punctuation_patterns', {})
+                                }
+                        except Exception as profile_err:
+                            print(f"⚠️ [Validation] Could not get style profile: {profile_err}")
+
+                        # Run validation gate
+                        validated_comment, validation_result = await validate_and_improve_comment(
+                            generated_comment=generated_comment,
+                            content_type="comment",
+                            style_profile=style_profile_dict,
+                            user_examples=validation_examples,
+                            max_improvement_attempts=2
+                        )
+
+                        # Log validation outcome with full context for Cloud Console debugging
+                        import json
+                        validation_log = {
+                            "event": "CONTINUAL_LEARNING_VALIDATION",
+                            "user_id": user_id,
+                            "passed": validation_result.get('passed', True),
+                            "score": validation_result.get('score'),
+                            "method": validation_result.get('method', 'none'),
+                            "improvements_made": validation_result.get('improvements_made', False),
+                            "warnings": validation_result.get('warnings', []),
+                            "original_length": len(generated_comment),
+                            "validated_length": len(validated_comment) if validated_comment else 0,
+                            "target": author_or_content[:50] if author_or_content else "unknown"
+                        }
+                        print(f"📊 [Validation] {json.dumps(validation_log)}")
+
+                        # Human-readable summary
+                        print(f"✅ [Validation] Complete - Passed: {validation_result.get('passed', True)}, "
+                              f"Score: {validation_result.get('score', 'N/A')}, "
+                              f"Method: {validation_result.get('method', 'none')}")
+
+                        # Use improved comment if validation made changes
+                        if validation_result.get('improvements_made', False):
+                            print(f"📝 [Validation] Using improved comment")
+                            print(f"   Original: {generated_comment[:100]}...")
+                            print(f"   Improved: {validated_comment[:100]}...")
+                            generated_comment = validated_comment
+
+                    except Exception as validation_error:
+                        # Graceful degradation - continue with original comment
+                        import traceback
+                        print(f"⚠️ [Validation] Gate failed, using original: {validation_error}")
+                        print(f"   Traceback: {traceback.format_exc()[:500]}")
+                    # ═══════════════════════════════════════════════════════════════
+                    # END VALIDATION GATE
+                    # ═══════════════════════════════════════════════════════════════
+
                 else:
                     print("❌ No prompt generated, using fallback")
 
@@ -1075,6 +1356,57 @@ Write a comment that sounds EXACTLY like the user wrote it themselves.
                 print(f"❌ [Activity Logging] FAILED to log comment: {e}")
                 import traceback
                 traceback.print_exc()
+
+            # Step 4: Save comment to database for engagement tracking
+            if status == "success":
+                try:
+                    import json
+                    import re
+                    from datetime import datetime
+
+                    # Parse comment data from the result string
+                    comment_data_match = re.search(r'<!-- COMMENT_DATA:(\{.*?\}) -->', result, re.DOTALL)
+                    if comment_data_match:
+                        comment_data = json.loads(comment_data_match.group(1))
+                        comment_url = comment_data.get("comment_url")
+                        target_author = comment_data.get("target_author")
+                        target_preview = comment_data.get("target_post_preview")
+
+                        print(f"💾 [Database] Saving comment to UserComment table...")
+
+                        from database.database import SessionLocal
+                        from database.models import UserComment, XAccount
+
+                        db = SessionLocal()
+                        try:
+                            # Find the user's X account
+                            x_account = db.query(XAccount).filter(XAccount.user_id == user_id).first()
+                            if x_account:
+                                # Create UserComment record
+                                user_comment = UserComment(
+                                    x_account_id=x_account.id,
+                                    content=generated_comment,
+                                    comment_url=comment_url,
+                                    target_post_url=None,  # Could extract from context if needed
+                                    target_post_author=target_author,
+                                    source="agent",  # Mark as AI-generated
+                                    target_post_content_preview=target_preview[:500] if target_preview else None,
+                                    commented_at=datetime.utcnow(),
+                                    scrape_status="pending" if comment_url else "no_url"
+                                )
+                                db.add(user_comment)
+                                db.commit()
+                                print(f"✅ [Database] Saved comment to UserComment table (id={user_comment.id}, url={comment_url})")
+                            else:
+                                print(f"⚠️ [Database] No X account found for user {user_id}")
+                        finally:
+                            db.close()
+                    else:
+                        print("⚠️ [Database] No COMMENT_DATA found in result (URL capture may have failed)")
+                except Exception as db_error:
+                    print(f"❌ [Database] Failed to save comment: {db_error}")
+                    import traceback
+                    traceback.print_exc()
 
             return result
 
@@ -1165,13 +1497,9 @@ Use the research above to write a post that demonstrates expertise and provides 
             # Step 3: Log activity
             status = "success" if ("successfully" in result.lower() or "✅" in result) else "failed"
             error_msg = result if status == "failed" else None
-            # Extract post URL if present
+
+            # URL will be captured later during Import History (content matching)
             post_url = None
-            if "x.com" in result:
-                import re
-                url_match = re.search(r'https://(?:twitter\.com|x\.com)/\S+', result)
-                if url_match:
-                    post_url = url_match.group(0)
 
             print(f"📝 [Activity Logging] Logging post: status={status}, url={post_url}")
             try:
@@ -1191,6 +1519,36 @@ Use the research above to write a post that demonstrates expertise and provides 
                 print(f"❌ [Activity Logging] FAILED to log post: {e}")
                 import traceback
                 traceback.print_exc()
+
+            # Step 4: Save post to database for analytics tracking
+            if status == "success":
+                try:
+                    from datetime import datetime, timezone
+                    from database.database import SessionLocal
+                    from database.models import UserPost, XAccount
+
+                    db = SessionLocal()
+                    try:
+                        x_account = db.query(XAccount).filter(XAccount.user_id == user_id).first()
+                        if x_account:
+                            user_post = UserPost(
+                                x_account_id=x_account.id,
+                                content=final_post_text,
+                                post_url=post_url,
+                                source="agent",  # Mark as AI-generated
+                                posted_at=datetime.now(timezone.utc),
+                            )
+                            db.add(user_post)
+                            db.commit()
+                            print(f"✅ [Database] Saved post to UserPost table (id={user_post.id}, source=agent)")
+                        else:
+                            print(f"⚠️ [Database] No X account found for user {user_id}")
+                    finally:
+                        db.close()
+                except Exception as db_error:
+                    print(f"❌ [Database] Failed to save post: {db_error}")
+                    import traceback
+                    traceback.print_exc()
 
             return result
 
@@ -2854,12 +3212,18 @@ def create_x_growth_agent(config: dict = None):
     # Get configurable values with defaults
     configurable = config.get("configurable", {})
     model_name = configurable.get("model_name", "claude-sonnet-4-5-20250929")
+    model_provider = configurable.get("model_provider", "anthropic")  # "anthropic" or "openai"
     user_id = configurable.get("user_id", None)
     store = configurable.get("store", None)
     use_longterm_memory = configurable.get("use_longterm_memory", True)
-    
-    # Initialize the model
-    model = init_chat_model(model_name)
+
+    # Initialize the model based on provider
+    if model_provider == "openai":
+        print(f"🤖 [Multi-Model] Using OpenAI model: {model_name}")
+        model = ChatOpenAI(model=model_name, temperature=0.7)
+    else:
+        print(f"🤖 [Multi-Model] Using Anthropic model: {model_name}")
+        model = init_chat_model(model_name)
 
     # Set the model for web search tool (used by research_topic subagent)
     set_web_search_model(model)
@@ -3009,7 +3373,7 @@ Just call the tools normally - the style transfer happens AUTOMATICALLY inside t
 """
     
     # Get atomic subagents with AUTOMATIC style transfer if user_id exists
-    subagents = get_atomic_subagents(store_for_agent, user_id, model)
+    subagents = get_atomic_subagents(store_for_agent, user_id, model, model_provider)
 
     # Get the comprehensive context tool for the main agent
     playwright_tools = get_async_playwright_tools()
@@ -3019,12 +3383,22 @@ Just call the tools normally - the style transfer happens AUTOMATICALLY inside t
     # These tools access runtime.store at execution time
     main_tools = [comprehensive_context_tool]
 
-    # Add Anthropic native tools (web_fetch, web_search)
-    native_web_fetch = create_web_fetch_tool(model)
-    native_web_search = create_native_web_search_tool(model)
-    main_tools.append(native_web_fetch)
-    main_tools.append(native_web_search)
-    print(f"✅ Added Anthropic native web_fetch and web_search tools to main agent")
+    # Add provider-aware native tools (web_fetch, web_search)
+    if model_provider == "openai":
+        # Use OpenAI native tools (web_search_preview)
+        from openai_native_tools import create_openai_web_search_tool, create_openai_web_fetch_tool
+        native_web_search = create_openai_web_search_tool(model)
+        native_web_fetch = create_openai_web_fetch_tool(model)  # Fallback implementation
+        main_tools.append(native_web_fetch)
+        main_tools.append(native_web_search)
+        print(f"🔧 [Multi-Model] Using OpenAI native web tools (web_search_preview)")
+    else:
+        # Use Anthropic native tools (web_search_20250305)
+        native_web_fetch = create_web_fetch_tool(model)
+        native_web_search = create_native_web_search_tool(model)
+        main_tools.append(native_web_fetch)
+        main_tools.append(native_web_search)
+        print(f"🔧 [Multi-Model] Using Anthropic native web tools (web_search_20250305)")
 
     if user_id:
         # Add Anthropic native memory tool (requires user_id)
