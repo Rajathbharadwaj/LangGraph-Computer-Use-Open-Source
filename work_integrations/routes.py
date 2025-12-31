@@ -73,14 +73,53 @@ router = APIRouter(prefix="/api/work-integrations", tags=["work-integrations"])
 async def get_oauth_url(
     platform: WorkPlatform,
     user_id: str = Depends(get_current_user_id),
+    db: AsyncSession = Depends(get_db_session),
 ):
     """
     Get OAuth authorization URL for a platform.
 
     Starts the OAuth flow by generating an authorization URL with state.
+    Checks billing limits before allowing new connections.
     """
     oauth_manager = get_work_oauth_manager()
     settings = get_work_integrations_settings()
+
+    # Check billing limits for work integrations
+    from sqlalchemy.orm import Session as SyncSession
+    from database.database import SessionLocal
+    sync_db: SyncSession = SessionLocal()
+    try:
+        billing = BillingService(sync_db)
+        subscription = billing.get_subscription(user_id)
+        plan = subscription.plan if subscription else "free"
+
+        limits = PLAN_LIMITS.get(plan, {})
+        max_integrations = limits.get("work_integrations", 0)
+
+        if max_integrations == 0:
+            raise HTTPException(
+                403,
+                "Work integrations require a paid subscription. Please upgrade to Starter or higher."
+            )
+
+        # Count existing integrations
+        if max_integrations != -1:  # -1 means unlimited
+            result = await db.execute(
+                select(func.count()).where(
+                    WorkIntegration.user_id == user_id,
+                    WorkIntegration.is_connected == True,
+                )
+            )
+            current_count = result.scalar() or 0
+
+            if current_count >= max_integrations:
+                raise HTTPException(
+                    403,
+                    f"Your {plan} plan allows {max_integrations} work integration(s). "
+                    f"Please upgrade to connect more platforms."
+                )
+    finally:
+        sync_db.close()
 
     # Check if credentials are configured
     if platform == WorkPlatform.GITHUB and not settings.github_client_id:
