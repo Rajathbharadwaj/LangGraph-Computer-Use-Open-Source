@@ -20,6 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sess
 from database.models import WorkIntegration, User
 from .activity_aggregator import ActivityAggregator
 from .draft_generator import DraftGenerator
+from .email_notifications import get_email_notification_service
 from ..config import get_work_integrations_settings
 
 logger = logging.getLogger(__name__)
