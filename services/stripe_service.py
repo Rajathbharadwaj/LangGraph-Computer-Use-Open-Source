@@ -43,6 +43,8 @@ PLAN_LIMITS = {
         "crm_access": False,
         "image_generations": 0,
         "analytics_days": 3,
+        "work_integrations": 1,  # 1 platform
+        "work_drafts_per_month": 10,
     },
     "pro": {
         "x_growth_sessions": 15,
@@ -52,6 +54,8 @@ PLAN_LIMITS = {
         "crm_access": False,
         "image_generations": 10,
         "analytics_days": 7,
+        "work_integrations": 3,  # 3 platforms
+        "work_drafts_per_month": 30,
     },
     "pro_plus": {
         "x_growth_sessions": 50,
@@ -61,6 +65,8 @@ PLAN_LIMITS = {
         "crm_access": False,
         "image_generations": 50,
         "analytics_days": 30,
+        "work_integrations": 5,  # 5 platforms (all)
+        "work_drafts_per_month": 60,
     },
     "ultimate": {
         "x_growth_sessions": 100,  # ~50-100 sessions based on 10,000 credits
@@ -70,6 +76,8 @@ PLAN_LIMITS = {
         "crm_access": True,
         "image_generations": 200,
         "analytics_days": 90,
+        "work_integrations": -1,  # Unlimited
+        "work_drafts_per_month": -1,  # Unlimited
     },
 }
 
