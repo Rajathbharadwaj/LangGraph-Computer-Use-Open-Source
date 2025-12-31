@@ -1,0 +1,41 @@
+# Cloud Build configuration to run database migrations
+# Run via: gcloud builds submit --config=migrations/cloudbuild.migration.yaml
+
+steps:
+  # Run the work integrations migration
+  - name: 'gcr.io/cloud-builders/docker'
+    id: 'run-migration'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        # Install dependencies
+        pip install sqlalchemy psycopg2-binary
+
+        # Get database password from secret
+        DB_PASSWORD=$$(gcloud secrets versions access latest --secret=db-password --project=$PROJECT_ID)
+
+        # Construct DATABASE_URL with private IP
+        export DATABASE_URL="postgresql://postgres:$${DB_PASSWORD}@10.97.0.3:5432/parallel_universe_db"
+
+        # Run migration
+        python migrations/run_work_integrations_migration.py
+
+  # Alternatively, use the Cloud SQL Proxy in the same VPC
+  - name: 'gcr.io/$PROJECT_ID/cloud-builders-python:3.12'
+    id: 'migration-with-proxy'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        pip install sqlalchemy psycopg2-binary
+
+        DB_PASSWORD=$$(gcloud secrets versions access latest --secret=db-password --project=$PROJECT_ID)
+        export DATABASE_URL="postgresql://postgres:$${DB_PASSWORD}@10.97.0.3:5432/parallel_universe_db"
+
+        python migrations/run_work_integrations_migration.py
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+  pool:
+    name: 'projects/$PROJECT_ID/locations/us-central1/workerPools/private-pool'
