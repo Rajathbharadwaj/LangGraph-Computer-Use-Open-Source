@@ -129,6 +129,228 @@ class UserPreferences:
         return limits.get(self.aggression_level, limits["moderate"])
 
 
+# ============================================================================
+# GUARDRAILS VALIDATION FUNCTIONS
+# These functions enforce the user's onboarding preferences at runtime
+# ============================================================================
+
+# Topic keywords for detecting sensitive content
+TOPIC_KEYWORDS = {
+    "politics": [
+        "election", "democrat", "republican", "trump", "biden", "vote", "congress",
+        "senate", "liberal", "conservative", "maga", "woke", "left wing", "right wing",
+        "socialism", "capitalism", "communist", "fascist", "political"
+    ],
+    "religion": [
+        "god", "jesus", "allah", "church", "pray", "faith", "atheist", "christian",
+        "muslim", "jewish", "hindu", "buddhist", "religion", "bible", "quran",
+        "heaven", "hell", "sin", "salvation"
+    ],
+    "sexual_content": [
+        "sex", "nsfw", "adult", "explicit", "porn", "nude", "erotic", "fetish",
+        "onlyfans", "18+", "xxx"
+    ],
+    "mental_health": [
+        "suicide", "suicidal", "depression", "depressed", "anxiety", "therapy",
+        "mental illness", "bipolar", "schizophrenia", "ptsd", "self harm",
+        "eating disorder", "panic attack"
+    ],
+    "personal_relationships": [
+        "divorce", "breakup", "cheating", "affair", "dating drama", "ex girlfriend",
+        "ex boyfriend", "marriage problems", "relationship drama"
+    ],
+    "controversial_social": [
+        "abortion", "gun control", "immigration", "blm", "lgbtq debate", "trans rights",
+        "gender war", "men vs women", "feminism debate", "racism", "cancel culture"
+    ],
+    "legal_medical": [
+        "legal advice", "medical advice", "diagnosis", "lawsuit", "sue", "symptoms",
+        "treatment for", "medication", "dosage", "prescription"
+    ],
+    "drama": [
+        "drama", "beef", "cancelled", "exposed", "ratio", "calling out", "clout chasing",
+        "receipts", "caught in 4k", "feud", "fight", "argument"
+    ]
+}
+
+
+def validate_topic_safety(
+    content: str,
+    post_context: str,
+    preferences: 'UserPreferences'
+) -> tuple[bool, str]:
+    """
+    Check if content/context violates never_engage_topics.
+
+    Args:
+        content: The reply/engagement content being considered
+        post_context: The original post or thread context
+        preferences: User's preferences with never_engage_topics
+
+    Returns:
+        Tuple of (is_safe, reason)
+        - (True, "Safe") if no blocked topics detected
+        - (False, "Topic 'X' detected (keyword: Y)") if blocked topic found
+    """
+    never_engage = preferences.get_never_engage_topics()
+    if not never_engage:
+        return True, "Safe - no topics blocked"
+
+    combined_text = f"{content} {post_context}".lower()
+
+    for topic in never_engage:
+        keywords = TOPIC_KEYWORDS.get(topic, [])
+        for keyword in keywords:
+            if keyword.lower() in combined_text:
+                return False, f"Topic '{topic}' detected (keyword: '{keyword}')"
+
+    return True, "Safe"
+
+
+def is_blocked_account(username: str, preferences: 'UserPreferences') -> bool:
+    """
+    Check if a username is in the blocked accounts list.
+
+    Args:
+        username: The @handle to check (with or without @)
+        preferences: User's preferences with blocked_accounts
+
+    Returns:
+        True if account is blocked, False otherwise
+    """
+    blocked = preferences.get_blocked_accounts()
+    if not blocked:
+        return False
+
+    normalized = username.lower().lstrip('@')
+    return normalized in blocked
+
+
+def check_reply_limits(
+    current_daily_count: int,
+    preferences: 'UserPreferences',
+    action_type: str = "replies"
+) -> tuple[bool, str]:
+    """
+    Check if the daily limit for an action type has been reached.
+
+    Args:
+        current_daily_count: Current count of actions taken today
+        preferences: User's preferences with reply_frequency
+        action_type: Type of action ("replies" or "likes")
+
+    Returns:
+        Tuple of (within_limits, message)
+    """
+    limits = preferences.get_reply_limits()
+    limit = limits.get(action_type, 3)  # Default to 3 for unknown types
+
+    if current_daily_count >= limit:
+        return False, f"Daily {action_type} limit ({limit}) reached. Backing off for today."
+
+    remaining = limit - current_daily_count
+    return True, f"Within limits ({remaining} {action_type} remaining today)"
+
+
+def should_engage_based_on_uncertainty(
+    confidence_score: float,
+    preferences: 'UserPreferences'
+) -> tuple[bool, str]:
+    """
+    Determine if engagement should proceed based on uncertainty action setting.
+
+    Args:
+        confidence_score: How confident the AI is (0.0 to 1.0)
+        preferences: User's preferences with uncertainty_action
+
+    Returns:
+        Tuple of (should_engage, action_to_take)
+    """
+    uncertainty_action = preferences.uncertainty_action
+
+    # High confidence - always proceed
+    if confidence_score >= 0.8:
+        return True, "proceed"
+
+    # Medium confidence - depends on setting
+    if confidence_score >= 0.5:
+        if uncertainty_action == "do_nothing":
+            return False, "skip - do_nothing policy, medium confidence"
+        elif uncertainty_action == "save_review":
+            return False, "queue_for_review"
+        elif uncertainty_action == "reply_cautious":
+            return True, "proceed_cautiously"
+        else:  # dynamic
+            return True, "proceed_cautiously"
+
+    # Low confidence - almost always skip or queue
+    if uncertainty_action == "dynamic":
+        return False, "queue_for_review"
+    elif uncertainty_action == "reply_cautious":
+        return False, "queue_for_review"
+    elif uncertainty_action == "save_review":
+        return False, "queue_for_review"
+    else:  # do_nothing
+        return False, "skip - do_nothing policy, low confidence"
+
+
+def validate_engagement_attempt(
+    target_username: str,
+    post_content: str,
+    reply_content: str,
+    current_daily_replies: int,
+    confidence_score: float,
+    preferences: 'UserPreferences'
+) -> tuple[bool, List[str]]:
+    """
+    Comprehensive validation of an engagement attempt.
+    Runs all guardrail checks and returns results.
+
+    Args:
+        target_username: Account being engaged with
+        post_content: Original post content
+        reply_content: Proposed reply content
+        current_daily_replies: Number of replies made today
+        confidence_score: AI's confidence in the engagement
+        preferences: User's preferences
+
+    Returns:
+        Tuple of (can_proceed, list_of_issues)
+        If can_proceed is False, list_of_issues contains all violations
+    """
+    issues = []
+
+    # 1. Check blocked accounts
+    if is_blocked_account(target_username, preferences):
+        issues.append(f"❌ @{target_username} is in blocked accounts list")
+
+    # 2. Check topic safety (original post)
+    is_safe, reason = validate_topic_safety("", post_content, preferences)
+    if not is_safe:
+        issues.append(f"❌ Post content: {reason}")
+
+    # 3. Check topic safety (reply content)
+    is_safe, reason = validate_topic_safety(reply_content, "", preferences)
+    if not is_safe:
+        issues.append(f"❌ Reply content: {reason}")
+
+    # 4. Check daily limits
+    within_limits, limit_msg = check_reply_limits(current_daily_replies, preferences, "replies")
+    if not within_limits:
+        issues.append(f"❌ {limit_msg}")
+
+    # 5. Check uncertainty action
+    should_proceed, action = should_engage_based_on_uncertainty(confidence_score, preferences)
+    if not should_proceed:
+        if action == "queue_for_review":
+            issues.append(f"⏳ Low confidence ({confidence_score:.0%}) - queued for review")
+        else:
+            issues.append(f"❌ Skipped due to uncertainty policy: {action}")
+
+    can_proceed = len([i for i in issues if i.startswith("❌")]) == 0
+    return can_proceed, issues
+
+
 @dataclass
 class EngagementMemory:
     """Memory of a past engagement"""
