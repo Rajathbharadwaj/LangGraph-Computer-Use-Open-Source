@@ -6,12 +6,13 @@ from sqlalchemy import create_engine
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import NullPool
+from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 
 # Get database URL from environment (port 5433 to avoid conflict with other postgres instances)
 # Check both POSTGRES_URI (LangGraph) and DATABASE_URL (backend-api)
 DATABASE_URL = os.getenv("POSTGRES_URI") or os.getenv("DATABASE_URL") or "postgresql://postgres:password@localhost:5433/xgrowth"
 
-# Create engine with connection timeout for Cloud Run startup
+# Create sync engine with connection timeout for Cloud Run startup
 engine = create_engine(
     DATABASE_URL,
     poolclass=NullPool,  # For async compatibility
@@ -21,11 +22,44 @@ engine = create_engine(
     },
 )
 
-# Create session factory
+# Create sync session factory
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 # Base class for models
 Base = declarative_base()
+
+# --- Async Database Support ---
+# Convert sync URL to async URL for asyncpg driver
+ASYNC_DATABASE_URL = DATABASE_URL
+if "postgresql://" in ASYNC_DATABASE_URL and "+asyncpg" not in ASYNC_DATABASE_URL:
+    ASYNC_DATABASE_URL = ASYNC_DATABASE_URL.replace("postgresql://", "postgresql+asyncpg://")
+
+# Create async engine
+async_engine = create_async_engine(
+    ASYNC_DATABASE_URL,
+    echo=False,
+    pool_pre_ping=True,
+)
+
+# Create async session factory
+AsyncSessionLocal = async_sessionmaker(
+    async_engine,
+    class_=AsyncSession,
+    expire_on_commit=False,
+)
+
+
+async def get_db_session():
+    """
+    Async dependency for FastAPI to get database session.
+    Used by work_integrations and other async routes.
+    """
+    async with AsyncSessionLocal() as session:
+        try:
+            yield session
+        finally:
+            await session.close()
+
 
 def get_db():
     """
