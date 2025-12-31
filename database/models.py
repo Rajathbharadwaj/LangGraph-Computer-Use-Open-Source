@@ -84,25 +84,109 @@ class UserPost(Base):
     User's X posts for writing style learning
     """
     __tablename__ = "user_posts"
-    
+
     id = Column(Integer, primary_key=True, autoincrement=True)
     x_account_id = Column(Integer, ForeignKey("x_accounts.id"), nullable=False)
-    
+
     # Post content
     content = Column(Text, nullable=False)
     post_url = Column(String)
-    
+
     # Engagement metrics
     likes = Column(Integer, default=0)
     retweets = Column(Integer, default=0)
     replies = Column(Integer, default=0)
-    
+
+    # Source tracking: 'agent' = AI-generated, 'manual' = user posted directly, 'imported' = backfilled
+    source = Column(String(20), default="imported")
+
     # Metadata
     posted_at = Column(DateTime)
     imported_at = Column(DateTime, default=datetime.utcnow)
-    
+
     # Relationships
     x_account = relationship("XAccount", back_populates="posts")
+
+
+class UserComment(Base):
+    """
+    Track comments WE make on other people's posts and their engagement.
+    Used for measuring the effectiveness of the Reply Guy strategy.
+    """
+    __tablename__ = "user_comments"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    x_account_id = Column(Integer, ForeignKey("x_accounts.id"), nullable=False)
+
+    # Our comment content
+    content = Column(Text, nullable=False)
+    comment_url = Column(String(500))  # Direct URL to our comment/reply
+
+    # Target post info (the post we commented on)
+    target_post_url = Column(String(500))
+    target_post_author = Column(String(100))
+    target_post_content_preview = Column(String(500))  # Preview of post we replied to
+
+    # Engagement OUR comment receives
+    likes = Column(Integer, default=0)
+    replies = Column(Integer, default=0)
+    retweets = Column(Integer, default=0)
+    impressions = Column(Integer, default=0)  # If available from X analytics
+
+    # Source tracking: 'agent' = AI-generated, 'manual' = user posted directly, 'imported' = backfilled
+    source = Column(String(20), default="imported")
+
+    # Scraping metadata
+    last_scraped_at = Column(DateTime)
+    scrape_status = Column(String(20), default="pending")  # pending, success, failed, not_found
+    scrape_error = Column(Text)
+
+    # Timestamps
+    commented_at = Column(DateTime)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    # Relationships
+    x_account = relationship("XAccount", backref="comments_made")
+
+
+class ReceivedComment(Base):
+    """
+    Track comments OTHERS leave on our posts.
+    Useful for identifying engaged followers and responding to engagement.
+    """
+    __tablename__ = "received_comments"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_post_id = Column(Integer, ForeignKey("user_posts.id"), nullable=False)
+    x_account_id = Column(Integer, ForeignKey("x_accounts.id"), nullable=False)
+
+    # Commenter info
+    commenter_username = Column(String(100), nullable=False)
+    commenter_display_name = Column(String(255))
+    comment_url = Column(String(500))
+
+    # Comment content
+    content = Column(Text)
+
+    # Engagement on the comment
+    likes = Column(Integer, default=0)
+    replies = Column(Integer, default=0)
+
+    # Did we reply to this comment?
+    we_replied = Column(Boolean, default=False)
+    our_reply_url = Column(String(500))
+
+    # Scraping metadata
+    last_scraped_at = Column(DateTime)
+
+    # Timestamps
+    commented_at = Column(DateTime)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    # Relationships
+    user_post = relationship("UserPost", backref="comments_received")
+    x_account = relationship("XAccount", backref="comments_received")
 
 
 class APIUsage(Base):
@@ -938,4 +1022,157 @@ class FeatureUsage(Base):
 
     # Relationships
     user = relationship("User", backref="feature_usage")
+
+
+# =============================================================================
+# Style Learning & Continual Learning Models
+# =============================================================================
+
+
+class StyleFeedback(Base):
+    """
+    Track user feedback on AI-generated content for continual learning.
+
+    This table captures:
+    - Explicit feedback (thumbs up/down, text comments)
+    - Implicit feedback (edits made before posting)
+    - Approval/rejection rates
+
+    The feedback is used by FeedbackProcessor to:
+    - Learn banned phrases from removed text
+    - Learn positive patterns from approved content
+    - Adjust style matching weights
+
+    Based on Letta's continual learning principles:
+    - Learning in Token Space (patterns stored as memory, not fine-tuning)
+    - Sleep-time Compute (daily consolidation of feedback into rules)
+    """
+    __tablename__ = "style_feedback"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(String, ForeignKey("users.id"), nullable=False)
+    x_account_id = Column(Integer, ForeignKey("x_accounts.id"), nullable=True)
+
+    # Generation details
+    generation_type = Column(String(20), nullable=False)  # post, comment, thread
+    generation_id = Column(String(100))  # External ID if applicable
+
+    # Content tracking
+    original_content = Column(Text, nullable=False)  # AI-generated content
+    edited_content = Column(Text)  # User's edited version (if modified)
+
+    # Feedback classification
+    action = Column(String(20), nullable=False)  # approved, edited, rejected, regenerated
+    edit_distance = Column(Float)  # Levenshtein distance ratio (0-1)
+
+    # Explicit feedback
+    rating = Column(Integer)  # 1-5 stars or thumbs (1=down, 5=up)
+    feedback_text = Column(Text)  # Optional user comments
+    feedback_tags = Column(JSON, default=[])  # ["too_formal", "wrong_tone", "ai_sounding"]
+
+    # Analysis results (filled by FeedbackProcessor)
+    removed_phrases = Column(JSON, default=[])  # Phrases user removed
+    added_phrases = Column(JSON, default=[])  # Phrases user added
+    learned_patterns = Column(JSON, default={})  # Extracted patterns
+
+    # Processing status
+    processed = Column(Boolean, default=False)  # Has been processed by consolidation
+    processed_at = Column(DateTime, nullable=True)
+
+    # Timestamps
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    # Relationships
+    user = relationship("User", backref="style_feedbacks")
+    x_account = relationship("XAccount", backref="style_feedbacks")
+
+
+class StyleEvolutionSnapshot(Base):
+    """
+    Versioned snapshots of user's writing style for drift detection.
+
+    This table enables:
+    - Style versioning (rollback capability)
+    - Drift detection (compare current vs historical style)
+    - Time-weighted profile calculation
+
+    Each snapshot captures the full DeepStyleProfile at a point in time.
+    Snapshots are created when:
+    - User imports new posts (>10 new samples)
+    - Significant drift is detected
+    - Manual recalculation is triggered
+    - Daily style check finds changes
+    """
+    __tablename__ = "style_evolution_snapshots"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(String, ForeignKey("users.id"), nullable=False)
+
+    # Snapshot identification
+    snapshot_id = Column(String(50), unique=True, nullable=False)  # format: user_id_YYYYMMDD_HHmmss
+
+    # Style profile (full DeepStyleProfile as JSON)
+    profile_json = Column(JSON, nullable=False)
+
+    # Context at snapshot time
+    post_count_at_snapshot = Column(Integer, default=0)  # Total posts analyzed
+    comment_count_at_snapshot = Column(Integer, default=0)  # Total comments analyzed
+
+    # Trigger information
+    trigger = Column(String(50), default="manual")  # manual, drift_detected, new_posts, scheduled
+
+    # Drift metrics (compared to previous snapshot)
+    drift_from_previous = Column(Float)  # Overall drift score 0-1
+    drift_details = Column(JSON, default={})  # Per-dimension drift scores
+
+    # Status
+    is_active = Column(Boolean, default=True)  # Is this the current active profile?
+
+    # Timestamps
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    # Relationships
+    user = relationship("User", backref="style_evolution_snapshots")
+
+
+class LearnedStyleRule(Base):
+    """
+    Consolidated learned rules from user feedback.
+
+    These rules are the output of FeedbackProcessor's consolidation step.
+    They are applied during content generation as additional constraints.
+
+    Rule types:
+    - banned_phrase: Never use this phrase
+    - preferred_phrase: Use this phrase when possible
+    - tone_adjustment: Adjust tone in this direction
+    - length_preference: User prefers this length range
+    - vocabulary_preference: Use/avoid specific vocabulary
+    """
+    __tablename__ = "learned_style_rules"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(String, ForeignKey("users.id"), nullable=False)
+
+    # Rule details
+    rule_type = Column(String(30), nullable=False)  # banned_phrase, preferred_phrase, tone_adjustment, etc.
+    rule_content = Column(Text, nullable=False)  # The phrase or instruction
+
+    # Confidence and source
+    confidence = Column(Float, default=0.5)  # 0-1, higher = more certain
+    source_feedback_count = Column(Integer, default=1)  # How many feedbacks support this rule
+    source_feedback_ids = Column(JSON, default=[])  # IDs of supporting feedbacks
+
+    # Priority and status
+    priority = Column(Integer, default=1)  # Higher = more important
+    is_active = Column(Boolean, default=True)
+
+    # Timestamps
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    last_applied_at = Column(DateTime, nullable=True)  # When this rule was last used
+
+    # Relationships
+    user = relationship("User", backref="learned_style_rules")
 

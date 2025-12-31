@@ -533,6 +533,87 @@ class CronJobExecutor:
         else:
             logger.warning(f"Cron job {job_id} not found in scheduler")
 
+    async def run_now(self, cron_job_id: int, user_id: str) -> Dict[str, Any]:
+        """
+        Execute a cron job immediately (manual trigger).
+        Unlike scheduled runs, this skips the is_active check.
+        """
+        db = SessionLocal()
+        try:
+            # Verify cron job belongs to user
+            cron_job = db.query(CronJob).filter(
+                CronJob.id == cron_job_id,
+                CronJob.user_id == user_id
+            ).first()
+
+            if not cron_job:
+                raise ValueError("Cron job not found or access denied")
+
+            # Check if a run is already in progress
+            running = db.query(CronJobRun).filter(
+                CronJobRun.cron_job_id == cron_job_id,
+                CronJobRun.status == "running"
+            ).first()
+
+            if running:
+                raise ValueError("A run is already in progress for this automation")
+
+            # Check cooldown (5 minutes between manual runs)
+            last_run = db.query(CronJobRun).filter(
+                CronJobRun.cron_job_id == cron_job_id
+            ).order_by(CronJobRun.started_at.desc()).first()
+
+            if last_run and last_run.started_at:
+                time_since_last = (datetime.utcnow() - last_run.started_at).total_seconds()
+                cooldown_seconds = 300  # 5 minutes
+                if time_since_last < cooldown_seconds:
+                    remaining = int(cooldown_seconds - time_since_last)
+                    raise ValueError(f"Please wait {remaining} seconds before running again")
+
+            logger.info(f"🚀 Manual run triggered for cron job {cron_job_id} by user {user_id}")
+
+        finally:
+            db.close()
+
+        # Execute the job (this handles its own DB session)
+        # We temporarily set is_active to True to allow execution, then restore it
+        db = SessionLocal()
+        try:
+            cron_job = db.query(CronJob).filter(CronJob.id == cron_job_id).first()
+            original_active = cron_job.is_active
+            cron_job.is_active = True  # Temporarily enable for execution
+            db.commit()
+        finally:
+            db.close()
+
+        try:
+            await self._execute_cron_job(cron_job_id)
+        finally:
+            # Restore original active state
+            db = SessionLocal()
+            try:
+                cron_job = db.query(CronJob).filter(CronJob.id == cron_job_id).first()
+                cron_job.is_active = original_active
+                db.commit()
+            finally:
+                db.close()
+
+        # Return the latest run info
+        db = SessionLocal()
+        try:
+            latest_run = db.query(CronJobRun).filter(
+                CronJobRun.cron_job_id == cron_job_id
+            ).order_by(CronJobRun.started_at.desc()).first()
+
+            return {
+                "message": "Automation started successfully",
+                "run_id": latest_run.id if latest_run else None,
+                "status": latest_run.status if latest_run else "unknown",
+                "thread_id": latest_run.thread_id if latest_run else None
+            }
+        finally:
+            db.close()
+
     def get_scheduled_jobs(self) -> Dict[str, Dict[str, Any]]:
         """Get all currently scheduled jobs"""
         return self.scheduled_jobs

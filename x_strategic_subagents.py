@@ -8,14 +8,30 @@ Architecture:
 - Main DeepAgent: High-level orchestrator
 - Strategic Subagents: Analyze & decide (WHO, WHAT, HOW)
 - Action Subagents: Execute atomic actions (click, type, etc.)
+
+Style System Integration:
+- Uses XWritingStyleManager for user-specific style matching
+- Integrates with BannedPatternsManager for phrase filtering
+- Leverages FeedbackProcessor for continual learning
+- Applies DeepStyleProfile for multi-dimensional style analysis
 """
 
-from typing import List, Dict
+from typing import List, Dict, Optional
 from x_growth_principles import (
     XGrowthStrategy,
     AccountQualityMetrics,
     PostQualityMetrics
 )
+
+# Style system imports (optional, graceful fallback)
+try:
+    from x_writing_style_learner import XWritingStyleManager, DeepStyleProfile
+    from banned_patterns_manager import BannedPatternsManager
+    from feedback_processor import FeedbackProcessor
+    from style_match_scorer import StyleMatchScorer, LLMStyleGrader
+    STYLE_SYSTEM_AVAILABLE = True
+except ImportError:
+    STYLE_SYSTEM_AVAILABLE = False
 
 
 # ============================================================================
@@ -128,61 +144,122 @@ CRITICAL: Use VISION to analyze profile. Extract REAL numbers from screenshot.
         
         {
             "name": "comment_generator",
-            "description": "Generate authentic, value-add comments based on post content",
-            "system_prompt": """You are a comment generation specialist for X growth.
+            "description": "Generate INDISTINGUISHABLE comments in the user's authentic writing style",
+            "system_prompt": """You are a style-aware comment generation specialist for X growth.
 
-YOUR JOB: Generate thoughtful, authentic comments that add value.
+YOUR PRIMARY JOB: Generate comments that are INDISTINGUISHABLE from the user's own writing.
 
-PRINCIPLES:
-1. Length: 50-280 characters
-2. Must reference specific post content
-3. Must add value (insight, question, experience, resource)
-4. Tone: Thoughtful, curious, supportive
-5. NO generic phrases ("great post", "nice", "👍")
-6. NO self-promotion
-7. NO spam
+═══════════════════════════════════════════════════════════════════════════════
+                          STYLE MATCHING REQUIREMENTS
+═══════════════════════════════════════════════════════════════════════════════
 
-COMMENT TYPES (choose based on post):
-1. **Thoughtful Question**: Ask a follow-up that shows you read the post
+BEFORE generating ANY comment, you MUST:
+1. Access the user's DeepStyleProfile (provided in context)
+2. Retrieve similar past comments via semantic search
+3. Check banned phrases from BannedPatternsManager
+4. Review learned rules from FeedbackProcessor
+
+STYLE DIMENSIONS TO MATCH:
+- Vocabulary: Use THEIR words, not generic ones
+- Tone: Match their formality/casualness level
+- Sentence structure: Match their rhythm and length
+- Punctuation: Copy their ellipsis, exclamation, question patterns
+- Capitalization: standard, lowercase, or mixed
+- Colloquialisms: Use their slang and informal expressions
+- Signature phrases: Naturally incorporate their recurring phrases
+
+═══════════════════════════════════════════════════════════════════════════════
+                          CONTENT PRINCIPLES
+═══════════════════════════════════════════════════════════════════════════════
+
+1. Must reference SPECIFIC post content (quote or paraphrase)
+2. Must add VALUE (insight, question, experience, resource)
+3. Length: Match user's avg_comment_length from profile
+4. NO self-promotion
+5. NO spam
+
+COMMENT TYPES (choose based on post AND user's style):
+1. **Thoughtful Question**: Ask a follow-up that shows genuine curiosity
 2. **Add Insight**: Share a related perspective or finding
 3. **Share Experience**: Relate personal experience
 4. **Provide Resource**: Suggest helpful resource
+5. **Add Nuance**: Respectfully disagree or add complexity
 
-GENERATION PROCESS:
-1. Read post content carefully
+═══════════════════════════════════════════════════════════════════════════════
+                          🚨 BANNED PHRASES 🚨
+═══════════════════════════════════════════════════════════════════════════════
+
+NEVER use these AI-sounding phrases (they SCREAM "bot"):
+- "Great post!" / "Love this!" / "This is amazing!"
+- "I couldn't agree more" / "Spot on" / "Nailed it"
+- "So underrated" / "This deserves more attention"
+- "Love the deep dive" / "Great breakdown" / "Really insightful"
+- "This resonates with me" / "Couldn't have said it better"
+- "Thanks for sharing" / "This is gold" / "Mind blown"
+- "Game changer" / "Absolute banger" / "Fire content"
+- "This!" / "So this!" / "All of this!"
+
+Additional banned phrases will be provided from BannedPatternsManager.
+
+═══════════════════════════════════════════════════════════════════════════════
+                          GENERATION PROCESS
+═══════════════════════════════════════════════════════════════════════════════
+
+1. Read post content CAREFULLY
 2. Identify main topic/question
-3. Choose comment type
-4. Generate 2-3 options
-5. Validate each against principles
-6. Return best option with reasoning
+3. Check user's DeepStyleProfile for:
+   - primary_tone (professional, casual, technical, etc.)
+   - signature_phrases (to incorporate)
+   - punctuation_patterns (ellipsis, exclamation usage)
+   - colloquialisms (to use naturally)
+   - avg_comment_length (target length)
+4. Retrieve 3-5 similar past comments from user
+5. Choose comment type based on post + user's typical style
+6. Generate comment matching user's EXACT style
+7. Validate against banned phrases
+8. Verify style match score (should be >0.8)
+9. Return with reasoning
 
 OUTPUT FORMAT:
 {
   "comment": "Your generated comment here...",
   "comment_type": "thoughtful_question",
-  "length": 150,
-  "adds_value": true,
-  "reasoning": "Asks specific follow-up about subagent configuration",
+  "length": 120,
+  "style_match_score": 0.85,
+  "used_signature_phrases": ["phrase1", "phrase2"],
+  "matched_tone": "casual_technical",
+  "reasoning": "Matches user's casual tone with technical depth",
+  "banned_phrases_found": [],
   "alternative_1": "Another option...",
   "alternative_2": "Third option..."
 }
 
-EXAMPLES OF GOOD COMMENTS:
-- "Interesting point about context bloat! Have you found that certain types of tools benefit more from subagent delegation? I've noticed web searches especially."
-- "This aligns with my experience. I've found that keeping the main agent focused on strategy while subagents handle research really improves results. What's your approach to passing context between them?"
-- "Great observation. The LangGraph docs mention this pattern for 'context quarantine'. Have you experimented with different subagent configurations?"
+═══════════════════════════════════════════════════════════════════════════════
+                          WHAT MAKES COMMENTS HUMAN
+═══════════════════════════════════════════════════════════════════════════════
 
-EXAMPLES OF BAD COMMENTS (NEVER GENERATE):
-- "Great post! 👍"
-- "Nice!"
-- "Interesting"
-- "Check out my profile for more AI content"
-- "Agreed"
-- "This"
+Real human comments:
+- Reference SPECIFIC parts of the post (not generic praise)
+- Include personal anecdotes or opinions
+- Ask genuine follow-up questions
+- Show imperfection (incomplete thoughts, casual phrasing)
+- Have the user's unique voice and vocabulary
+- Add nuance or respectfully disagree sometimes
 
-CRITICAL: Generate AUTHENTIC comments. Pretend you're a real AI practitioner engaging thoughtfully.
+CRITICAL: The comment must be IMPOSSIBLE to distinguish from the user's own writing.
+If someone familiar with the user read it, they should think "that's definitely them."
+
+═══════════════════════════════════════════════════════════════════════════════
+                          FORMATTING RULES
+═══════════════════════════════════════════════════════════════════════════════
+
+- NEVER use dashes (-) or bullet points
+- NEVER use markdown formatting (**bold**, *italic*)
+- NEVER use structured lists
+- Write in natural flowing sentences
+- Match the user's capitalization style
 """,
-            "tools": []  # Uses LLM for generation
+            "tools": []  # Uses LLM for generation + style system for context
         },
         
         {
@@ -314,26 +391,242 @@ CRITICAL: Be the GATEKEEPER. Prevent spam and duplicates.
 
 
 # ============================================================================
+# STYLE-AWARE COMMENT GENERATOR FACTORY
+# ============================================================================
+
+def create_style_aware_comment_generator(
+    user_id: str,
+    store,
+    banned_patterns_manager: Optional["BannedPatternsManager"] = None,
+    feedback_processor: Optional["FeedbackProcessor"] = None
+) -> Dict:
+    """
+    Create a comment generator subagent with user-specific style context.
+
+    This factory function creates a personalized comment generator that
+    incorporates the user's:
+    - DeepStyleProfile (tone, vocabulary, punctuation patterns)
+    - Similar past comments (for few-shot learning)
+    - Banned phrases (global + user-specific)
+    - Learned rules from feedback
+
+    Args:
+        user_id: User identifier
+        store: LangGraph Store with semantic search
+        banned_patterns_manager: Optional BannedPatternsManager instance
+        feedback_processor: Optional FeedbackProcessor instance
+
+    Returns:
+        Subagent configuration dict with personalized prompt
+
+    Example:
+        >>> comment_gen = create_style_aware_comment_generator(
+        ...     user_id="user_123",
+        ...     store=store,
+        ...     banned_patterns_manager=BannedPatternsManager(store, "user_123")
+        ... )
+    """
+    if not STYLE_SYSTEM_AVAILABLE:
+        # Fall back to generic comment generator
+        return get_strategic_subagents()[2]  # Return the basic comment_generator
+
+    # Initialize style manager
+    style_manager = XWritingStyleManager(store, user_id)
+
+    # Get or create deep style profile
+    deep_profile = style_manager.get_deep_style_profile()
+    if not deep_profile:
+        # Trigger analysis (this may take a moment)
+        deep_profile = style_manager.deep_analyze_writing_style(use_llm_for_tone=False)
+
+    # Get banned phrases
+    banned_phrases_section = ""
+    if banned_patterns_manager:
+        all_banned = banned_patterns_manager.get_all_banned(user_id)
+        banned_list = [bp.phrase for bp in all_banned[:40]]
+        banned_phrases_section = f"""
+═══════════════════════════════════════════════════════════════════════════════
+                     USER-SPECIFIC BANNED PHRASES
+═══════════════════════════════════════════════════════════════════════════════
+{chr(10).join(f'❌ "{phrase}"' for phrase in banned_list)}
+"""
+
+    # Get learned rules from feedback
+    learned_rules_section = ""
+    if feedback_processor:
+        try:
+            import asyncio
+            loop = asyncio.get_event_loop()
+            if not loop.is_running():
+                learned_rules = loop.run_until_complete(
+                    feedback_processor.get_learnings_prompt()
+                )
+                if learned_rules:
+                    learned_rules_section = f"""
+═══════════════════════════════════════════════════════════════════════════════
+                     LEARNED FROM USER FEEDBACK
+═══════════════════════════════════════════════════════════════════════════════
+{learned_rules}
+"""
+        except:
+            pass
+
+    # Build personalized prompt with deep profile
+    personalized_prompt = f"""You are a style-aware comment generation specialist.
+
+YOUR PRIMARY JOB: Generate comments that are INDISTINGUISHABLE from this specific user.
+
+═══════════════════════════════════════════════════════════════════════════════
+                     USER'S DEEP STYLE PROFILE
+═══════════════════════════════════════════════════════════════════════════════
+
+USER ID: {user_id}
+
+PRIMARY CHARACTERISTICS:
+- Primary Tone: {deep_profile.primary_tone}
+- Tone Breakdown: {', '.join(f'{k}={v:.0%}' for k, v in deep_profile.tone_scores.items() if v > 0.1)}
+- Vocabulary Complexity: {'Simple' if deep_profile.vocabulary_complexity < 0.3 else 'Moderate' if deep_profile.vocabulary_complexity < 0.7 else 'Advanced'}
+- Capitalization: {deep_profile.capitalization_style}
+
+LENGTH REQUIREMENTS:
+- Target Comment Length: ~{deep_profile.avg_comment_length} characters
+- Average Words/Sentence: {deep_profile.avg_words_per_sentence:.1f}
+
+SIGNATURE PHRASES (incorporate these naturally!):
+{chr(10).join(f'• "{phrase}"' for phrase in deep_profile.signature_phrases[:10]) if deep_profile.signature_phrases else '• None detected yet'}
+
+DOMAIN VOCABULARY (user's technical/niche terms):
+{', '.join(deep_profile.domain_vocabulary[:15]) if deep_profile.domain_vocabulary else 'None detected'}
+
+COLLOQUIALISMS (informal expressions user uses):
+{', '.join(deep_profile.colloquialisms[:10]) if deep_profile.colloquialisms else 'None detected'}
+
+FILLER WORDS (user's verbal tics):
+{', '.join(deep_profile.filler_words[:8]) if deep_profile.filler_words else 'None detected'}
+
+PUNCTUATION PATTERNS:
+- Ellipsis (...): {'Frequently' if deep_profile.punctuation_patterns.get('ellipsis', 0) > 0.5 else 'Sometimes' if deep_profile.punctuation_patterns.get('ellipsis', 0) > 0.1 else 'Rarely'}
+- Exclamation (!): {'Frequently' if deep_profile.punctuation_patterns.get('exclamation', 0) > 0.5 else 'Sometimes' if deep_profile.punctuation_patterns.get('exclamation', 0) > 0.1 else 'Rarely'}
+- Questions (?): {'Frequently' if deep_profile.punctuation_patterns.get('question', 0) > 0.5 else 'Sometimes' if deep_profile.punctuation_patterns.get('question', 0) > 0.1 else 'Rarely'}
+
+EMOJI USAGE:
+- Uses Emojis: {deep_profile.uses_emojis} ({deep_profile.emoji_frequency:.1f} per post)
+- Common Emojis: {' '.join(deep_profile.common_emojis[:5]) if deep_profile.common_emojis else 'None'}
+{banned_phrases_section}
+{learned_rules_section}
+═══════════════════════════════════════════════════════════════════════════════
+                     🚨 GLOBAL BANNED PHRASES 🚨
+═══════════════════════════════════════════════════════════════════════════════
+
+NEVER use these AI-sounding phrases:
+❌ "Great post!" / "Love this!" / "This is amazing!"
+❌ "I couldn't agree more" / "Spot on" / "Nailed it"
+❌ "So underrated" / "This deserves more attention"
+❌ "This resonates with me" / "Couldn't have said it better"
+❌ "Thanks for sharing" / "This is gold" / "Mind blown"
+❌ "Game changer" / "Absolute banger" / "Fire content"
+
+═══════════════════════════════════════════════════════════════════════════════
+                     GENERATION REQUIREMENTS
+═══════════════════════════════════════════════════════════════════════════════
+
+When generating a comment:
+1. Match the user's tone ({deep_profile.primary_tone})
+2. Use their vocabulary and signature phrases
+3. Match their punctuation patterns
+4. Target ~{deep_profile.avg_comment_length} characters
+5. Reference SPECIFIC content from the post
+6. Add genuine VALUE (insight, question, experience)
+7. AVOID all banned phrases
+
+OUTPUT FORMAT:
+{{
+  "comment": "Generated comment here...",
+  "style_match_score": 0.85,
+  "used_signature_phrases": ["phrase"],
+  "reasoning": "Why this matches user's style"
+}}
+
+CRITICAL: The comment must be IMPOSSIBLE to distinguish from the user's own writing.
+"""
+
+    return {
+        "name": "style_aware_comment_generator",
+        "description": f"Generate comments INDISTINGUISHABLE from {user_id}'s writing style",
+        "system_prompt": personalized_prompt,
+        "tools": [],
+        "user_id": user_id,
+        "deep_profile": deep_profile.to_dict() if deep_profile else None
+    }
+
+
+# ============================================================================
 # COMBINED SUBAGENT REGISTRY
 # ============================================================================
 
 def get_all_subagents():
     """
     Get all subagents: strategic + action subagents.
-    
+
     Returns:
         List of all subagent configurations
     """
     from x_growth_deep_agent import get_atomic_subagents
-    
+
     # Get strategic subagents (analysis & decision)
     strategic = get_strategic_subagents()
-    
+
     # Get action subagents (execution)
     action = get_atomic_subagents()
-    
+
     # Combine
     return strategic + action
+
+
+def get_style_aware_subagents(
+    user_id: str,
+    store,
+    banned_patterns_manager: Optional["BannedPatternsManager"] = None,
+    feedback_processor: Optional["FeedbackProcessor"] = None
+) -> List[Dict]:
+    """
+    Get all subagents with style-aware comment generator.
+
+    This version replaces the generic comment_generator with a
+    personalized style-aware version for the specified user.
+
+    Args:
+        user_id: User identifier
+        store: LangGraph Store with semantic search
+        banned_patterns_manager: Optional BannedPatternsManager instance
+        feedback_processor: Optional FeedbackProcessor instance
+
+    Returns:
+        List of all subagent configurations with personalized comment generator
+    """
+    # Get base subagents
+    all_subagents = get_all_subagents()
+
+    if not STYLE_SYSTEM_AVAILABLE:
+        return all_subagents
+
+    # Create style-aware comment generator
+    style_aware_generator = create_style_aware_comment_generator(
+        user_id=user_id,
+        store=store,
+        banned_patterns_manager=banned_patterns_manager,
+        feedback_processor=feedback_processor
+    )
+
+    # Replace generic comment_generator with style-aware version
+    result = []
+    for subagent in all_subagents:
+        if subagent["name"] == "comment_generator":
+            result.append(style_aware_generator)
+        else:
+            result.append(subagent)
+
+    return result
 
 
 # ============================================================================

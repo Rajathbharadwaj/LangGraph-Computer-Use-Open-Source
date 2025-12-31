@@ -70,6 +70,8 @@ ENV_VARS="$ENV_VARS,ANTHROPIC_API_KEY=$ANTHROPIC_KEY"
 [ -n "$LANGSMITH_KEY" ] && ENV_VARS="$ENV_VARS,LANGSMITH_API_KEY=$LANGSMITH_KEY"
 [ -n "$CLERK_SECRET" ] && ENV_VARS="$ENV_VARS,CLERK_SECRET_KEY=$CLERK_SECRET"
 [ -n "$CLERK_PUBLISHABLE" ] && ENV_VARS="$ENV_VARS,NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=$CLERK_PUBLISHABLE"
+# Clerk JWKS URL for secure JWT verification
+ENV_VARS="$ENV_VARS,CLERK_JWKS_URL=https://clerk.paralleluniverse.ai/.well-known/jwks.json"
 ENV_VARS="$ENV_VARS,EXTENSION_BACKEND_URL=https://extension-backend-service-644185288504.us-central1.run.app"
 ENV_VARS="$ENV_VARS,BACKEND_API_URL=https://backend-api-bw5qfm5d5a-uc.a.run.app"
 ENV_VARS="$ENV_VARS,FRONTEND_URL=https://paralleluniverse.app"
@@ -85,6 +87,8 @@ ENV_VARS="$ENV_VARS,FRONTEND_URL=https://paralleluniverse.app"
 [ -n "$STRIPE_PRICE_PRO" ] && ENV_VARS="$ENV_VARS,STRIPE_PRICE_PRO=$STRIPE_PRICE_PRO"
 [ -n "$STRIPE_PRICE_PRO_PLUS" ] && ENV_VARS="$ENV_VARS,STRIPE_PRICE_PRO_PLUS=$STRIPE_PRICE_PRO_PLUS"
 [ -n "$STRIPE_PRICE_ULTIMATE" ] && ENV_VARS="$ENV_VARS,STRIPE_PRICE_ULTIMATE=$STRIPE_PRICE_ULTIMATE"
+
+# KIE AI (image generation) - Already set as secret reference on Cloud Run
 
 echo "📦 Building and deploying from source..."
 

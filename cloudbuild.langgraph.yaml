@@ -1,0 +1,52 @@
+steps:
+  # Step 1: Build Docker image using generated Dockerfile
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - 'build'
+      - '-t'
+      - 'gcr.io/$PROJECT_ID/langgraph-service:$BUILD_ID'
+      - '-t'
+      - 'gcr.io/$PROJECT_ID/langgraph-service:latest'
+      - '-f'
+      - 'Dockerfile.langgraph'
+      - '.'
+
+  # Step 2: Push to Container Registry
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push', 'gcr.io/$PROJECT_ID/langgraph-service:$BUILD_ID']
+
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push', 'gcr.io/$PROJECT_ID/langgraph-service:latest']
+
+  # Step 3: Deploy to Cloud Run
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        POSTGRES_URI=$$(gcloud secrets versions access latest --secret=postgres-uri --project=$PROJECT_ID 2>/dev/null || gcloud secrets versions access latest --secret=database-url --project=$PROJECT_ID 2>/dev/null || echo "postgresql://postgres:ParallelUniverse2024!@10.97.0.3:5432/parallel_universe_db")
+
+        gcloud run deploy langgraph-service \
+          --image=gcr.io/$PROJECT_ID/langgraph-service:$BUILD_ID \
+          --region=us-central1 \
+          --project=$PROJECT_ID \
+          --allow-unauthenticated \
+          --vpc-connector=paralleluniverse-vpc \
+          --set-env-vars="DATABASE_URI=$$POSTGRES_URI,POSTGRES_URI=$$POSTGRES_URI,REDIS_URI=redis://10.110.183.147:6379,REDIS_HOST=10.110.183.147,GCP_PROJECT_ID=$PROJECT_ID,EXTENSION_BACKEND_URL=https://extension-backend-service-bw5qfm5d5a-uc.a.run.app,OMNIPARSER_URL=https://omniparser-service-644185288504.us-central1.run.app" \
+          --update-secrets="ANTHROPIC_API_KEY=anthropic-api-key:latest,OPENAI_API_KEY=openai-api-key:latest,LANGSMITH_API_KEY=langsmith-api-key:latest" \
+          --memory=4Gi \
+          --cpu=2 \
+          --timeout=3600 \
+          --min-instances=1 \
+          --max-instances=10
+
+images:
+  - 'gcr.io/$PROJECT_ID/langgraph-service:$BUILD_ID'
+  - 'gcr.io/$PROJECT_ID/langgraph-service:latest'
+
+options:
+  machineType: 'E2_HIGHCPU_8'
+  diskSizeGb: 100
+  logging: CLOUD_LOGGING_ONLY
+
+timeout: '2400s'

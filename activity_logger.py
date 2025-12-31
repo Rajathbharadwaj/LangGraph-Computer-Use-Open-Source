@@ -84,11 +84,12 @@ class ActivityLogger:
 
         return activity_id
 
-    def log_post(self, content: str, status: str, post_url: Optional[str] = None, error: Optional[str] = None):
+    def log_post(self, content: str, status: str, post_url: Optional[str] = None, error: Optional[str] = None, media_count: int = 0):
         """Log a post creation"""
         details = {
             "content": content[:200],  # Truncate for storage
-            "post_url": post_url
+            "post_url": post_url,
+            "media_count": media_count
         }
         if error:
             details["error"] = error

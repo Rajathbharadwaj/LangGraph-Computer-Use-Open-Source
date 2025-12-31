@@ -103,7 +103,8 @@ CREDIT_COSTS = {
     "sonnet_message": 1,       # ~$0.01 actual cost
     "opus_message": 3,         # ~$0.05 actual cost
     "computer_use_minute": 1,  # ~$0.005 actual cost (Cloud Run)
-    "image_generation": 10,    # ~$0.20 actual cost
+    "image_generation": 10,    # Legacy - use ai_image_generation instead
+    "ai_image_generation": 27, # KIE Nano Banana Pro: 18 credits × 1.5 markup = 27 credits
     "web_search": 1,           # ~$0.02 actual cost
 }
 

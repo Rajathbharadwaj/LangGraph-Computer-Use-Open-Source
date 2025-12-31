@@ -42,6 +42,9 @@ class UserPreferences:
     aggression_level: str = "moderate"  # "conservative", "moderate", "aggressive"
     auto_post_enabled: bool = False  # If True, agent posts automatically; if False, queues for approval
     thread_topics: Optional[List[str]] = None  # Preferred thread topics, e.g., ["personal stories", "tutorials"]
+    # Onboarding tracking
+    onboarding_completed: bool = False  # Whether user has completed the product tour
+    onboarding_completed_at: Optional[str] = None  # ISO timestamp when onboarding was completed
 
     def to_dict(self) -> dict:
         return asdict(self)

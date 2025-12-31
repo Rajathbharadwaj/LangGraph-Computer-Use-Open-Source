@@ -1,0 +1,35 @@
+# LangGraph API Server Dockerfile
+# Based on the official LangGraph Cloud image
+
+FROM langchain/langgraph-api:3.12
+
+# Install system dependencies for GUI interaction (from langgraph.json)
+RUN apt-get update && apt-get install -y \
+    xvfb \
+    x11vnc \
+    fluxbox \
+    curl \
+    firefox-esr \
+    wget \
+    && rm -rf /var/lib/apt/lists/*
+
+# Set display environment variable
+ENV DISPLAY=:99
+
+# Copy requirements first for caching
+COPY requirements.txt /deps/requirements.txt
+RUN pip install -r /deps/requirements.txt
+
+# Force exact langchain versions needed for deepagents 0.2.6
+RUN pip install --force-reinstall --no-deps langchain==1.0.5 langchain-core==1.0.4
+
+# Copy application code
+COPY . /deps/
+
+# Set the graphs path
+ENV LANGGRAPH_GRAPHS=x_growth_deep_agent:create_x_growth_agent,ads_deep_agent:create_ads_agent,crm_deep_agent:create_crm_agent
+
+# Copy the langgraph config
+COPY langgraph.json /deps/langgraph.json
+
+WORKDIR /deps

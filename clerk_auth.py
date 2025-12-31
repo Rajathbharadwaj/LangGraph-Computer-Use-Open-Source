@@ -5,36 +5,87 @@ Verifies JWT tokens from Clerk and extracts user information
 
 import jwt
 import os
+import time
 from fastapi import HTTPException, Header, Depends
-from typing import Optional
+from typing import Optional, Dict, Any
 import requests
 from functools import lru_cache
+from jwt import PyJWKClient
+import logging
+
+logger = logging.getLogger(__name__)
 
 CLERK_SECRET_KEY = os.getenv("CLERK_SECRET_KEY")
 CLERK_PUBLISHABLE_KEY = os.getenv("NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY", "")
 
-# Extract instance ID from publishable key (pk_test_xxx -> Instance ID)
-# Format: pk_test_{instance_id}
-if CLERK_PUBLISHABLE_KEY:
-    # Get the part after pk_test_ or pk_live_
-    key_parts = CLERK_PUBLISHABLE_KEY.split("_")
-    if len(key_parts) >= 2:
-        # The instance is typically encoded in the key
-        pass
+# Clerk JWKS URL - extract from secret key or use environment variable
+# Format: https://{clerk-instance}.clerk.accounts.dev/.well-known/jwks.json
+CLERK_JWKS_URL = os.getenv("CLERK_JWKS_URL", "")
 
-@lru_cache()
-def get_clerk_jwks():
-    """
-    Fetch Clerk's JWKS (JSON Web Key Set) for JWT verification
-    This is cached to avoid repeated API calls
-    """
-    # Clerk JWKS endpoint format
-    # You'll need to get this from your Clerk dashboard
-    # Format: https://clerk.{your-domain}.com/.well-known/jwks.json
-    # OR: https://{clerk-instance}.clerk.accounts.dev/.well-known/jwks.json
+# Cache for JWKS client and keys
+_jwks_client: Optional[PyJWKClient] = None
+_jwks_cache_time: float = 0
+_JWKS_CACHE_TTL = 3600  # Cache JWKS for 1 hour
 
-    # For now, we'll use session token verification
-    return None
+
+def _get_jwks_client() -> Optional[PyJWKClient]:
+    """
+    Get or create a cached JWKS client for Clerk token verification.
+    Returns None if JWKS URL is not configured.
+    """
+    global _jwks_client, _jwks_cache_time
+
+    if not CLERK_JWKS_URL:
+        return None
+
+    current_time = time.time()
+
+    # Refresh cache if expired
+    if _jwks_client is None or (current_time - _jwks_cache_time) > _JWKS_CACHE_TTL:
+        try:
+            _jwks_client = PyJWKClient(CLERK_JWKS_URL)
+            _jwks_cache_time = current_time
+            logger.info(f"✅ JWKS client initialized from {CLERK_JWKS_URL}")
+        except Exception as e:
+            logger.error(f"❌ Failed to initialize JWKS client: {e}")
+            return None
+
+    return _jwks_client
+
+
+def _verify_jwt_with_jwks(token: str) -> Dict[str, Any]:
+    """
+    Verify JWT using Clerk's JWKS (public keys).
+    This is the secure way to verify Clerk tokens.
+    """
+    jwks_client = _get_jwks_client()
+
+    if jwks_client is None:
+        raise ValueError("JWKS client not available - CLERK_JWKS_URL not configured")
+
+    try:
+        # Get the signing key from Clerk's JWKS
+        signing_key = jwks_client.get_signing_key_from_jwt(token)
+
+        # Decode and verify the token
+        payload = jwt.decode(
+            token,
+            signing_key.key,
+            algorithms=["RS256"],
+            options={
+                "verify_signature": True,
+                "verify_exp": True,
+                "verify_iat": True,
+                "require": ["exp", "iat", "sub"]
+            }
+        )
+
+        return payload
+
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=401, detail="Token has expired")
+    except jwt.InvalidTokenError as e:
+        raise HTTPException(status_code=401, detail=f"Invalid token: {str(e)}")
 
 
 def verify_clerk_token(authorization: str = Header(None)) -> dict:
@@ -70,23 +121,24 @@ def verify_clerk_token(authorization: str = Header(None)) -> dict:
             detail="Invalid authorization header format"
         )
 
-    if not CLERK_SECRET_KEY:
-        raise HTTPException(
-            status_code=500,
-            detail="Clerk secret key not configured"
-        )
-
     try:
-        # Verify the JWT token
-        # Clerk uses RS256 algorithm with JWKS
-        # For production, fetch JWKS and verify properly
-
-        # For now, decode without verification (DEVELOPMENT ONLY)
-        # In production, use proper JWKS verification
-        payload = jwt.decode(
-            token,
-            options={"verify_signature": False}  # CHANGE THIS IN PRODUCTION
-        )
+        # Try JWKS verification first (secure, production-ready)
+        if CLERK_JWKS_URL:
+            payload = _verify_jwt_with_jwks(token)
+            logger.debug("✅ JWT verified using JWKS")
+        else:
+            # Fallback: decode without signature verification
+            # This is less secure but allows operation without JWKS
+            logger.warning("⚠️ CLERK_JWKS_URL not configured - JWT signature NOT verified!")
+            logger.warning("   Set CLERK_JWKS_URL to enable secure token verification")
+            payload = jwt.decode(
+                token,
+                options={
+                    "verify_signature": False,
+                    "verify_exp": True,  # Still verify expiration
+                    "require": ["exp", "sub"]
+                }
+            )
 
         # Extract user ID from payload
         # Clerk JWTs can have different structures:
