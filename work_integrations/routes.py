@@ -775,6 +775,146 @@ async def github_webhook(
         raise HTTPException(500, f"Webhook processing failed: {str(e)}")
 
 
+@router.post("/webhooks/slack", response_model=WebhookResponse)
+async def slack_webhook(
+    request: Request,
+    x_slack_request_timestamp: str = Header(None, alias="X-Slack-Request-Timestamp"),
+    x_slack_signature: str = Header(None, alias="X-Slack-Signature"),
+    db: AsyncSession = Depends(get_db_session),
+):
+    """
+    Receive Slack Events API callbacks.
+
+    Handles URL verification challenges and event callbacks.
+    """
+    body = await request.body()
+    payload = await request.json()
+
+    # Handle URL verification challenge (required for Slack app setup)
+    if payload.get("type") == "url_verification":
+        return {"challenge": payload.get("challenge")}
+
+    # Get team/workspace ID
+    team_id = payload.get("team_id")
+    if not team_id:
+        return WebhookResponse(success=False, message="No team_id in payload")
+
+    # Find integration
+    result = await db.execute(
+        select(WorkIntegration).where(
+            and_(
+                WorkIntegration.platform == "slack",
+                WorkIntegration.external_account_id == team_id,
+                WorkIntegration.is_active == True,
+            )
+        )
+    )
+    integration = result.scalar_one_or_none()
+
+    if not integration:
+        logger.debug(f"No Slack integration found for team {team_id}")
+        return WebhookResponse(success=True, message="No integration for this workspace")
+
+    # Verify signature if we have credentials
+    settings = get_work_integrations_settings()
+    handler = get_slack_webhook_handler()
+
+    if x_slack_signature and settings.slack_signing_secret:
+        if not handler.verify_signature(
+            body,
+            x_slack_request_timestamp,
+            x_slack_signature,
+            settings.slack_signing_secret,
+        ):
+            raise HTTPException(401, "Invalid Slack signature")
+
+    # Process the event
+    try:
+        result = await handler.handle_event(payload, db)
+
+        # If it's a challenge response, return it
+        if isinstance(result, dict) and "challenge" in result:
+            return result
+
+        await db.commit()
+
+        return WebhookResponse(
+            success=True,
+            message="Slack event processed",
+            activities_created=1 if result else 0,
+        )
+
+    except Exception as e:
+        logger.error(f"Error processing Slack webhook: {e}")
+        await db.rollback()
+        raise HTTPException(500, f"Webhook processing failed: {str(e)}")
+
+
+@router.post("/webhooks/linear", response_model=WebhookResponse)
+async def linear_webhook(
+    request: Request,
+    linear_signature: str = Header(None, alias="Linear-Signature"),
+    db: AsyncSession = Depends(get_db_session),
+):
+    """
+    Receive Linear webhook events.
+
+    Processes issue, comment, project, and cycle events.
+    """
+    body = await request.body()
+    payload = await request.json()
+
+    organization_id = payload.get("organizationId")
+    if not organization_id:
+        return WebhookResponse(success=False, message="No organizationId in payload")
+
+    # Find integration
+    result = await db.execute(
+        select(WorkIntegration).where(
+            and_(
+                WorkIntegration.platform == "linear",
+                WorkIntegration.external_account_id == organization_id,
+                WorkIntegration.is_active == True,
+            )
+        )
+    )
+    integration = result.scalar_one_or_none()
+
+    if not integration:
+        logger.debug(f"No Linear integration found for org {organization_id}")
+        return WebhookResponse(success=True, message="No integration for this organization")
+
+    # Verify signature if we have a webhook secret
+    handler = get_linear_webhook_handler()
+
+    if linear_signature and integration.webhook_secret:
+        if not handler.verify_signature(
+            body,
+            linear_signature,
+            integration.webhook_secret,
+        ):
+            raise HTTPException(401, "Invalid Linear signature")
+
+    # Process the event
+    try:
+        activity = await handler.handle_event(payload, db)
+        await db.commit()
+
+        event_type = payload.get("type", "unknown")
+        action = payload.get("action", "unknown")
+
+        return WebhookResponse(
+            success=True,
+            message=f"Processed Linear {event_type}.{action}",
+            activities_created=1 if activity else 0,
+        )
+
+    except Exception as e:
+        logger.error(f"Error processing Linear webhook: {e}")
+        await db.rollback()
+        raise HTTPException(500, f"Webhook processing failed: {str(e)}")
+
+
 # =============================================================================
 # Stats Routes
 # =============================================================================
