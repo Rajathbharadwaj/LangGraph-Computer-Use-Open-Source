@@ -1060,6 +1060,7 @@ async def update_preferences(data: dict, clerk_user_id: str = Depends(get_curren
             updated_prefs = UserPreferences(**prefs_dict)
         else:
             # Create new preferences with defaults + provided values
+            # Philosophy: Maximum restraint by default - users opt INTO risk
             defaults = {
                 "user_id": clerk_user_id,
                 "auto_post_enabled": False,
@@ -1072,7 +1073,31 @@ async def update_preferences(data: dict, clerk_user_id: str = Depends(get_curren
                 "daily_limits": {"likes": 100, "comments": 50},
                 "optimal_times": ["9-11am PST", "7-9pm PST"],
                 "avoid_topics": [],
-                "thread_topics": []
+                "thread_topics": [],
+                # NEW: Onboarding preferences (conservative defaults)
+                # Step 1: Voice & Intent
+                "voice_styles": None,
+                "primary_intent": "stay_present",
+                "ai_initiation_comfort": "only_safe",
+                # Step 2: Hard Guardrails (ALL blocked by default)
+                "never_engage_topics": None,  # Defaults to all via get_never_engage_topics()
+                "debate_preference": "avoid",
+                "blocked_accounts": None,
+                # Step 3: Engagement Boundaries (very conservative)
+                "reply_frequency": "very_limited",
+                "active_hours_type": "my_daytime",
+                "active_hours_range": None,
+                "priority_post_types": None,
+                # Step 4: Risk & Restraint (maximum safety)
+                "uncertainty_action": "do_nothing",
+                "emotional_post_handling": "never",
+                "worse_outcome": "post_off",
+                # Post-onboarding
+                "review_before_post": "low_confidence",
+                "weekly_summary_enabled": True,
+                # Tracking
+                "preferences_onboarding_completed": False,
+                "preferences_onboarding_completed_at": None
             }
             defaults.update(data)
             defaults["user_id"] = clerk_user_id  # Ensure user_id is correct
