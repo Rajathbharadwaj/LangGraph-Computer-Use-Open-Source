@@ -83,3 +83,30 @@ class CookieEncryptionService:
 # Global instance
 cookie_encryption = CookieEncryptionService()
 
+
+# --- Generic encryption functions for OAuth tokens ---
+def encrypt_data(data: str) -> str:
+    """
+    Encrypt a string (e.g., OAuth token).
+
+    Args:
+        data: Plain text string to encrypt
+
+    Returns:
+        Encrypted string (base64)
+    """
+    return cookie_encryption.cipher.encrypt(data.encode()).decode()
+
+
+def decrypt_data(encrypted: str) -> str:
+    """
+    Decrypt an encrypted string.
+
+    Args:
+        encrypted: Encrypted string (base64)
+
+    Returns:
+        Decrypted plain text string
+    """
+    return cookie_encryption.cipher.decrypt(encrypted.encode()).decode()
+
