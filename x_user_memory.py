@@ -42,9 +42,79 @@ class UserPreferences:
     aggression_level: str = "moderate"  # "conservative", "moderate", "aggressive"
     auto_post_enabled: bool = False  # If True, agent posts automatically; if False, queues for approval
     thread_topics: Optional[List[str]] = None  # Preferred thread topics, e.g., ["personal stories", "tutorials"]
-    # Onboarding tracking
+    # Onboarding tracking (feature tour)
     onboarding_completed: bool = False  # Whether user has completed the product tour
     onboarding_completed_at: Optional[str] = None  # ISO timestamp when onboarding was completed
+
+    # ========================================================================
+    # NEW: Preferences Onboarding Fields (4-step wizard)
+    # Philosophy: "Training a junior assistant who is terrified of embarrassing you"
+    # All defaults are MAXIMUM RESTRAINT - users opt INTO risk, not out
+    # ========================================================================
+
+    # Step 1: Voice & Intent
+    voice_styles: Optional[List[str]] = None  # ["analytical", "curious", "opinionated", "educational", "casual", "minimal"]
+    primary_intent: str = "stay_present"  # stay_present, keep_up, avoid_missing, reduce_load, experiment
+    ai_initiation_comfort: str = "only_safe"  # only_safe, conservative, balanced, later
+
+    # Step 2: Hard Guardrails (NON-NEGOTIABLES)
+    # DEFAULT: All sensitive topics blocked - user must explicitly unblock
+    never_engage_topics: Optional[List[str]] = None  # Will default to all topics in get_never_engage_topics()
+    debate_preference: str = "avoid"  # avoid, light, balanced, case_by_case
+    blocked_accounts: Optional[List[str]] = None  # @handles to never reply to
+
+    # Step 3: Engagement Boundaries
+    reply_frequency: str = "very_limited"  # very_limited (1-3/day), conservative (3-5), moderate (10+), later
+    active_hours_type: str = "my_daytime"  # my_daytime, specific, always_observe, later
+    active_hours_range: Optional[Dict] = None  # {"start": "09:00", "end": "17:00", "tz": "EST"}
+    priority_post_types: Optional[List[str]] = None  # ["technical", "threads_im_in", "following", "expertise", "high_signal"]
+
+    # Step 4: Risk & Restraint
+    uncertainty_action: str = "do_nothing"  # do_nothing, save_review, reply_cautious, dynamic
+    emotional_post_handling: str = "never"  # never, observe, neutral_only
+    worse_outcome: str = "post_off"  # miss_opportunity, post_off (calibrates entire system)
+
+    # Post-onboarding (optional advanced settings)
+    review_before_post: str = "low_confidence"  # no, yes_notify, low_confidence
+    weekly_summary_enabled: bool = True
+
+    # Preferences onboarding tracking (separate from feature tour)
+    preferences_onboarding_completed: bool = False
+    preferences_onboarding_completed_at: Optional[str] = None
+
+    def get_never_engage_topics(self) -> List[str]:
+        """Get topics to never engage with. Defaults to ALL sensitive topics if not set."""
+        if self.never_engage_topics is not None:
+            return self.never_engage_topics
+        # Maximum restraint default - everything blocked
+        return [
+            "politics", "religion", "sexual_content", "mental_health",
+            "personal_relationships", "controversial_social", "legal_medical", "drama"
+        ]
+
+    def get_blocked_accounts(self) -> List[str]:
+        """Get blocked accounts list, normalized to lowercase without @"""
+        if not self.blocked_accounts:
+            return []
+        return [a.lower().lstrip('@') for a in self.blocked_accounts]
+
+    def get_reply_limits(self) -> Dict[str, int]:
+        """Get reply limits based on reply_frequency setting"""
+        limits = {
+            "very_limited": {"replies": 3, "likes": 10},
+            "conservative": {"replies": 5, "likes": 25},
+            "moderate": {"replies": 10, "likes": 50},
+            "later": {"replies": 3, "likes": 10}  # Default to conservative if not set
+        }
+        return limits.get(self.reply_frequency, limits["very_limited"])
+
+    def get_voice_styles(self) -> List[str]:
+        """Get voice styles, defaulting to empty if not set"""
+        return self.voice_styles or []
+
+    def get_priority_post_types(self) -> List[str]:
+        """Get priority post types, defaulting to all relevant if not set"""
+        return self.priority_post_types or []
 
     def to_dict(self) -> dict:
         return asdict(self)
