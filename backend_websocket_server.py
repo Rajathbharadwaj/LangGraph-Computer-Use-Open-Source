@@ -66,6 +66,9 @@ from services.billing_service import BillingService
 from services.stripe_service import AGENT_SESSION_COSTS, CREDIT_COSTS
 from stripe_webhooks import router as stripe_webhook_router
 
+# Work integrations router (Build in Public automation)
+from work_integrations.routes import router as work_integrations_router
+
 # Global store variable (initialized in lifespan)
 store = None
 _pg_pool = None  # Connection pool for PostgresStore
