@@ -44,6 +44,8 @@ def init_db():
     from .models import User, XAccount, UserCookies, UserPost, APIUsage, ScheduledPost
     # Import billing models to ensure they're created
     from .models import Subscription, CreditBalance, CreditTransaction, FeatureUsage
+    # Import comment tracking models
+    from .models import UserComment, ReceivedComment
     Base.metadata.create_all(bind=engine)
     print("✅ Database tables created")
 

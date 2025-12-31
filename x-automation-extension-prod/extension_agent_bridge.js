@@ -468,89 +468,100 @@ async function checkPremiumStatus() {
   let detectionMethod = 'none';
   let characterLimit = 280;
 
-  // Method 1: Check for verification badge on profile
-  const verifiedBadge = document.querySelector('[data-testid="icon-verified"]');
-  if (verifiedBadge) {
-    isPremium = true;
-    detectionMethod = 'verified_badge';
-    characterLimit = 25000;
-    console.log('✅ Premium detected via verified badge');
-  }
+  // Method 1: Check for "Premium" navigation item in sidebar (most reliable)
+  // This is visible when the user has an active Premium subscription
+  const sidebarNav = document.querySelector('nav[role="navigation"]') ||
+                     document.querySelector('header nav') ||
+                     document.querySelector('[data-testid="primaryColumn"]')?.previousElementSibling;
 
-  // Method 2: Check compose box character counter
-  if (!isPremium) {
-    const composeBox = document.querySelector('[data-testid="tweetTextarea_0"]');
-    if (composeBox) {
-      // Type a test string and check the character counter
-      const originalValue = composeBox.value;
-      composeBox.value = 'a'.repeat(281); // 281 chars (exceeds non-premium limit)
-      composeBox.dispatchEvent(new Event('input', { bubbles: true }));
+  if (sidebarNav) {
+    // Look for navigation links that say "Premium"
+    const navLinks = sidebarNav.querySelectorAll('a[href*="premium"], a[role="link"]');
+    for (const link of navLinks) {
+      const linkText = link.innerText?.trim().toLowerCase() || '';
+      const linkHref = link.getAttribute('href') || '';
 
-      // Wait for counter to update
-      await new Promise(resolve => setTimeout(resolve, 100));
-
-      // Check if post button is still enabled (would be disabled for non-premium)
-      const postButton = document.querySelector('[data-testid="tweetButtonInline"]') ||
-                        document.querySelector('[data-testid="tweetButton"]');
-
-      if (postButton && !postButton.disabled) {
+      // Check if it's a "Premium" link (and not "Get Premium" or "Upgrade to Premium")
+      if ((linkText === 'premium' || linkHref.includes('/i/premium_sign_up') === false && linkHref.includes('premium')) &&
+          !linkText.includes('upgrade') && !linkText.includes('get ')) {
+        // This is likely the Premium navigation item shown to premium users
         isPremium = true;
-        detectionMethod = 'character_counter';
+        detectionMethod = 'sidebar_premium_nav';
         characterLimit = 25000;
-        console.log('✅ Premium detected via character counter');
+        console.log('✅ Premium detected via sidebar Premium navigation');
+        break;
       }
-
-      // Restore original value
-      composeBox.value = originalValue;
-      composeBox.dispatchEvent(new Event('input', { bubbles: true }));
     }
   }
 
-  // Method 3: Check for "Premium" in navigation sidebar (most reliable)
+  // Method 2: Look for Premium link anywhere on the page (fallback)
   if (!isPremium) {
-    // Check sidebar navigation
-    const sidebar = document.querySelector('[data-testid="SideNav_AccountSwitcher_Button"]')?.closest('nav') ||
-                   document.querySelector('nav[aria-label="Primary"]');
-
-    if (sidebar) {
-      const sidebarText = sidebar.innerText?.toLowerCase() || '';
-      if (sidebarText.includes('premium') && !sidebarText.includes('upgrade to premium')) {
-        // Has "Premium" in sidebar (and it's not just the upgrade prompt)
+    const allLinks = document.querySelectorAll('a[href*="/i/premium"]');
+    for (const link of allLinks) {
+      const linkText = link.innerText?.trim().toLowerCase() || '';
+      // Check the href to see if it's for premium features (not sign-up)
+      const href = link.getAttribute('href') || '';
+      if (!href.includes('sign_up') && !linkText.includes('upgrade') && !linkText.includes('get ')) {
         isPremium = true;
-        detectionMethod = 'sidebar_premium_link';
+        detectionMethod = 'premium_link_detection';
         characterLimit = 25000;
-        console.log('✅ Premium detected via sidebar Premium link');
-      }
-    }
-
-    // Also check all navigation links as fallback
-    if (!isPremium) {
-      const navItems = document.querySelectorAll('[role="link"], [role="menuitem"], a');
-      for (const item of navItems) {
-        const text = item.innerText?.toLowerCase() || '';
-        // Look for standalone "Premium" text (not "Upgrade to Premium")
-        if (text === 'premium' || (text.includes('premium') && !text.includes('upgrade'))) {
-          isPremium = true;
-          detectionMethod = 'navigation_premium_link';
-          characterLimit = 25000;
-          console.log('✅ Premium detected via Premium navigation link');
-          break;
-        }
+        console.log('✅ Premium detected via Premium link');
+        break;
       }
     }
   }
 
-  // Method 4: Check Settings page for Premium features (if on settings page)
-  if (!isPremium && window.location.href.includes('/settings')) {
-    const premiumSection = document.querySelector('[data-testid="premium_section"]') ||
-                          Array.from(document.querySelectorAll('span')).find(el =>
-                            el.innerText?.includes('Premium')
-                          );
-    if (premiumSection) {
-      isPremium = true;
-      detectionMethod = 'settings_page';
-      characterLimit = 25000;
-      console.log('✅ Premium detected via settings page');
+  // Method 3: Check for verification badge anywhere visible
+  if (!isPremium) {
+    const verifiedBadge = document.querySelector('[data-testid="icon-verified"]') ||
+                          document.querySelector('svg[aria-label*="Verified"]') ||
+                          document.querySelector('[aria-label*="blue checkmark"]');
+    if (verifiedBadge) {
+      // Check if this is the user's own badge (not someone else's in the feed)
+      const isOwnProfile = verifiedBadge.closest('[data-testid="SideNav_AccountSwitcher_Button"]') ||
+                          verifiedBadge.closest('header') ||
+                          verifiedBadge.closest('nav');
+      if (isOwnProfile) {
+        isPremium = true;
+        detectionMethod = 'verified_badge';
+        characterLimit = 25000;
+        console.log('✅ Premium detected via verified badge');
+      }
+    }
+  }
+
+  // Method 4: Check for text "Premium" in the sidebar (simple text search)
+  if (!isPremium) {
+    // Get the left sidebar element
+    const leftSidebar = document.querySelector('[data-testid="sidebarColumn"]')?.previousElementSibling ||
+                        document.querySelector('header[role="banner"]');
+
+    if (leftSidebar) {
+      const sidebarText = leftSidebar.innerText || '';
+      // Check if "Premium" appears as a standalone menu item
+      // It should be on its own line (between newlines)
+      const lines = sidebarText.split('\n').map(l => l.trim().toLowerCase());
+      if (lines.includes('premium')) {
+        isPremium = true;
+        detectionMethod = 'sidebar_text_premium';
+        characterLimit = 25000;
+        console.log('✅ Premium detected via sidebar text');
+      }
+    }
+  }
+
+  // Method 5: Check the entire page for navigation containing "Premium" as its own item
+  if (!isPremium) {
+    const navElements = document.querySelectorAll('nav a, [role="navigation"] a');
+    for (const nav of navElements) {
+      const text = nav.innerText?.trim();
+      if (text === 'Premium') {
+        isPremium = true;
+        detectionMethod = 'nav_element_premium';
+        characterLimit = 25000;
+        console.log('✅ Premium detected via nav element');
+        break;
+      }
     }
   }
 
@@ -858,13 +869,47 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   }
 
   if (message.action === 'CHECK_LOGIN') {
-    // Check if user is logged in
+    // Multiple methods to detect login status
     const profileButton = document.querySelector('[data-testid="SideNav_AccountSwitcher_Button"]');
-    const profileLink = document.querySelector('a[href^="/"][aria-label*="Profile"]');
-    const username = profileLink?.getAttribute('href')?.replace('/', '') || 'Unknown';
+    const composeBox = document.querySelector('[data-testid="tweetTextarea_0"]') ||
+                       document.querySelector('[aria-label="Post text"]');
+    const homeFeed = document.querySelector('[data-testid="primaryColumn"] [aria-label*="Timeline"]');
 
+    const isLoggedIn = !!(profileButton || composeBox || homeFeed);
+
+    // Extract username - multiple methods
+    let username = 'Unknown';
+
+    // Method 1: From profile link
+    const profileLink = document.querySelector('a[href^="/"][aria-label*="Profile"]');
+    if (profileLink) {
+      username = profileLink.getAttribute('href').replace('/', '');
+    }
+
+    // Method 2: From account switcher button text
+    if (username === 'Unknown' && profileButton) {
+      const buttonText = profileButton.innerText || '';
+      const handleMatch = buttonText.match(/@([a-zA-Z0-9_]+)/);
+      if (handleMatch) {
+        username = handleMatch[1];
+      }
+    }
+
+    // Method 3: From sidebar @handle
+    if (username === 'Unknown') {
+      const sidebarHandles = document.querySelectorAll('nav [dir="ltr"] span');
+      for (const span of sidebarHandles) {
+        const text = span.innerText || '';
+        if (text.startsWith('@')) {
+          username = text.substring(1);
+          break;
+        }
+      }
+    }
+
+    console.log('🔍 CHECK_LOGIN result:', { loggedIn: isLoggedIn, username });
     sendResponse({
-      loggedIn: !!profileButton,
+      loggedIn: isLoggedIn,
       username: username
     });
     return true;

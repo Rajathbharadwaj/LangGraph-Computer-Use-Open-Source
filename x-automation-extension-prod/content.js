@@ -39,20 +39,63 @@ console.log('🚀 X Automation Extension loaded on', window.location.href);
 
 // Check if user is logged into X
 function checkLoginStatus() {
-  // Look for profile button (only visible when logged in)
+  // Multiple methods to detect login status
+
+  // Method 1: Look for profile button (account switcher)
   const profileButton = document.querySelector('[data-testid="SideNav_AccountSwitcher_Button"]');
-  
-  if (profileButton) {
-    // Extract username
+
+  // Method 2: Look for compose box (only visible when logged in)
+  const composeBox = document.querySelector('[data-testid="tweetTextarea_0"]') ||
+                     document.querySelector('[data-testid="tweetTextarea_0_label"]') ||
+                     document.querySelector('[aria-label="Post text"]');
+
+  // Method 3: Look for "What's happening?" placeholder
+  const whatHappeningText = document.querySelector('[data-testid="primaryColumn"]')?.innerText?.includes("What's happening");
+
+  // Method 4: Look for the home timeline feed
+  const homeFeed = document.querySelector('[data-testid="primaryColumn"] [aria-label*="Timeline"]');
+
+  const isLoggedIn = !!(profileButton || composeBox || whatHappeningText || homeFeed);
+
+  if (isLoggedIn) {
+    // Extract username - multiple methods
+    let username = 'unknown';
+
+    // Method 1: From profile link in sidebar
     const profileLink = document.querySelector('a[href^="/"][aria-label*="Profile"]');
-    const username = profileLink ? profileLink.getAttribute('href').replace('/', '') : 'unknown';
-    
+    if (profileLink) {
+      username = profileLink.getAttribute('href').replace('/', '');
+    }
+
+    // Method 2: From account switcher button
+    if (username === 'unknown' && profileButton) {
+      const buttonText = profileButton.innerText || '';
+      const handleMatch = buttonText.match(/@([a-zA-Z0-9_]+)/);
+      if (handleMatch) {
+        username = handleMatch[1];
+      }
+    }
+
+    // Method 3: From any visible @handle in the sidebar
+    if (username === 'unknown') {
+      const sidebarHandles = document.querySelectorAll('nav [dir="ltr"] span');
+      for (const span of sidebarHandles) {
+        const text = span.innerText || '';
+        if (text.startsWith('@')) {
+          username = text.substring(1);
+          break;
+        }
+      }
+    }
+
+    console.log('✅ Login detected, username:', username);
     return {
       loggedIn: true,
       username: username
     };
   }
-  
+
+  console.log('❌ Not logged in');
   return {
     loggedIn: false,
     username: null

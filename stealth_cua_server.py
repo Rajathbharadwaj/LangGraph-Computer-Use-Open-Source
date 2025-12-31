@@ -1096,24 +1096,282 @@ async def playwright_type(data: dict):
 async def playwright_evaluate(data: dict):
     """Evaluate JavaScript in the page context"""
     global page
-    
+
     if not page:
         return {"success": False, "error": "Browser not initialized"}
-    
+
     try:
         script = data.get("script", "")
-        
+
         if not script:
             return {"success": False, "error": "No script provided"}
-        
+
         print(f"🔧 Evaluating script: {script[:100]}...")
-        
+
         result = await page.evaluate(script)
-        
+
         return {"success": True, "result": result}
     except Exception as e:
         print(f"❌ Error evaluating script: {e}")
         return {"success": False, "error": str(e)}
+
+
+@app.post("/create-post-with-media")
+async def create_post_with_media(data: dict):
+    """
+    Create a post on X with media attachments using Playwright.
+
+    This handles:
+    1. Downloading media from URLs (GCS, etc.)
+    2. Attaching via Playwright's set_input_files()
+    3. Waiting for X to process the upload
+    4. Typing text and posting
+
+    Args (in data dict):
+        text: The post text content
+        media_urls: List of media URLs to attach (images/videos)
+        media_base64: Alternative - list of {name, mimeType, base64} objects
+
+    Returns:
+        Success/failure with details
+    """
+    global page
+
+    if not page:
+        return {"success": False, "error": "Browser not initialized"}
+
+    try:
+        import aiohttp
+        import tempfile
+        import os as os_module
+        from pathlib import Path
+
+        post_text = data.get("text", "")
+        media_urls = data.get("media_urls", [])
+        media_base64_list = data.get("media_base64", [])
+
+        print(f"📸 Creating post with media...")
+        print(f"   Text: {post_text[:50]}..." if post_text else "   Text: (none)")
+        print(f"   Media URLs: {len(media_urls)}")
+        print(f"   Media base64: {len(media_base64_list)}")
+
+        if not media_urls and not media_base64_list:
+            return {"success": False, "error": "No media provided (need media_urls or media_base64)"}
+
+        # Step 1: Navigate to compose (or ensure we're on a page with compose box)
+        current_url = page.url
+        if "x.com" not in current_url and "twitter.com" not in current_url:
+            print("📍 Navigating to X.com...")
+            await page.goto("https://x.com/compose/tweet", wait_until="domcontentloaded")
+            await page.wait_for_timeout(2000)
+
+        # Step 2: Dismiss any overlays
+        print("🔧 Dismissing overlays...")
+        await page.keyboard.press("Escape")
+        await page.wait_for_timeout(300)
+
+        # Step 3: Find the file input element
+        # X's file input is typically hidden but exists in the DOM
+        print("🔍 Looking for file input...")
+
+        # X uses multiple file inputs - one for images, one for videos
+        # The main one accepts images and has data-testid
+        file_input_selectors = [
+            'input[data-testid="fileInput"]',
+            'input[type="file"][accept*="image"]',
+            'input[type="file"][accept*="video"]',
+            'input[type="file"]',
+        ]
+
+        file_input = None
+        for selector in file_input_selectors:
+            try:
+                fi = page.locator(selector).first
+                if await fi.count() > 0:
+                    file_input = fi
+                    print(f"   Found file input: {selector}")
+                    break
+            except:
+                continue
+
+        if not file_input:
+            # Try clicking the media button first to make the input available
+            print("   File input not found, clicking media button first...")
+            media_button_selectors = [
+                '[data-testid="fileInput"]',
+                '[aria-label="Add photos or video"]',
+                '[aria-label*="media"]',
+                'button[aria-label*="image"]',
+            ]
+
+            for selector in media_button_selectors:
+                try:
+                    btn = page.locator(selector).first
+                    if await btn.count() > 0 and await btn.is_visible():
+                        await btn.click()
+                        await page.wait_for_timeout(500)
+                        print(f"   Clicked media button: {selector}")
+                        break
+                except:
+                    continue
+
+            # Try finding file input again
+            for selector in file_input_selectors:
+                try:
+                    fi = page.locator(selector).first
+                    if await fi.count() > 0:
+                        file_input = fi
+                        print(f"   Found file input after click: {selector}")
+                        break
+                except:
+                    continue
+
+        if not file_input:
+            return {"success": False, "error": "Could not find file input element on page"}
+
+        # Step 4: Download media from URLs and prepare files
+        files_to_upload = []
+        temp_dir = tempfile.mkdtemp(prefix="x_media_")
+
+        # Download from URLs
+        if media_urls:
+            print(f"📥 Downloading {len(media_urls)} media files...")
+            async with aiohttp.ClientSession() as session:
+                for i, url in enumerate(media_urls):
+                    try:
+                        print(f"   Downloading: {url[:60]}...")
+                        async with session.get(url, timeout=aiohttp.ClientTimeout(total=30)) as resp:
+                            if resp.status == 200:
+                                content = await resp.read()
+
+                                # Determine file extension from content-type or URL
+                                content_type = resp.headers.get("Content-Type", "")
+                                if "jpeg" in content_type or "jpg" in content_type:
+                                    ext = ".jpg"
+                                elif "png" in content_type:
+                                    ext = ".png"
+                                elif "gif" in content_type:
+                                    ext = ".gif"
+                                elif "mp4" in content_type or "video" in content_type:
+                                    ext = ".mp4"
+                                elif "webp" in content_type:
+                                    ext = ".webp"
+                                else:
+                                    # Try to get from URL
+                                    url_lower = url.lower()
+                                    if ".jpg" in url_lower or ".jpeg" in url_lower:
+                                        ext = ".jpg"
+                                    elif ".png" in url_lower:
+                                        ext = ".png"
+                                    elif ".gif" in url_lower:
+                                        ext = ".gif"
+                                    elif ".mp4" in url_lower:
+                                        ext = ".mp4"
+                                    else:
+                                        ext = ".jpg"  # Default to jpg
+
+                                file_path = os_module.path.join(temp_dir, f"media_{i}{ext}")
+                                Path(file_path).write_bytes(content)
+                                files_to_upload.append(file_path)
+                                print(f"   ✅ Saved: {file_path} ({len(content)} bytes)")
+                            else:
+                                print(f"   ❌ Failed to download: HTTP {resp.status}")
+                    except Exception as e:
+                        print(f"   ❌ Error downloading {url}: {e}")
+
+        # Handle base64 media
+        if media_base64_list:
+            print(f"📦 Processing {len(media_base64_list)} base64 media files...")
+            for i, media_obj in enumerate(media_base64_list):
+                try:
+                    name = media_obj.get("name", f"media_{i}.jpg")
+                    b64_data = media_obj.get("base64", "")
+
+                    if b64_data:
+                        content = base64.b64decode(b64_data)
+                        file_path = os_module.path.join(temp_dir, name)
+                        Path(file_path).write_bytes(content)
+                        files_to_upload.append(file_path)
+                        print(f"   ✅ Saved: {file_path} ({len(content)} bytes)")
+                except Exception as e:
+                    print(f"   ❌ Error processing base64 media: {e}")
+
+        if not files_to_upload:
+            return {"success": False, "error": "No media files could be downloaded/processed"}
+
+        # Step 5: Attach files using Playwright's set_input_files
+        print(f"📎 Attaching {len(files_to_upload)} file(s)...")
+        try:
+            await file_input.set_input_files(files_to_upload)
+            print("   ✅ Files attached via set_input_files")
+        except Exception as e:
+            print(f"   ❌ set_input_files failed: {e}")
+            return {"success": False, "error": f"Failed to attach files: {e}"}
+
+        # Step 6: Wait for X to process the upload (thumbnails should appear)
+        print("⏳ Waiting for media upload to complete...")
+        await page.wait_for_timeout(3000)  # Give X time to process
+
+        # Check if media preview appeared
+        try:
+            media_preview = page.locator('[data-testid="attachments"]').first
+            if await media_preview.count() > 0:
+                print("   ✅ Media preview detected")
+            else:
+                print("   ⚠️ Media preview not detected, continuing anyway...")
+        except:
+            print("   ⚠️ Could not check for media preview")
+
+        # Step 7: Type the post text (if any)
+        if post_text:
+            print(f"⌨️ Typing post text...")
+            compose_box = page.locator('[data-testid="tweetTextarea_0"]')
+            try:
+                await compose_box.click(force=True)
+                await page.wait_for_timeout(300)
+                await compose_box.type(post_text, delay=30)
+                print("   ✅ Text typed")
+            except Exception as e:
+                print(f"   ⚠️ Could not type text: {e}")
+
+        await page.wait_for_timeout(1000)
+
+        # Step 8: Click Post button
+        print("🚀 Clicking Post button...")
+        post_button = page.locator('[data-testid="tweetButtonInline"]')
+        try:
+            await post_button.click(force=True)
+            print("   ✅ Post button clicked")
+        except Exception as e:
+            # Try alternate button
+            post_button_alt = page.locator('[data-testid="tweetButton"]')
+            await post_button_alt.click(force=True)
+            print("   ✅ Post button clicked (alternate)")
+
+        # Wait for post to complete
+        await page.wait_for_timeout(3000)
+
+        # Cleanup temp files
+        try:
+            import shutil
+            shutil.rmtree(temp_dir)
+            print(f"🧹 Cleaned up temp files")
+        except:
+            pass
+
+        return {
+            "success": True,
+            "message": f"Post created with {len(files_to_upload)} media file(s)",
+            "post_text": post_text,
+            "media_count": len(files_to_upload)
+        }
+
+    except Exception as e:
+        print(f"❌ Error creating post with media: {e}")
+        import traceback
+        traceback.print_exc()
+        return {"success": False, "error": str(e)}
+
 
 if __name__ == "__main__":
     # Run the server

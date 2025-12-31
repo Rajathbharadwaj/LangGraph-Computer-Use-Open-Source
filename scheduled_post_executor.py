@@ -358,18 +358,25 @@ class ScheduledPostExecutor:
             logger.info(f"📌 Created thread: {thread_id}")
 
             # Prepare input for the deep agent
+            # Include media info in the message if present
+            media_list = media_urls or []
+            if media_list:
+                message_content = f"Post this to X with {len(media_list)} media attachment(s):\n\nText: {post_content}\n\nMedia URLs: {media_list}\n\nUse create_post_on_x with both the text and media_urls parameter."
+            else:
+                message_content = f"Post this to X: {post_content}"
+
             agent_input = {
                 "messages": [
                     {
                         "role": "user",
-                        "content": f"Post this to X: {post_content}"
+                        "content": message_content
                     }
                 ],
                 "user_id": user_id,
                 "user_handle": username,
                 "action": "create_post_on_x",
                 "post_content": post_content,
-                "media_urls": media_urls or [],
+                "media_urls": media_list,
                 "scheduled_post_id": post_id
             }
 

@@ -1551,10 +1551,92 @@ SCREENSHOT_DATA: {screenshot_b64}
 
             if dialog_closed.get("result"):
                 print("✅ Dialog closed - comment posted successfully!")
-                return f"✅ Successfully commented on '{author_or_content}' post! 💬\nComment: \"{comment_text}\""
+
+                # Step 10: Try to capture the comment URL for engagement tracking
+                comment_url = None
+                try:
+                    # Get the current username
+                    username_result = await client._request("POST", "/playwright/evaluate", {
+                        "script": """(() => {
+                            const profileLink = document.querySelector('a[href*="/"][data-testid="AppTabBar_Profile_Link"]');
+                            if (profileLink) {
+                                const href = profileLink.getAttribute('href');
+                                return href ? href.replace('/', '') : null;
+                            }
+                            // Fallback: look for the Profile text in nav
+                            const navLinks = document.querySelectorAll('nav a');
+                            for (const link of navLinks) {
+                                const href = link.getAttribute('href');
+                                if (href && href.match(/^\\/[a-zA-Z0-9_]+$/)) {
+                                    return href.replace('/', '');
+                                }
+                            }
+                            return null;
+                        })()"""
+                    })
+
+                    username = username_result.get("result")
+                    if username:
+                        # Navigate to user's replies page to find the comment
+                        await asyncio.sleep(2)  # Wait for X to process
+
+                        # Store current URL to return later
+                        current_url_result = await client._request("POST", "/playwright/evaluate", {
+                            "script": "window.location.href"
+                        })
+                        original_url = current_url_result.get("result", "https://x.com/home")
+
+                        # Navigate to user's with_replies page
+                        await client._request("POST", "/navigate", {"url": f"https://x.com/{username}/with_replies"})
+                        await asyncio.sleep(3)
+
+                        # Find the most recent reply matching our comment text
+                        # Use first 30 chars of comment to match (avoids special char issues)
+                        search_text = comment_text[:30].replace("\\", "\\\\").replace('"', '\\"').replace("'", "\\'")
+                        find_script = f'''(() => {{
+                            const articles = document.querySelectorAll('article');
+                            for (const article of articles) {{
+                                const tweetText = article.querySelector('[data-testid="tweetText"]');
+                                if (tweetText && tweetText.innerText.includes("{search_text}")) {{
+                                    const timeLink = article.querySelector('a[href*="/status/"]');
+                                    if (timeLink) {{
+                                        const href = timeLink.getAttribute('href');
+                                        if (href && href.includes('/status/')) {{
+                                            return href;
+                                        }}
+                                    }}
+                                }}
+                            }}
+                            return null;
+                        }})()'''
+
+                        find_result = await client._request("POST", "/playwright/evaluate", {"script": find_script})
+                        if find_result.get("result"):
+                            comment_url = f"https://x.com{find_result['result']}"
+                            print(f"🔗 Captured comment URL: {comment_url}")
+
+                        # Return to original page
+                        await client._request("POST", "/navigate", {"url": original_url})
+                        await asyncio.sleep(1)
+
+                except Exception as url_error:
+                    print(f"⚠️ Could not capture comment URL (non-fatal): {url_error}")
+
+                # Return enriched result as JSON-parseable string for the wrapper
+                result_data = {
+                    "success": True,
+                    "message": f"Successfully commented on '{author_or_content}' post!",
+                    "comment_text": comment_text,
+                    "comment_url": comment_url,
+                    "target_author": author_or_content,
+                    "target_post_preview": target_article.get('text', '')[:280] if target_article else None
+                }
+
+                import json
+                return f"✅ Successfully commented on '{author_or_content}' post! 💬\nComment: \"{comment_text}\"\n<!-- COMMENT_DATA:{json.dumps(result_data)} -->"
             else:
                 return f"⚠️ Comment typed but submit failed: {submit_result.get('error')}. Try submitting manually."
-                
+
         except Exception as e:
             return f"Comment failed: {str(e)}"
 
@@ -2069,24 +2151,31 @@ def get_async_playwright_tools() -> List[Any]:
 
 
 @tool
-async def create_post_on_x(post_text: str, runtime: ToolRuntime) -> str:
+async def create_post_on_x(post_text: str, media_urls: list = None, runtime: ToolRuntime = None) -> str:
     """
     Create a post on X (Twitter) using Playwright automation.
     This uses real keyboard typing to properly interact with React's contenteditable.
+    Supports optional media attachments (images/videos).
 
     Args:
         post_text: The text content to post (max 280 characters for non-premium accounts)
+        media_urls: Optional list of media URLs to attach (images from GCS, etc.)
 
     Returns:
         Success message if posted, error message if failed
 
     Example:
         result = await create_post_on_x("Hello world! 🌍")
+        result = await create_post_on_x("Check this out!", media_urls=["https://storage.googleapis.com/.../image.jpg"])
     """
     try:
-        # Check if post is empty first
-        if len(post_text.strip()) == 0:
-            return "❌ Post is empty! Please provide text content."
+        # Handle empty media_urls
+        if media_urls is None:
+            media_urls = []
+
+        # Check if post is empty (allow empty text if there's media)
+        if len(post_text.strip()) == 0 and not media_urls:
+            return "❌ Post is empty! Please provide text content or media."
 
         # Check premium status to determine character limit
         extension_client = AsyncExtensionClient()
@@ -2107,19 +2196,30 @@ Please SHORTEN your post and try again."""
 
         client = _get_client(runtime)
 
-        result = await client._request(
-            "POST",
-            "/create-post-playwright",
-            {"text": post_text},
-            timeout=40  # Posting can take time
-        )
+        # Use media endpoint if media_urls provided, otherwise use text-only endpoint
+        if media_urls:
+            print(f"📸 Creating post with {len(media_urls)} media attachment(s)...")
+            result = await client._request(
+                "POST",
+                "/create-post-with-media",
+                {"text": post_text, "media_urls": media_urls},
+                timeout=60  # Media upload takes longer
+            )
+        else:
+            result = await client._request(
+                "POST",
+                "/create-post-playwright",
+                {"text": post_text},
+                timeout=40  # Posting can take time
+            )
 
         # Wait for post to appear
         await asyncio.sleep(2)
 
         if result.get("success"):
-            print("✅ Post created successfully!")
-            return f"✅ Post created successfully! Text: '{result.get('post_text', post_text)}'"
+            media_msg = f" with {len(media_urls)} media" if media_urls else ""
+            print(f"✅ Post created successfully{media_msg}!")
+            return f"✅ Post created successfully{media_msg}! Text: '{result.get('post_text', post_text)}'"
         else:
             error = result.get("error", "Unknown error")
             return f"❌ Failed to create post: {error}"
