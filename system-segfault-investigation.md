@@ -44,6 +44,12 @@ traps: python[641571] trap invalid opcode ip:7fb9b8840a83 in libtorch_cpu.so
 - **Total RAM**: 64 GB
 - **Swap**: 64 GB
 
+### Motherboard
+- **Model**: MSI MEG Z690 UNIFY (MS-7D28)
+- **BIOS Version**: 1.N0
+- **BIOS Date**: 08/05/2025
+- **Chipset**: Intel Z690
+
 ### Operating System
 - **Distro**: Garuda Linux (Arch-based, rolling release)
 - **Kernel**: 6.18.2-zen2-1-zen (Zen kernel with PREEMPT_DYNAMIC)
