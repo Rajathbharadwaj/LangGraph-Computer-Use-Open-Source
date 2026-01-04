@@ -1388,3 +1388,37 @@ class ActivityDraft(Base):
     x_account = relationship("XAccount", backref="activity_drafts")
     scheduled_post = relationship("ScheduledPost", backref="activity_draft")
 
+
+
+# ============================================================================
+# Voice Agent Booking (POC for SDR outreach)
+# ============================================================================
+
+class PendingBooking(Base):
+    """
+    Booking form for voice agent POC.
+    Prospects fill this out during/after sales call to confirm meeting details.
+    """
+    __tablename__ = "pending_bookings"
+
+    id = Column(String(12), primary_key=True)  # Short ID for URL: abc123de
+    call_session_id = Column(String(100))       # Twilio Call SID (for webhook routing)
+    webhook_url = Column(String(500))           # Voice agent callback URL
+    phone_number = Column(String(20), nullable=False)  # Prospect's phone (E.164)
+
+    # Proposed meeting time (from voice agent)
+    proposed_datetime = Column(DateTime)
+
+    # Prospect fills these in via form
+    contact_name = Column(String(255))
+    contact_email = Column(String(255))
+    company_name = Column(String(255))
+    selected_datetime = Column(DateTime)  # Can edit proposed time
+
+    # Status tracking
+    status = Column(String(20), default="pending")  # pending, submitted, expired
+
+    # Timestamps
+    created_at = Column(DateTime, default=datetime.utcnow)
+    submitted_at = Column(DateTime)
+    expires_at = Column(DateTime)  # created_at + 1 hour
