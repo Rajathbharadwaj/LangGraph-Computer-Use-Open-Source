@@ -1,5 +1,29 @@
 # System Segfault Investigation
 
+## CONFIRMED ROOT CAUSE: E-CORES
+
+**Microcode version: 0x132** (up to date - 0x129+ required)
+**intel-ucode: 20251111-1** (installed and current)
+
+### The Problem is 100% E-Cores + Incompatible Binaries
+
+All crashes happen on:
+- CPU 8, 9 → Core 16 (E-core)
+- CPU 10, 11 → Core 20 (E-core)
+
+**Claude Code crashes with "invalid opcode"** - binary uses CPU instructions not available on E-cores:
+```
+traps: claude[282769] trap invalid opcode ip:2fe3cb4
+traps: claude[299499] trap invalid opcode ip:2fe3cb4
+```
+
+**PyTorch/libtorch crashes with "invalid opcode"** - compiled with AVX instructions E-cores don't support:
+```
+traps: python[641571] trap invalid opcode ip:7fb9b8840a83 in libtorch_cpu.so
+```
+
+---
+
 ## System Specifications
 
 ### CPU
