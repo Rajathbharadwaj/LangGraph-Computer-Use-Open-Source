@@ -69,6 +69,9 @@ from stripe_webhooks import router as stripe_webhook_router
 # Work integrations router (Build in Public automation)
 from work_integrations.routes import router as work_integrations_router
 
+# Booking service router (Voice Agent POC)
+from booking_service.routes import router as booking_router
+
 # Global store variable (initialized in lifespan)
 store = None
 _pg_pool = None  # Connection pool for PostgresStore
@@ -372,6 +375,9 @@ app.include_router(stripe_webhook_router)
 
 # Include Work integrations router
 app.include_router(work_integrations_router)
+
+# Include Booking service router (Voice Agent POC - no auth required)
+app.include_router(booking_router)
 
 # Store active connections
 active_connections = {}
