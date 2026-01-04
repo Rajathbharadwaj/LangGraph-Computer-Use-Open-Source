@@ -116,16 +116,107 @@ Jan 04 04:39:12 - python[2566782]: segfault at 0 ip 0000000000000000
 
 ---
 
-## Recommended Tests
+---
 
-1. **Memory Test**: Run `memtest86+` for several hours
-2. **Stress Test**: Run `stress-ng` to check CPU stability
-3. **Try LTS Kernel**: Switch to `linux-lts` temporarily
-4. **Try Proprietary NVIDIA**: Switch from `nvidia-open-dkms` to `nvidia-dkms`
-5. **Check BIOS Settings**: Disable E-cores temporarily to test
-6. **Downgrade glibc**: If possible, try older glibc
+# ROOT CAUSE ANALYSIS (Research Findings)
+
+## PRIMARY ISSUE: Intel 13th Gen Hybrid Architecture
+
+Your crashes are happening predominantly on **CPU cores 16, 20 (E-cores)**. This is a KNOWN issue:
+
+1. **Linux Scheduler Bug**: A major bug in the Intel P-State driver causes tasks to incorrectly run on E-cores when they should be on P-cores. This causes up to 50% performance hits and crashes.
+
+2. **i9-13900KS Hardware Degradation**: Intel's 13th/14th Gen CPUs have a **known hardware degradation issue** caused by excessive voltage. The i9-13900KS is particularly affected. Intel has released microcode updates and extended warranties.
+
+3. **CUDA + E-cores Don't Mix**: CUDA operations getting scheduled to E-cores causes compatibility issues since CUDA expects consistent high-performance cores.
+
+## SECONDARY ISSUE: nvidia-open-dkms Instability
+
+- The transition to nvidia-open-dkms with driver 590 happened in late 2025
+- Known to cause kernel panics and segfaults in `libnvidia-glcore.so`
+- Less stable than proprietary nvidia-dkms
+
+## TERTIARY ISSUE: Bleeding Edge glibc 2.42
+
+- Confirmed bug: `file` command crashes with "invalid system call" in TTY sessions
+- Your libstdc++ crashes may be related to glibc 2.42 + GCC 15.2.1 ABI issues
 
 ---
 
-## Current GPU Processes
-Python process using 4632MiB VRAM (likely ComfyUI or ML workload)
+# SOLUTION: Prioritized Action Plan
+
+## Step 1: Update Intel Microcode (CRITICAL)
+```bash
+# Check current microcode
+cat /proc/cpuinfo | grep microcode | head -1
+
+# Install latest (need version 0x129+)
+sudo pacman -S intel-ucode
+sudo mkinitcpio -P
+sudo reboot
+```
+
+## Step 2: Pin CUDA/GPU Workloads to P-cores Only
+```bash
+# Add to ~/.bashrc or /etc/environment
+export GOMP_CPU_AFFINITY="0-7"
+
+# Or run GPU apps with taskset
+taskset -c 0-7 python your_comfyui_script.py
+```
+
+## Step 3: Test with E-cores Disabled (Diagnostic)
+1. Enter BIOS (Del/F2 during boot)
+2. Advanced > CPU Configuration
+3. Set "Efficient Cores" to 0 or Disabled
+4. Save and reboot
+5. If crashes stop, the hybrid scheduler is confirmed as the issue
+
+## Step 4: Try LTS Kernel Instead of Zen
+```bash
+sudo pacman -S linux-lts linux-lts-headers
+sudo grub-mkconfig -o /boot/grub/grub.cfg
+# Boot with LTS kernel from GRUB menu
+```
+
+## Step 5: Switch to Proprietary NVIDIA Driver
+```bash
+sudo pacman -Rns nvidia-open-dkms
+sudo pacman -S nvidia-dkms
+sudo reboot
+```
+
+## Step 6: Check for Intel CPU Warranty
+Your i9-13900KS may qualify for Intel's extended warranty program due to the known degradation issue:
+https://community.intel.com/t5/Blogs/Tech-Innovation/Client/Intel-Core-13th-and-14th-Gen-Desktop-Instability-Root-Cause/post/1633239
+
+---
+
+# Diagnostic Commands
+
+```bash
+# Check microcode version
+cat /proc/cpuinfo | grep microcode | head -1
+
+# Check for kernel CPU errors
+dmesg | grep -i "itmt\|pstate\|hybrid\|mce"
+
+# View recent crashes
+coredumpctl list
+
+# Monitor kernel errors
+journalctl -k -p err
+
+# Check CPU core types
+cat /sys/devices/system/cpu/cpu*/topology/core_type
+```
+
+---
+
+# Sources
+
+- Intel 13th/14th Gen Root Cause: https://community.intel.com/t5/Blogs/Tech-Innovation/Client/Intel-Core-13th-and-14th-Gen-Desktop-Instability-Root-Cause/post/1633239
+- Intel Microcode Fix: https://www.tomshardware.com/pc-components/cpus/intel-rolls-out-linux-kernel-microcode-fix-for-affected-13th-14th-generation-processors
+- Linux Intel Hybrid CPU Fix: https://www.phoronix.com/news/Linux-6.10-rc6-PM-Intel-Core
+- NVIDIA 590 Driver Switch: https://archlinux.org/news/nvidia-590-driver-drops-pascal-support-main-packages-switch-to-open-kernel-modules/
+- glibc 2.42 Crash Bug: https://bbs.archlinux.org/viewtopic.php?id=307443
