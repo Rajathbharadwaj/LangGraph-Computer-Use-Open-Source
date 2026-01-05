@@ -1559,7 +1559,7 @@ Use the research above to write a post that demonstrates expertise and provides 
                 print(f"📝 Using exact text (no style generation): {post_text[:100]}...")
 
             # Post using original tool with media support
-            invoke_args = {"post_text": final_post_text}
+            invoke_args = {"post_text": final_post_text, "runtime": runtime}
             if media_urls:
                 invoke_args["media_urls"] = media_urls
                 print(f"📸 Attaching {len(media_urls)} media file(s)")
