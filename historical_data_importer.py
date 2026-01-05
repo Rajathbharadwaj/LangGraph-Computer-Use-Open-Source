@@ -372,13 +372,19 @@ class HistoricalDataImporter:
                 const userLink = article.querySelector('a[href="/{username}"]');
                 if (!userLink) continue;
 
-                // Skip retweets
+                // Skip retweets (check for both "reposted" and "retweeted")
                 const retweetIndicator = article.querySelector('[data-testid="socialContext"]');
-                if (retweetIndicator && retweetIndicator.innerText.includes('reposted')) continue;
+                if (retweetIndicator) {{
+                    const indicatorText = retweetIndicator.innerText.toLowerCase();
+                    if (indicatorText.includes('reposted') || indicatorText.includes('retweeted')) continue;
+                }}
 
                 // Get content
                 const contentEl = article.querySelector('[data-testid="tweetText"]');
                 const content = contentEl ? contentEl.innerText : '';
+
+                // Also skip RT @ style retweets
+                if (content.startsWith('RT @')) continue;
 
                 // Get URL
                 const timeLink = article.querySelector('time')?.parentElement;
@@ -388,13 +394,24 @@ class HistoricalDataImporter:
                 const timeEl = article.querySelector('time');
                 const datetime = timeEl ? timeEl.getAttribute('datetime') : null;
 
+                // Helper to parse engagement numbers like "1,234", "1.2K", "12K", "1.5M"
+                const parseEngagementNum = (label) => {{
+                    if (!label) return 0;
+                    const match = label.match(/([\\d,.]+)\\s*([KkMm])?/);
+                    if (!match) return 0;
+                    let num = parseFloat(match[1].replace(/,/g, ''));
+                    const suffix = match[2]?.toUpperCase();
+                    if (suffix === 'K') num *= 1000;
+                    else if (suffix === 'M') num *= 1000000;
+                    return Math.round(num);
+                }};
+
                 // Get engagement counts
                 const getCount = (testId) => {{
                     const btn = article.querySelector(`[data-testid="${{testId}}"]`);
                     if (!btn) return 0;
                     const label = btn.getAttribute('aria-label') || '';
-                    const match = label.match(/(\\d+(?:,\\d+)*)/);
-                    return match ? parseInt(match[1].replace(/,/g, '')) : 0;
+                    return parseEngagementNum(label);
                 }};
 
                 if (url && content) {{
@@ -464,13 +481,24 @@ class HistoricalDataImporter:
                     replyToAuthor = replyMatch[1].slice(1);
                 }}
 
+                // Helper to parse engagement numbers like "1,234", "1.2K", "12K", "1.5M"
+                const parseEngagementNum = (label) => {{
+                    if (!label) return 0;
+                    const match = label.match(/([\\d,.]+)\\s*([KkMm])?/);
+                    if (!match) return 0;
+                    let num = parseFloat(match[1].replace(/,/g, ''));
+                    const suffix = match[2]?.toUpperCase();
+                    if (suffix === 'K') num *= 1000;
+                    else if (suffix === 'M') num *= 1000000;
+                    return Math.round(num);
+                }};
+
                 // Get engagement counts
                 const getCount = (testId) => {{
                     const btn = article.querySelector(`[data-testid="${{testId}}"]`);
                     if (!btn) return 0;
                     const label = btn.getAttribute('aria-label') || '';
-                    const match = label.match(/(\\d+(?:,\\d+)*)/);
-                    return match ? parseInt(match[1].replace(/,/g, '')) : 0;
+                    return parseEngagementNum(label);
                 }};
 
                 if (url && content) {{
