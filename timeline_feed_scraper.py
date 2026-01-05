@@ -348,6 +348,12 @@ class TimelineFeedScraper:
     def _extract_engagement(self, article_y: int, elements: List[Dict]) -> Tuple[int, int, int, int]:
         """
         Extract engagement metrics from elements near the article.
+
+        X/Twitter uses aria-labels and group elements with specific patterns.
+        Updated to handle various formats including:
+        - "1,234 Likes" or "1234 likes"
+        - "1.2K Likes"
+        - Button groups with role="group"
         """
         likes = 0
         retweets = 0
@@ -357,35 +363,74 @@ class TimelineFeedScraper:
         for el in elements:
             el_y = el.get("y", 0)
 
-            # Check if element is near this article (within 500px)
+            # Check if element is near this article (within 500px vertically)
             if abs(el_y - article_y) > 500:
                 continue
 
             aria_label = el.get("ariaLabel", "").lower()
+            el_text = el.get("text", "").lower()
+            tag = el.get("tagName", "").lower()
+            role = el.get("role", "").lower()
 
-            # Parse likes
-            if "like" in aria_label and el.get("tagName") == "button":
-                match = re.search(r'(\d+\.?\d*[km]?)\s*like', aria_label)
-                if match:
-                    likes = max(likes, self._parse_metric(match.group(1)))
+            # Method 1: Parse from aria-label (various formats)
+            if aria_label:
+                # Likes - handle "123 likes", "1,234 likes", "1.2K likes"
+                if "like" in aria_label:
+                    # Try patterns: "123 likes", "1,234 Likes", "1.2K likes"
+                    match = re.search(r'([\d,]+\.?\d*[km]?)\s*like', aria_label, re.IGNORECASE)
+                    if match:
+                        metric_str = match.group(1).replace(',', '')
+                        likes = max(likes, self._parse_metric(metric_str))
 
-            # Parse retweets/reposts
-            if "retweet" in aria_label or "repost" in aria_label:
-                match = re.search(r'(\d+\.?\d*[km]?)\s*(?:retweet|repost)', aria_label)
-                if match:
-                    retweets = max(retweets, self._parse_metric(match.group(1)))
+                # Retweets/Reposts
+                if "retweet" in aria_label or "repost" in aria_label:
+                    match = re.search(r'([\d,]+\.?\d*[km]?)\s*(?:retweet|repost)', aria_label, re.IGNORECASE)
+                    if match:
+                        metric_str = match.group(1).replace(',', '')
+                        retweets = max(retweets, self._parse_metric(metric_str))
 
-            # Parse replies
-            if "repl" in aria_label:
-                match = re.search(r'(\d+\.?\d*[km]?)\s*repl', aria_label)
-                if match:
-                    replies = max(replies, self._parse_metric(match.group(1)))
+                # Replies
+                if "repl" in aria_label:
+                    match = re.search(r'([\d,]+\.?\d*[km]?)\s*repl', aria_label, re.IGNORECASE)
+                    if match:
+                        metric_str = match.group(1).replace(',', '')
+                        replies = max(replies, self._parse_metric(metric_str))
 
-            # Parse views
-            if "view" in aria_label and el.get("tagName") == "a":
-                match = re.search(r'(\d+\.?\d*[km]?)\s*views?\.\s*view', aria_label)
-                if match:
-                    views = max(views, self._parse_metric(match.group(1)))
+                # Views - handle "1,234 views" and "1.2M Views. View post"
+                if "view" in aria_label:
+                    match = re.search(r'([\d,]+\.?\d*[km]?)\s*views?', aria_label, re.IGNORECASE)
+                    if match:
+                        metric_str = match.group(1).replace(',', '')
+                        views = max(views, self._parse_metric(metric_str))
+
+            # Method 2: Parse from element text content (fallback)
+            # X sometimes shows metrics in group elements without aria-labels
+            if el_text and (tag in ['span', 'div', 'a'] or role == 'group'):
+                # Look for standalone numbers that might be metrics
+                # Usually in format like "1.2K" or "123"
+                if re.match(r'^[\d,]+\.?\d*[km]?$', el_text.strip(), re.IGNORECASE):
+                    # This is a metric, but we need context from siblings
+                    # For now, just skip as we can't determine type
+                    pass
+
+            # Method 3: Parse from testid or data attributes
+            test_id = el.get("testId", "").lower()
+            if test_id:
+                if "like" in test_id and aria_label:
+                    match = re.search(r'([\d,]+\.?\d*[km]?)', aria_label)
+                    if match:
+                        metric_str = match.group(1).replace(',', '')
+                        likes = max(likes, self._parse_metric(metric_str))
+                elif "retweet" in test_id and aria_label:
+                    match = re.search(r'([\d,]+\.?\d*[km]?)', aria_label)
+                    if match:
+                        metric_str = match.group(1).replace(',', '')
+                        retweets = max(retweets, self._parse_metric(metric_str))
+                elif "reply" in test_id and aria_label:
+                    match = re.search(r'([\d,]+\.?\d*[km]?)', aria_label)
+                    if match:
+                        metric_str = match.group(1).replace(',', '')
+                        replies = max(replies, self._parse_metric(metric_str))
 
         return likes, retweets, replies, views
 
