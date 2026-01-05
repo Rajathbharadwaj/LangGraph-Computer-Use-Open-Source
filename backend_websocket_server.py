@@ -382,6 +382,9 @@ app.include_router(work_integrations_router)
 # Include Booking service router (Voice Agent POC - no auth required)
 app.include_router(booking_router)
 
+# Include Learning Engine router (Recommendation + Preference Learning)
+app.include_router(learning_engine_router)
+
 # Store active connections
 active_connections = {}
 
