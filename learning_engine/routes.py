@@ -2,6 +2,7 @@
 Learning Engine API Routes
 
 Endpoints for post recommendations and preference learning:
+- GET /api/recommendations/timeline - Get real posts from Following feed for training
 - GET /api/recommendations/batch - Get recommended posts with reasons
 - GET /api/recommendations/reasons - Get "why" options for feedback UI
 - POST /api/recommendations/feedback - Record structured feedback (decision + reasons)
