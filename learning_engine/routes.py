@@ -151,8 +151,8 @@ async def get_timeline_posts(
         vnc_url = None
         try:
             r = redis.Redis(host=redis_host, port=redis_port, db=0, decode_responses=True)
-            # VNC sessions are stored as JSON in vnc:sessions:{user_id}
-            session_json = r.get(f"vnc:sessions:{clerk_user_id}")
+            # VNC sessions are stored as JSON in vnc:session:{user_id} (singular, not "sessions")
+            session_json = r.get(f"vnc:session:{clerk_user_id}")
             if session_json:
                 session_data = json.loads(session_json)
                 vnc_url = session_data.get("https_url") or session_data.get("service_url")
