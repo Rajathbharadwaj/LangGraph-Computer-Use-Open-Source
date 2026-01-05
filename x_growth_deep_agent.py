@@ -854,8 +854,7 @@ def get_atomic_subagents(store=None, user_id=None, model=None, model_provider="a
         @tool
         async def import_historical_data(
             max_posts: int = 50,
-            max_comments: int = 50,
-            runtime: "ToolRuntime" = None
+            max_comments: int = 50
         ) -> str:
             """
             Import your historical posts and comments from X for analytics tracking.
