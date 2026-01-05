@@ -868,15 +868,14 @@ def get_atomic_subagents(store=None, user_id=None, model=None, model_provider="a
                 Summary of imported data
             """
             from historical_data_importer import HistoricalDataImporter
+            from langchain_core.runnables import RunnableConfig
+            from langchain_core.callbacks import get_callback_manager_for_config
+            import asyncio
 
-            # Get CUA client from runtime
-            if not runtime:
-                return "Error: No runtime available"
-
-            runtime_config = getattr(runtime, 'config', {})
-            configurable = runtime_config.get('configurable', {}) if isinstance(runtime_config, dict) else {}
-            cua_url = configurable.get('cua_url')
-            runtime_user_id = configurable.get('x-user-id') or user_id
+            # Get CUA URL from environment or default
+            import os
+            cua_url = os.environ.get('CUA_URL') or os.environ.get('VNC_URL')
+            runtime_user_id = user_id
 
             if not cua_url:
                 return "Error: No CUA URL available. Make sure you have an active browser session."
