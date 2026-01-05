@@ -1474,14 +1474,60 @@ async def cleanup_duplicate_posts(user_id: str = Depends(get_current_user)):
             "error": str(e)
         }
 
-@app.get("/api/vnc/session")
-async def get_vnc_session_by_user_id(user_id: str = Depends(get_current_user)):
+@app.get("/api/vnc/session/{user_id}")
+async def get_vnc_session_internal(user_id: str):
     """
     Internal endpoint for LangGraph middleware to get VNC session URL by user ID.
     No authentication required for internal service-to-service calls.
     """
     try:
         print(f"🔍 [Internal] Fetching VNC session for user: {user_id}")
+
+        # Get VNC manager
+        vnc_manager = await get_vnc_manager()
+
+        if not vnc_manager:
+            print(f"⚠️ [Internal] No VNC manager available")
+            raise HTTPException(status_code=503, detail="VNC manager not available")
+
+        # Get session from Redis
+        session = await vnc_manager.get_session(user_id)
+
+        if not session:
+            print(f"⚠️ [Internal] No VNC session found for user {user_id}")
+            raise HTTPException(status_code=404, detail="No VNC session found")
+
+        https_url = session.get("https_url") or session.get("service_url")
+
+        if not https_url:
+            print(f"⚠️ [Internal] VNC session exists but has no URL")
+            raise HTTPException(status_code=404, detail="VNC session has no URL")
+
+        print(f"✅ [Internal] Found VNC URL: {https_url}")
+
+        return {
+            "success": True,
+            "https_url": https_url,
+            "service_url": session.get("service_url"),
+            "session_id": session.get("session_id")
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"❌ [Internal] Error fetching VNC session: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/vnc/session")
+async def get_vnc_session_authenticated(user_id: str = Depends(get_current_user)):
+    """
+    Authenticated endpoint for frontend to get current user's VNC session.
+    """
+    try:
+        print(f"🔍 [Auth] Fetching VNC session for user: {user_id}")
 
         # Get VNC manager
         vnc_manager = await get_vnc_manager()
