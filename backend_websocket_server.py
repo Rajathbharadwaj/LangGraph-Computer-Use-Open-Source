@@ -4117,23 +4117,59 @@ async def scrape_posts_docker(
                     
                     # Scrape current posts on page
                     scrape_script = """
-                    Array.from(document.querySelectorAll('[data-testid="tweet"]')).map(tweet => {
-                        const text = tweet.querySelector('[data-testid="tweetText"]')?.innerText || '';
-                        const timeEl = tweet.querySelector('time');
-                        const likeBtn = tweet.querySelector('[data-testid="like"]');
-                        const replyBtn = tweet.querySelector('[data-testid="reply"]');
-                        const repostBtn = tweet.querySelector('[data-testid="retweet"]');
+                    // Helper function to parse engagement numbers like "1,234", "1.2K", "12K", "1.5M"
+                    function parseEngagementNum(ariaLabel) {
+                        if (!ariaLabel) return 0;
+                        // Extract the number part (e.g., "1,234 Likes" -> "1,234", "1.2K replies" -> "1.2K")
+                        const match = ariaLabel.match(/([\\d,\\.]+)\\s*([KkMm])?/);
+                        if (!match) return 0;
 
-                        return {
-                            content: text,
-                            timestamp: timeEl ? timeEl.getAttribute('datetime') : new Date().toISOString(),
-                            engagement: {
-                                likes: parseInt(likeBtn?.getAttribute('aria-label')?.match(/\\d+/)?.[0] || '0'),
-                                replies: parseInt(replyBtn?.getAttribute('aria-label')?.match(/\\d+/)?.[0] || '0'),
-                                reposts: parseInt(repostBtn?.getAttribute('aria-label')?.match(/\\d+/)?.[0] || '0')
+                        let num = parseFloat(match[1].replace(/,/g, ''));
+                        const suffix = match[2]?.toUpperCase();
+
+                        if (suffix === 'K') num *= 1000;
+                        else if (suffix === 'M') num *= 1000000;
+
+                        return Math.round(num);
+                    }
+
+                    // Helper to check if a tweet is a retweet (not original content)
+                    function isRetweet(tweet) {
+                        // Check for social context that indicates retweet
+                        const socialContext = tweet.querySelector('[data-testid="socialContext"]');
+                        if (socialContext) {
+                            const text = socialContext.innerText.toLowerCase();
+                            if (text.includes('reposted') || text.includes('retweeted')) {
+                                return true;
                             }
-                        };
-                    }).filter(p => p.content);
+                        }
+                        // Check for "RT @" prefix in content
+                        const tweetText = tweet.querySelector('[data-testid="tweetText"]')?.innerText || '';
+                        if (tweetText.startsWith('RT @')) {
+                            return true;
+                        }
+                        return false;
+                    }
+
+                    Array.from(document.querySelectorAll('[data-testid="tweet"]'))
+                        .filter(tweet => !isRetweet(tweet))  // Skip retweets
+                        .map(tweet => {
+                            const text = tweet.querySelector('[data-testid="tweetText"]')?.innerText || '';
+                            const timeEl = tweet.querySelector('time');
+                            const likeBtn = tweet.querySelector('[data-testid="like"]');
+                            const replyBtn = tweet.querySelector('[data-testid="reply"]');
+                            const repostBtn = tweet.querySelector('[data-testid="retweet"]');
+
+                            return {
+                                content: text,
+                                timestamp: timeEl ? timeEl.getAttribute('datetime') : new Date().toISOString(),
+                                engagement: {
+                                    likes: parseEngagementNum(likeBtn?.getAttribute('aria-label')),
+                                    replies: parseEngagementNum(replyBtn?.getAttribute('aria-label')),
+                                    reposts: parseEngagementNum(repostBtn?.getAttribute('aria-label'))
+                                }
+                            };
+                        }).filter(p => p.content);
                     """
                     
                     async with scrape_session.post(
@@ -4302,8 +4338,23 @@ async def scrape_posts_docker(
                     "error": f"You already have @{existing_user_account.username} linked. One account per user. Please disconnect it first in Settings before linking @{username}."
                 }
 
-            # Get or create X account
-            x_account = db.query(XAccount).filter(XAccount.username == username).first()
+            # Check if this X account is already claimed by another user
+            existing_x_account = db.query(XAccount).filter(
+                XAccount.username.ilike(username)
+            ).first()
+            if existing_x_account and existing_x_account.user_id != clerk_user_id:
+                db.close()
+                print(f"❌ X account @{username} is already linked to another user")
+                return {
+                    "success": False,
+                    "error": f"@{username} is already linked to another account. Each X account can only be linked to one user."
+                }
+
+            # Get or create X account for THIS user
+            x_account = db.query(XAccount).filter(
+                XAccount.username.ilike(username),
+                XAccount.user_id == clerk_user_id
+            ).first()
             if not x_account:
                 x_account = XAccount(
                     user_id=clerk_user_id,
