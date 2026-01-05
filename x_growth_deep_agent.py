@@ -1636,7 +1636,7 @@ Use the research above to write a post that demonstrates expertise and provides 
                     author_or_content: The post to like (author name, post URL, or content snippet)
                     runtime: Tool runtime context (injected by LangGraph)
                 """
-                result = await original_like_tool.ainvoke({"author_or_content": author_or_content})
+                result = await original_like_tool.ainvoke({"author_or_content": author_or_content, "runtime": runtime})
 
                 # Log activity (using runtime's store)
                 status = "success" if ("successfully" in result.lower() or "✅" in result or "liked" in result.lower()) else "failed"
