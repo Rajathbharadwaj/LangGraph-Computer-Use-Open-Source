@@ -1628,24 +1628,24 @@ Use the research above to write a post that demonstrates expertise and provides 
 
         if original_like_tool:
             @tool
-            async def _logged_like_post(post_identifier: str, runtime: ToolRuntime = None) -> str:
+            async def _logged_like_post(author_or_content: str, runtime: ToolRuntime = None) -> str:
                 """
                 Like a post with activity logging.
 
                 Args:
-                    post_identifier: The post to like (author name, post URL, or content snippet)
+                    author_or_content: The post to like (author name, post URL, or content snippet)
                     runtime: Tool runtime context (injected by LangGraph)
                 """
-                result = await original_like_tool.ainvoke({"post_identifier": post_identifier})
+                result = await original_like_tool.ainvoke({"author_or_content": author_or_content})
 
                 # Log activity (using runtime's store)
                 status = "success" if ("successfully" in result.lower() or "✅" in result or "liked" in result.lower()) else "failed"
-                print(f"📝 [Activity Logging] Logging like: target={post_identifier}, status={status}")
+                print(f"📝 [Activity Logging] Logging like: target={author_or_content}, status={status}")
                 try:
                     activity_logger = get_activity_logger_from_runtime(runtime)
                     if activity_logger:
                         activity_id = activity_logger.log_like(
-                            target=post_identifier,
+                            target=author_or_content,
                             status=status
                         )
                         print(f"✅ [Activity Logging] Like logged successfully with ID: {activity_id}")
