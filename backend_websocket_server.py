@@ -72,6 +72,9 @@ from work_integrations.routes import router as work_integrations_router
 # Booking service router (Voice Agent POC)
 from booking_service.routes import router as booking_router
 
+# Learning Engine router (Recommendation + Preference Learning)
+from learning_engine.routes import router as learning_engine_router
+
 # Global store variable (initialized in lifespan)
 store = None
 _pg_pool = None  # Connection pool for PostgresStore
