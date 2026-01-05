@@ -143,13 +143,20 @@ async def get_timeline_posts(
     try:
         # Get user's VNC client
         from async_playwright_tools import get_client_for_url
+        import json
 
         redis_host = os.environ.get('REDIS_HOST', '10.110.183.147')
         redis_port = int(os.environ.get('REDIS_PORT', '6379'))
 
+        vnc_url = None
         try:
             r = redis.Redis(host=redis_host, port=redis_port, db=0, decode_responses=True)
-            vnc_url = r.get(f"user:{clerk_user_id}:vnc_url")
+            # VNC sessions are stored as JSON in vnc:sessions:{user_id}
+            session_json = r.get(f"vnc:sessions:{clerk_user_id}")
+            if session_json:
+                session_data = json.loads(session_json)
+                vnc_url = session_data.get("https_url") or session_data.get("service_url")
+                logger.info(f"Found VNC session for user {clerk_user_id}: {vnc_url}")
         except Exception as e:
             logger.warning(f"Redis connection failed: {e}")
             vnc_url = None
@@ -157,7 +164,7 @@ async def get_timeline_posts(
         if not vnc_url:
             raise HTTPException(
                 status_code=400,
-                detail="No active browser session. Please start a VNC session first."
+                detail="No active browser session. Please start a VNC session from the Dashboard first."
             )
 
         # Create client and scrape timeline
