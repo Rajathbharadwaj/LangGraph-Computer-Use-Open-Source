@@ -924,7 +924,7 @@ Your analytics dashboard will now show engagement data for these items.
             posts: list[dict],
             min_score: float = 0.3,
             limit: int = 10,
-            runtime: "ToolRuntime" = None
+            runtime: ToolRuntime = None
         ) -> str:
             """
             Filter and rank posts based on user's learned engagement preferences.
