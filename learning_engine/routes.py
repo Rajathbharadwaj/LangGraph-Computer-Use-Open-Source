@@ -112,6 +112,81 @@ def get_db():
 # =============================================================================
 
 
+@router.get("/timeline")
+async def get_timeline_posts(
+    max_posts: int = 30,
+    min_engagement: int = 10,
+    max_hours_ago: int = 48,
+    clerk_user_id: str = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Get real posts from the user's Following timeline for preference training.
+
+    This endpoint scrapes the authenticated user's "Following" tab (not "For You")
+    to get high signal-to-noise posts from accounts they explicitly follow.
+
+    Args:
+        max_posts: Maximum posts to return (default 30)
+        min_engagement: Minimum likes+retweets+replies to include (default 10)
+        max_hours_ago: Maximum age of posts in hours (default 48)
+
+    Returns:
+        List of posts with full metadata ready for Learning Engine
+    """
+    import os
+    import redis
+
+    if not clerk_user_id:
+        raise HTTPException(status_code=401, detail="Authentication required")
+
+    try:
+        # Get user's VNC client
+        from async_playwright_tools import get_client_for_url
+
+        redis_host = os.environ.get('REDIS_HOST', '10.110.183.147')
+        redis_port = int(os.environ.get('REDIS_PORT', '6379'))
+
+        try:
+            r = redis.Redis(host=redis_host, port=redis_port, db=0, decode_responses=True)
+            vnc_url = r.get(f"user:{clerk_user_id}:vnc_url")
+        except Exception as e:
+            logger.warning(f"Redis connection failed: {e}")
+            vnc_url = None
+
+        if not vnc_url:
+            raise HTTPException(
+                status_code=400,
+                detail="No active browser session. Please start a VNC session first."
+            )
+
+        # Create client and scrape timeline
+        from timeline_feed_scraper import TimelineFeedScraper, get_following_timeline_posts
+
+        client = get_client_for_url(vnc_url)
+        posts = await get_following_timeline_posts(
+            browser_client=client,
+            max_posts=max_posts,
+            min_engagement=min_engagement,
+            max_hours_ago=max_hours_ago
+        )
+
+        logger.info(f"Scraped {len(posts)} posts from Following timeline for user {clerk_user_id}")
+
+        return {
+            "success": True,
+            "posts": posts,
+            "count": len(posts),
+            "source": "following_timeline"
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to scrape timeline: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to scrape timeline: {str(e)}")
+
+
 @router.get("/batch")
 async def get_recommendations_batch(
     limit: int = 10,
