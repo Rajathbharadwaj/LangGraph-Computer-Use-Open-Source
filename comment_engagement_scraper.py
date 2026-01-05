@@ -267,6 +267,18 @@ class CommentEngagementScraper:
                 return { error: 'not_found', success: false };
             }
 
+            // Helper to parse engagement numbers like "1,234", "1.2K", "12K", "1.5M"
+            const parseEngagementNum = (label) => {
+                if (!label) return 0;
+                const match = label.match(/([\d,.]+)\s*([KkMm])?/);
+                if (!match) return 0;
+                let num = parseFloat(match[1].replace(/,/g, ''));
+                const suffix = match[2]?.toUpperCase();
+                if (suffix === 'K') num *= 1000;
+                else if (suffix === 'M') num *= 1000000;
+                return Math.round(num);
+            };
+
             // Helper to extract count from aria-label
             const getCount = (testId) => {
                 const btn = article.querySelector(`[data-testid="${testId}"]`);
@@ -274,17 +286,15 @@ class CommentEngagementScraper:
 
                 // Try aria-label first
                 const label = btn.getAttribute('aria-label') || '';
-                const match = label.match(/(\d+(?:,\d+)*)/);
-                if (match) {
-                    return parseInt(match[1].replace(/,/g, ''));
-                }
+                const parsed = parseEngagementNum(label);
+                if (parsed > 0) return parsed;
 
                 // Try inner text
                 const span = btn.querySelector('span');
                 if (span) {
                     const text = span.innerText;
                     if (text && /^\d/.test(text)) {
-                        return parseInt(text.replace(/[^\d]/g, ''));
+                        return parseEngagementNum(text);
                     }
                 }
 
@@ -340,13 +350,24 @@ class CommentEngagementScraper:
                 const timeLink = article.querySelector('a[href*="/status/"]');
                 const url = timeLink ? 'https://x.com' + timeLink.getAttribute('href') : null;
 
+                // Helper to parse engagement numbers like "1,234", "1.2K", "12K", "1.5M"
+                const parseEngagementNum = (label) => {{
+                    if (!label) return 0;
+                    const match = label.match(/([\\d,.]+)\\s*([KkMm])?/);
+                    if (!match) return 0;
+                    let num = parseFloat(match[1].replace(/,/g, ''));
+                    const suffix = match[2]?.toUpperCase();
+                    if (suffix === 'K') num *= 1000;
+                    else if (suffix === 'M') num *= 1000000;
+                    return Math.round(num);
+                }};
+
                 // Get engagement
                 const getCount = (testId) => {{
                     const btn = article.querySelector(`[data-testid="${{testId}}"]`);
                     if (!btn) return 0;
                     const label = btn.getAttribute('aria-label') || '';
-                    const match = label.match(/(\\d+(?:,\\d+)*)/);
-                    return match ? parseInt(match[1].replace(/,/g, '')) : 0;
+                    return parseEngagementNum(label);
                 }};
 
                 if (username && content) {{
