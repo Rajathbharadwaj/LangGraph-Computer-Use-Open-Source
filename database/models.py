@@ -1254,12 +1254,6 @@ class PreferenceSignal(Base):
     # Relationships
     user = relationship("User", backref="preference_signals")
 
-    # Composite unique constraint
-    __table_args__ = (
-        # One signal per (user, type, value)
-        {"extend_existing": True},
-    )
-
 
 class RecommendationModel(Base):
     """
