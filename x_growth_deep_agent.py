@@ -916,6 +916,75 @@ Your analytics dashboard will now show engagement data for these items.
         user_data_tools.append(import_historical_data)
         print(f"✅ Added import_historical_data tool for analytics backfill")
 
+        # Add preference-based post filtering tool (Learning Engine integration)
+        @tool
+        async def filter_posts_by_preference(
+            posts: list[dict],
+            min_score: float = 0.3,
+            limit: int = 10,
+            runtime: "ToolRuntime" = None
+        ) -> str:
+            """
+            Filter and rank posts based on user's learned engagement preferences.
+
+            The Learning Engine tracks which posts users engage with and why,
+            building a preference model. Use this to prioritize posts most likely
+            to result in successful engagement.
+
+            Args:
+                posts: List of post dicts with keys: url, author, content, likes, replies, retweets, hours_ago
+                min_score: Minimum preference score to include (0.0-1.0, default 0.3)
+                limit: Maximum posts to return (default 10)
+
+            Returns:
+                Ranked posts with scores and reasons for recommendation
+            """
+            from database.database import SessionLocal
+            from ml.generative_recommender import GenerativeRecommender
+
+            if not posts:
+                return "No posts provided to filter."
+
+            # Get user_id from runtime
+            runtime_config = getattr(runtime, 'config', {}) if runtime else {}
+            configurable = runtime_config.get('configurable', {}) if isinstance(runtime_config, dict) else {}
+            runtime_user_id = configurable.get('x-user-id') or configurable.get('user_id') or user_id
+
+            if not runtime_user_id:
+                return "Error: No user_id available for preference lookup."
+
+            try:
+                db = SessionLocal()
+                try:
+                    recommender = GenerativeRecommender(runtime_user_id, db)
+                    recommendations = await recommender.get_recommendations(posts, limit=limit)
+
+                    # Filter by min_score
+                    filtered = [(p, s, r) for p, s, r in recommendations if s >= min_score]
+
+                    if not filtered:
+                        return f"No posts matched preference score >= {min_score}. Try lowering the threshold."
+
+                    # Format output
+                    output_lines = [f"🎯 Top {len(filtered)} posts matching your preferences:\n"]
+                    for i, (post, score, reason) in enumerate(filtered, 1):
+                        output_lines.append(f"{i}. @{post.get('author', 'unknown')} ({int(score*100)}% match)")
+                        output_lines.append(f"   Reason: {reason}")
+                        output_lines.append(f"   Content: {post.get('content', '')[:100]}...")
+                        output_lines.append(f"   URL: {post.get('url', 'N/A')}\n")
+
+                    return "\n".join(output_lines)
+
+                finally:
+                    db.close()
+
+            except Exception as e:
+                return f"Error filtering posts: {str(e)}"
+
+        tool_dict["filter_posts_by_preference"] = filter_posts_by_preference
+        user_data_tools.append(filter_posts_by_preference)
+        print(f"✅ Added filter_posts_by_preference tool (Learning Engine integration)")
+
     # Create Anthropic native tools for subagents (if model is available)
     native_web_fetch_tool = None
     native_web_search_tool = None
