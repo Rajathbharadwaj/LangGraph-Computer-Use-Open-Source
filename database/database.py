@@ -80,6 +80,8 @@ def init_db():
     from .models import Subscription, CreditBalance, CreditTransaction, FeatureUsage
     # Import comment tracking models
     from .models import UserComment, ReceivedComment
+    # Import Learning Engine models (recommendation + preference learning)
+    from .models import PostRecommendation, PreferenceSignal, RecommendationModel
     Base.metadata.create_all(bind=engine)
     print("✅ Database tables created")
 
