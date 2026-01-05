@@ -279,7 +279,7 @@ def create_memory_tool(user_id: str):
         LangChain tool function with memory operations
     """
 
-    @tool(extras={"provider_tool_definition": MEMORY_TOOL_SPEC})
+    @tool
     async def memory(
         command: Literal["view", "create", "str_replace", "insert", "delete", "rename"],
         path: str,
