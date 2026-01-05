@@ -1404,7 +1404,8 @@ Write a comment that sounds EXACTLY like the user wrote it themselves.
             # Step 2: Post using original tool
             result = await original_comment_tool.ainvoke({
                 "author_or_content": author_or_content,
-                "comment_text": generated_comment
+                "comment_text": generated_comment,
+                "runtime": runtime
             })
 
             # Step 3: Log activity (using runtime's store)
