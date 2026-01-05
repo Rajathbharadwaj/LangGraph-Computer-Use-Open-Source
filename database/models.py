@@ -1136,6 +1136,178 @@ class StyleEvolutionSnapshot(Base):
     user = relationship("User", backref="style_evolution_snapshots")
 
 
+# =============================================================================
+# Learning Engine - Recommendation & Preference Models
+# =============================================================================
+
+
+class PostRecommendation(Base):
+    """
+    Tracks posts recommended to users → their decisions → engagement outcomes.
+
+    This is the core training data for the generative recommender (A-SFT style).
+    Each record captures:
+    1. What was shown (post + score + reason)
+    2. User's decision (yes/no) + structured reasons WHY
+    3. Outcome (did engagement succeed?)
+
+    The "advantage" for training = actual_outcome - predicted_score
+    """
+    __tablename__ = "post_recommendations"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(String, ForeignKey("users.id"), nullable=False)
+    x_account_id = Column(Integer, ForeignKey("x_accounts.id"), nullable=True)
+
+    # Post data (denormalized for fast access)
+    post_url = Column(String(500), nullable=False)
+    post_author = Column(String(100))
+    post_content_preview = Column(Text)  # First 500 chars
+    post_likes = Column(Integer, default=0)
+    post_retweets = Column(Integer, default=0)
+    post_replies = Column(Integer, default=0)
+    post_hours_ago = Column(Float)  # Age when recommended
+
+    # Recommendation metadata
+    batch_id = Column(String(50), index=True)  # Groups carousel items together
+    position_in_batch = Column(Integer)  # Position in carousel (0-indexed)
+    recommendation_score = Column(Float)  # Model's predicted probability
+    recommendation_reason = Column(Text)  # "Matches your interest in AI"
+    feature_vector = Column(JSON, default={})  # Features used for scoring
+
+    # User's decision
+    action = Column(String(20), default="pending")  # pending, selected, skipped, not_interested
+    action_at = Column(DateTime, nullable=True)
+
+    # Structured feedback (A-SFT training data)
+    feedback_decision = Column(String(10))  # "yes" or "no" explicit answer
+    feedback_reasons = Column(JSON, default=[])  # List of reason IDs selected
+    feedback_features = Column(JSON, default={})  # Aggregated feature signals from reasons
+    other_reason = Column(Text)  # Free-text "other" reason
+    time_to_decide_ms = Column(Integer)  # Engagement signal: how long user took
+
+    # Engagement outcome (filled after user engages)
+    engagement_type = Column(String(20))  # liked, commented, quoted, retweeted
+    engagement_content = Column(Text)  # Our comment/quote text if applicable
+    comment_url = Column(String(500))  # URL to our comment
+
+    # Outcome metrics (for reward calculation)
+    outcome_likes = Column(Integer, default=0)  # Likes on OUR engagement
+    outcome_replies = Column(Integer, default=0)  # Replies to OUR engagement
+    outcome_retweets = Column(Integer, default=0)
+    outcome_scraped_at = Column(DateTime)  # When we checked outcome
+    engagement_success = Column(Boolean)  # Derived: outcome > 0
+
+    # A-SFT training fields
+    advantage = Column(Float)  # actual_outcome - predicted_score
+    training_weight = Column(Float, default=1.0)  # Weight for training
+
+    # Timestamps
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    # Relationships
+    user = relationship("User", backref="post_recommendations")
+    x_account = relationship("XAccount", backref="post_recommendations")
+
+
+class PreferenceSignal(Base):
+    """
+    Aggregated preference signals learned from user behavior.
+
+    These are the "learned priors" for the recommender:
+    - topic_preference: "AI" → positive_count=15, negative_count=2
+    - author_preference: "@sama" → high engagement success rate
+    - format_preference: "threads" → user likes long-form
+
+    Updated incrementally after each user action (online learning).
+    Decayed daily to adapt to changing preferences.
+    """
+    __tablename__ = "preference_signals"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(String, ForeignKey("users.id"), nullable=False)
+
+    # Signal identification
+    signal_type = Column(String(30), nullable=False)  # topic_preference, author_preference, format_preference, reason_preference
+    signal_value = Column(String(255), nullable=False)  # "AI", "@sama", "threads", "topic_match"
+
+    # Counts (for Bayesian updates)
+    positive_count = Column(Integer, default=0)  # Times user engaged with this
+    negative_count = Column(Integer, default=0)  # Times user skipped this
+    total_shown = Column(Integer, default=0)  # Total times shown
+
+    # Derived scores
+    preference_score = Column(Float, default=0.5)  # 0-1, computed from counts
+    confidence = Column(Float, default=0.0)  # Higher with more samples
+    engagement_success_rate = Column(Float)  # When engaged, how often successful?
+
+    # Temporal tracking
+    last_positive_at = Column(DateTime)
+    last_negative_at = Column(DateTime)
+    decay_factor = Column(Float, default=1.0)  # Applied daily (0.95^days)
+
+    # Timestamps
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    # Relationships
+    user = relationship("User", backref="preference_signals")
+
+    # Composite unique constraint
+    __table_args__ = (
+        # One signal per (user, type, value)
+        {"extend_existing": True},
+    )
+
+
+class RecommendationModel(Base):
+    """
+    Versioned preference model per user.
+
+    Stores the trained model state for the generative recommender.
+    Each user has one active model, with version history for rollback.
+
+    Model types:
+    - "feature_weights": Simple linear weights on preference signals
+    - "embedding": User preference embedding (1536 dims from OpenAI)
+    - "bandit": Serialized contextual bandit model
+    - "llm_profile": Text summary of preferences for LLM-based ranking
+    """
+    __tablename__ = "recommendation_models"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(String, ForeignKey("users.id"), nullable=False)
+
+    # Model identification
+    model_type = Column(String(30), default="feature_weights")  # feature_weights, embedding, bandit, llm_profile
+    model_version = Column(Integer, default=1)
+    is_active = Column(Boolean, default=True)  # Only one active per user per type
+
+    # Model content (varies by type)
+    feature_weights = Column(JSON, default={})  # {"topic_relevance": 0.3, "author_preference": 0.25, ...}
+    embedding = Column(JSON)  # User preference embedding as list of floats
+    model_weights = Column(Text)  # Serialized bandit model (base64)
+    llm_profile = Column(Text)  # Text summary for LLM-based ranking
+
+    # Training metadata
+    training_samples = Column(Integer, default=0)
+    last_trained_at = Column(DateTime)
+    training_config = Column(JSON, default={})  # Hyperparameters used
+
+    # Performance metrics
+    avg_advantage = Column(Float)  # Average advantage on recent predictions
+    hit_rate = Column(Float)  # % of recommendations user engaged with
+    metrics_updated_at = Column(DateTime)
+
+    # Timestamps
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    # Relationships
+    user = relationship("User", backref="recommendation_models")
+
+
 class LearnedStyleRule(Base):
     """
     Consolidated learned rules from user feedback.
