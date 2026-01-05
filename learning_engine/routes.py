@@ -307,7 +307,7 @@ async def get_reason_options(
     clerk_user_id: str = Depends(get_current_user)
 ):
     """
-    Get the "why" options for the feedback UI.
+    Get static "why" options for the feedback UI.
 
     Args:
         decision: "yes" or "no" - determines which reasons to show
@@ -329,6 +329,114 @@ async def get_reason_options(
         "decision": decision,
         "options": options
     }
+
+
+class ContextualReasonsRequest(BaseModel):
+    """Request for contextual LLM-generated reasons."""
+    post: CandidatePost
+    decision: str = Field(..., pattern="^(yes|no)$")
+
+
+@router.post("/reasons/contextual")
+async def get_contextual_reasons(
+    request: ContextualReasonsRequest,
+    clerk_user_id: str = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Get LLM-generated contextual reasons for a specific post + decision.
+
+    Returns both:
+    - Contextual reasons (LLM-generated based on the post)
+    - General reasons (static fallback options)
+
+    Each reason has isContextual=true/false to differentiate in UI.
+    """
+    if not clerk_user_id:
+        raise HTTPException(status_code=401, detail="Authentication required")
+
+    try:
+        # Get user context for personalized reason generation
+        user_context = {}
+        try:
+            # Try to get user's preferences from existing signals
+            signals = db.query(PreferenceSignal).filter(
+                PreferenceSignal.user_id == clerk_user_id
+            ).order_by(PreferenceSignal.preference_score.desc()).limit(10).all()
+
+            if signals:
+                # Build context from signals
+                preferred_topics = [s.signal_value for s in signals if s.signal_type == "topic_preference" and s.preference_score > 0.5]
+                preferred_authors = [s.signal_value for s in signals if s.signal_type == "author_preference" and s.preference_score > 0.5]
+                user_context = {
+                    "preferred_topics": preferred_topics[:5],
+                    "preferred_authors": preferred_authors[:5],
+                    "niche": "technology & AI" if not preferred_topics else preferred_topics[0],
+                    "style": "thoughtful engagement"
+                }
+        except Exception as e:
+            logger.warning(f"Could not fetch user context: {e}")
+
+        # Generate contextual reasons via LLM
+        generator = ReasonGenerator(use_dynamic=True)
+
+        post_dict = {
+            "author": request.post.author,
+            "content": request.post.content,
+            "likes": request.post.likes,
+            "retweets": request.post.retweets,
+            "replies": request.post.replies,
+            "hours_ago": request.post.hours_ago,
+            "author_followers": request.post.author_followers or 0
+        }
+
+        contextual_options = await generator.generate_contextual_options(
+            post=post_dict,
+            user_context=user_context,
+            decision=request.decision
+        )
+
+        # Also get static options as fallback
+        static_options = generator.get_static_options(request.decision)
+
+        # Format response with isContextual flag
+        reasons = []
+
+        # Add contextual options first (LLM-generated)
+        for opt in contextual_options[:5]:  # Limit to 5 contextual
+            reasons.append({
+                "id": f"ctx_{opt.id}",
+                "label": opt.label,
+                "isContextual": True
+            })
+
+        # Add static options as general fallback
+        for opt in static_options[:4]:  # Limit to 4 general
+            reasons.append({
+                "id": opt.id,
+                "label": opt.label,
+                "isContextual": False
+            })
+
+        return {
+            "success": True,
+            "decision": request.decision,
+            "reasons": reasons
+        }
+
+    except Exception as e:
+        logger.error(f"Failed to generate contextual reasons: {e}")
+        # Fall back to static reasons on error
+        generator = ReasonGenerator()
+        static_options = generator.get_options_for_api(request.decision)
+        return {
+            "success": True,
+            "decision": request.decision,
+            "reasons": [
+                {"id": opt["id"], "label": opt["label"], "isContextual": False}
+                for opt in static_options
+            ]
+        }
 
 
 @router.post("/feedback")
