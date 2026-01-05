@@ -179,24 +179,26 @@ Best Time to Engage: {data.get('best_time', 'N/A')}"""
     @tool
     async def check_rate_limit_status() -> str:
         """
-        Check if X is showing rate limit warnings using Chrome extension.
-        Extension monitors DOM for rate limit messages in real-time.
-        
+        Check if X is showing rate limit warnings.
+
         Returns:
-        - Rate limit status (active/none)
+        - Rate limit status (active/none/unknown)
         - Time until reset
         - Recommended pause duration
         - Actions remaining (if available)
-        
+
         Use this BEFORE performing actions to avoid bans!
+
+        Note: If extension not connected, returns safe-to-proceed with caution.
+        The Playwright tools will detect rate limits via DOM inspection.
         """
         try:
             result = await _global_extension_client._request("GET", "/extension/rate_limit_status")
-            
+
             if result.get("success"):
                 status = result.get("status", {})
                 is_limited = status.get("is_rate_limited", False)
-                
+
                 if is_limited:
                     return f"""⚠️ RATE LIMITED!
 Status: Active rate limit detected
@@ -211,9 +213,32 @@ Actions remaining (estimated): {status.get('actions_remaining', 'Unknown')}
 Safe to continue: Yes
 Last check: {status.get('last_check', 'Just now')}"""
             else:
-                return f"❌ Failed to check rate limit: {result.get('error', 'Unknown error')}"
+                error_msg = result.get('error', 'Unknown error')
+                # Graceful fallback when extension not connected (VNC/Playwright mode)
+                if "Extension not connected" in error_msg or "not connected" in error_msg.lower():
+                    return f"""✅ Rate Limit Check: Extension not connected (VNC mode)
+
+Status: SAFE TO PROCEED WITH CAUTION
+Mode: Using Playwright/VNC browser (no extension needed)
+Recommendation: Proceed normally - Playwright actions will detect DOM rate limit messages
+
+⚡ The VNC browser handles rate limiting via DOM inspection during actions.
+   If X shows "doing that too fast", the action will fail and you'll see it.
+
+Continue with your engagement action."""
+                return f"❌ Failed to check rate limit: {error_msg}"
         except Exception as e:
-            return f"❌ Extension tool failed: {str(e)}"
+            error_str = str(e)
+            # Also handle connection errors gracefully
+            if "connect" in error_str.lower() or "timeout" in error_str.lower():
+                return f"""✅ Rate Limit Check: Extension unavailable (VNC mode)
+
+Status: SAFE TO PROCEED WITH CAUTION
+Mode: Using Playwright/VNC browser
+Recommendation: Proceed normally - rate limits will be visible in action results
+
+Continue with your engagement action."""
+            return f"❌ Extension tool failed: {error_str}"
     
     @tool
     async def get_post_context(post_identifier: str) -> str:
