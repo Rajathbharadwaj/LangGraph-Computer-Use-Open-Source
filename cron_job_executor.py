@@ -419,6 +419,11 @@ class CronJobExecutor:
 
             logger.info(f"🌐 CUA Host: {cua_host}, Port: {cua_port}")
 
+            # Extract model config from input_config (set by user in AutomationComposer)
+            model_name = cron_job.input_config.get("model_name", "claude-sonnet-4-5-20250929") if cron_job.input_config else "claude-sonnet-4-5-20250929"
+            model_provider = cron_job.input_config.get("model_provider", "anthropic") if cron_job.input_config else "anthropic"
+            logger.info(f"🧠 Using model: {model_name} (provider: {model_provider})")
+
             # Config with VNC URL for the agent to use browser automation
             config = {
                 "configurable": {
@@ -428,6 +433,8 @@ class CronJobExecutor:
                     "x-cua-port": cua_port,
                     "x-user-id": user_id,
                     "use_longterm_memory": True,
+                    "model_name": model_name,
+                    "model_provider": model_provider,
                 }
             }
 
