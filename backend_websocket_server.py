@@ -5375,7 +5375,8 @@ async def list_cron_jobs(
                     "workflow_id": job.workflow_id,
                     "is_active": job.is_active,
                     "last_run_at": job.last_run_at.isoformat() if job.last_run_at else None,
-                    "created_at": job.created_at.isoformat()
+                    "created_at": job.created_at.isoformat(),
+                    "input_config": job.input_config,
                 }
                 for job in cron_jobs
             ]
