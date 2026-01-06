@@ -5522,6 +5522,63 @@ async def toggle_cron_job(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.put("/api/cron-jobs/{cron_job_id}")
+async def update_cron_job(
+    cron_job_id: int,
+    request: dict,
+    user_id: str = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Update an existing cron job's settings"""
+    try:
+        from cron_job_executor import get_cron_executor
+
+        cron_job = db.query(CronJob).filter(
+            CronJob.id == cron_job_id,
+            CronJob.user_id == user_id
+        ).first()
+
+        if not cron_job:
+            raise HTTPException(status_code=404, detail="Cron job not found")
+
+        # Track if schedule changed (need to reschedule)
+        schedule_changed = "schedule" in request and request["schedule"] != cron_job.schedule
+
+        # Update fields if provided
+        if "name" in request:
+            cron_job.name = request["name"]
+        if "schedule" in request:
+            cron_job.schedule = request["schedule"]
+        if "workflow_id" in request:
+            cron_job.workflow_id = request["workflow_id"]
+        if "custom_prompt" in request:
+            cron_job.custom_prompt = request["custom_prompt"]
+        if "input_config" in request:
+            cron_job.input_config = request["input_config"]
+
+        cron_job.updated_at = datetime.utcnow()
+        db.commit()
+        db.refresh(cron_job)
+
+        # Reschedule if active and schedule changed
+        if cron_job.is_active and schedule_changed:
+            executor = await get_cron_executor()
+            executor.cancel_cron_job(cron_job_id)
+            executor.schedule_cron_job(cron_job)
+            print(f"✅ Rescheduled cron job {cron_job_id} with new schedule: {cron_job.schedule}")
+
+        return {
+            "message": "Cron job updated successfully",
+            "cron_job_id": cron_job.id,
+            "input_config": cron_job.input_config
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error updating cron job: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.post("/api/cron-jobs/{cron_job_id}/run")
 async def run_cron_job_now(
     cron_job_id: int,
