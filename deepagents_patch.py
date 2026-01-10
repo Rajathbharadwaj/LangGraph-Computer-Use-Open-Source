@@ -63,17 +63,43 @@ def _apply_patch():
 
             # Create patched task functions
             def patched_task(description: str, subagent_type: str, runtime: ToolRuntime):
+                import time
+                import copy
                 subagent, subagent_state = _validate_and_prepare_state(subagent_type, description, runtime)
-                # PATCHED: Forward config to subagent
-                result = subagent.invoke(subagent_state, config=runtime.config)
+
+                # Create modified config with subagent-specific start time
+                # This gives each subagent its own time budget instead of inheriting session time
+                subagent_config = copy.deepcopy(runtime.config) if runtime.config else {}
+                if 'configurable' not in subagent_config:
+                    subagent_config['configurable'] = {}
+
+                # Set subagent start time and budget (5 min per subagent)
+                subagent_config['configurable']['__subagent_start_time_ms__'] = time.time() * 1000
+                subagent_config['configurable']['__subagent_time_budget_seconds__'] = 300
+
+                print(f"[Subagent] Launching '{subagent_type}' with 5-min budget")
+                result = subagent.invoke(subagent_state, config=subagent_config)
                 if not runtime.tool_call_id:
                     raise ValueError("Tool call ID is required for subagent invocation")
                 return _return_command_with_state_update(result, runtime.tool_call_id)
 
             async def patched_atask(description: str, subagent_type: str, runtime: ToolRuntime):
+                import time
+                import copy
                 subagent, subagent_state = _validate_and_prepare_state(subagent_type, description, runtime)
-                # PATCHED: Forward config to subagent
-                result = await subagent.ainvoke(subagent_state, config=runtime.config)
+
+                # Create modified config with subagent-specific start time
+                # This gives each subagent its own time budget instead of inheriting session time
+                subagent_config = copy.deepcopy(runtime.config) if runtime.config else {}
+                if 'configurable' not in subagent_config:
+                    subagent_config['configurable'] = {}
+
+                # Set subagent start time and budget (5 min per subagent)
+                subagent_config['configurable']['__subagent_start_time_ms__'] = time.time() * 1000
+                subagent_config['configurable']['__subagent_time_budget_seconds__'] = 300
+
+                print(f"[Subagent] Launching '{subagent_type}' with 5-min budget")
+                result = await subagent.ainvoke(subagent_state, config=subagent_config)
                 if not runtime.tool_call_id:
                     raise ValueError("Tool call ID is required for subagent invocation")
                 return _return_command_with_state_update(result, runtime.tool_call_id)

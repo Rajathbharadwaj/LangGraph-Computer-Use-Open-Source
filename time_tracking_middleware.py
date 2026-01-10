@@ -54,57 +54,85 @@ async def time_tracking_middleware(
     # Get tool name for logging
     tool_name = request.tool_call.get('name', 'unknown') if hasattr(request, 'tool_call') else 'unknown'
 
-    # Get start time - try __request_start_time_ms__ first, fallback to tracking our own
-    start_time_ms = configurable.get('__request_start_time_ms__', 0)
-    thread_id = configurable.get('thread_id', '')
+    # Check for SUBAGENT-specific timing first (takes priority)
+    # This allows subagents to have their own time budget independent of main session
+    subagent_start_time_ms = configurable.get('__subagent_start_time_ms__', 0)
+    subagent_budget = configurable.get('__subagent_time_budget_seconds__', 0)
+    is_subagent = bool(subagent_start_time_ms and subagent_budget)
 
-    if not start_time_ms:
-        # Fallback: track our own start time per thread
-        if thread_id:
-            if thread_id not in _session_start_times:
-                _session_start_times[thread_id] = time.time() * 1000
-                print(f"[TimeLimit] Started tracking time for thread {thread_id}")
-            start_time_ms = _session_start_times[thread_id]
-        else:
-            # No way to track time, pass through
-            return await handler(request)
+    if is_subagent:
+        # SUBAGENT MODE: Use subagent-specific timing
+        elapsed_ms = time.time() * 1000 - subagent_start_time_ms
+        elapsed_seconds = elapsed_ms / 1000
+        elapsed_minutes = elapsed_seconds / 60
+        time_limit = subagent_budget
+        remaining_seconds = time_limit - elapsed_seconds
+        remaining_minutes = remaining_seconds / 60
+        tier = "subagent"
 
-    # Calculate elapsed time
-    elapsed_ms = time.time() * 1000 - start_time_ms
-    elapsed_seconds = elapsed_ms / 1000
-    elapsed_minutes = elapsed_seconds / 60
+        print(f"[TimeLimit] SUBAGENT | {tool_name} | Elapsed: {elapsed_minutes:.1f}min | Remaining: {remaining_minutes:.1f}min | Budget: {subagent_budget//60}min")
+    else:
+        # SESSION MODE: Use session-level timing (original behavior)
+        start_time_ms = configurable.get('__request_start_time_ms__', 0)
+        thread_id = configurable.get('thread_id', '')
 
-    # Get user's subscription tier
-    user_id = configurable.get('user_id') or configurable.get('x-user-id')
-    tier = configurable.get('x-user-tier')  # Check if frontend passed tier
+        if not start_time_ms:
+            # Fallback: track our own start time per thread
+            if thread_id:
+                if thread_id not in _session_start_times:
+                    _session_start_times[thread_id] = time.time() * 1000
+                    print(f"[TimeLimit] Started tracking time for thread {thread_id}")
+                start_time_ms = _session_start_times[thread_id]
+            else:
+                # No way to track time, pass through
+                return await handler(request)
 
-    if not tier:
-        # Try to fetch from store
-        tier = await get_user_tier(getattr(runtime, 'store', None), user_id)
+        # Calculate elapsed time
+        elapsed_ms = time.time() * 1000 - start_time_ms
+        elapsed_seconds = elapsed_ms / 1000
+        elapsed_minutes = elapsed_seconds / 60
 
-    time_limit = TIME_LIMITS.get(tier, TIME_LIMITS["default"])
-    remaining_seconds = time_limit - elapsed_seconds
-    remaining_minutes = remaining_seconds / 60
+        # Get user's subscription tier
+        user_id = configurable.get('user_id') or configurable.get('x-user-id')
+        tier = configurable.get('x-user-tier')  # Check if frontend passed tier
 
-    # Log time status periodically (every tool call)
-    print(f"[TimeLimit] {tool_name} | Elapsed: {elapsed_minutes:.1f}min | Remaining: {remaining_minutes:.1f}min | Tier: {tier} | Limit: {time_limit//60}min")
+        if not tier:
+            # Try to fetch from store
+            tier = await get_user_tier(getattr(runtime, 'store', None), user_id)
+
+        time_limit = TIME_LIMITS.get(tier, TIME_LIMITS["default"])
+        remaining_seconds = time_limit - elapsed_seconds
+        remaining_minutes = remaining_seconds / 60
+
+        print(f"[TimeLimit] SESSION | {tool_name} | Elapsed: {elapsed_minutes:.1f}min | Remaining: {remaining_minutes:.1f}min | Tier: {tier} | Limit: {time_limit//60}min")
 
     # Check if time limit exceeded
     if elapsed_seconds >= time_limit:
-        print(f"[TimeLimit] SESSION TIME LIMIT REACHED! Elapsed: {elapsed_minutes:.1f}min, Limit: {time_limit/60:.0f}min")
+        if is_subagent:
+            print(f"[TimeLimit] SUBAGENT TIME LIMIT REACHED! Elapsed: {elapsed_minutes:.1f}min, Budget: {time_limit/60:.0f}min")
+            return ToolMessage(
+                content=f"SUBAGENT TIME BUDGET EXCEEDED\n\n"
+                       f"This subagent has used its {time_limit//60}-minute budget.\n"
+                       f"Elapsed: {elapsed_minutes:.1f} minutes\n\n"
+                       f"Complete your current action and return results to the main agent.",
+                tool_call_id=request.tool_call.get('id', '')
+            )
+        else:
+            print(f"[TimeLimit] SESSION TIME LIMIT REACHED! Elapsed: {elapsed_minutes:.1f}min, Limit: {time_limit/60:.0f}min")
 
-        # Clean up session tracking
-        if thread_id and thread_id in _session_start_times:
-            del _session_start_times[thread_id]
+            # Clean up session tracking
+            thread_id = configurable.get('thread_id', '')
+            if thread_id and thread_id in _session_start_times:
+                del _session_start_times[thread_id]
 
-        return ToolMessage(
-            content=f"SESSION TIME LIMIT REACHED\n\n"
-                   f"You have reached the maximum session duration for your {tier} plan ({time_limit//60} minutes).\n"
-                   f"Elapsed: {elapsed_minutes:.1f} minutes\n\n"
-                   f"Please wrap up immediately. This will be your final action.\n"
-                   f"Summarize what you accomplished and say goodbye to the user.",
-            tool_call_id=request.tool_call.get('id', '')
-        )
+            return ToolMessage(
+                content=f"SESSION TIME LIMIT REACHED\n\n"
+                       f"You have reached the maximum session duration for your {tier} plan ({time_limit//60} minutes).\n"
+                       f"Elapsed: {elapsed_minutes:.1f} minutes\n\n"
+                       f"Please wrap up immediately. This will be your final action.\n"
+                       f"Summarize what you accomplished and say goodbye to the user.",
+                tool_call_id=request.tool_call.get('id', '')
+            )
 
     # Execute the tool
     tool_result = await handler(request)
