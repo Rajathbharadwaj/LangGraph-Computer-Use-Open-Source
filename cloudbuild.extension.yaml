@@ -37,7 +37,7 @@ steps:
       - '--add-cloudsql-instances'
       - 'parallel-universe-prod:us-central1:parallel-universe-db'
       - '--set-env-vars'
-      - 'DATABASE_URL=postgresql://postgres:iNfiNUmMXNg17EpkkPcOezFYv5leYBiMjPu26aRq27w=@/postgres?host=/cloudsql/parallel-universe-prod:us-central1:parallel-universe-db'
+      - 'DATABASE_URL=postgresql://postgres:ParallelUniverse2024!@10.97.0.3:5432/parallel_universe_db'
 
 images:
   - 'gcr.io/$PROJECT_ID/extension-backend:$BUILD_ID'
