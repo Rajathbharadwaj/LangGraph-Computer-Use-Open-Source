@@ -61,44 +61,41 @@ def _apply_patch():
                 subagent_state["messages"] = [HumanMessage(content=description)]
                 return subagent, subagent_state
 
-            # Create patched task functions
-            def patched_task(description: str, subagent_type: str, runtime: ToolRuntime):
+            def _create_subagent_config(runtime_config, subagent_type: str):
+                """Create a config for subagent with its own time budget.
+
+                We can't use deepcopy because config may contain non-serializable
+                objects like uvloop.loop.Loop. Instead, shallow copy the config
+                and create a new configurable dict with subagent timing.
+                """
                 import time
-                import copy
-                subagent, subagent_state = _validate_and_prepare_state(subagent_type, description, runtime)
 
-                # Create modified config with subagent-specific start time
-                # This gives each subagent its own time budget instead of inheriting session time
-                subagent_config = copy.deepcopy(runtime.config) if runtime.config else {}
-                if 'configurable' not in subagent_config:
-                    subagent_config['configurable'] = {}
+                # Start with original config (shallow copy to preserve references)
+                subagent_config = dict(runtime_config) if runtime_config else {}
 
-                # Set subagent start time and budget (5 min per subagent)
-                subagent_config['configurable']['__subagent_start_time_ms__'] = time.time() * 1000
-                subagent_config['configurable']['__subagent_time_budget_seconds__'] = 300
+                # Create new configurable dict with original values plus subagent timing
+                original_configurable = subagent_config.get('configurable', {})
+                subagent_config['configurable'] = {
+                    **original_configurable,
+                    '__subagent_start_time_ms__': time.time() * 1000,
+                    '__subagent_time_budget_seconds__': 300,  # 5 min per subagent
+                }
 
                 print(f"[Subagent] Launching '{subagent_type}' with 5-min budget")
+                return subagent_config
+
+            # Create patched task functions
+            def patched_task(description: str, subagent_type: str, runtime: ToolRuntime):
+                subagent, subagent_state = _validate_and_prepare_state(subagent_type, description, runtime)
+                subagent_config = _create_subagent_config(runtime.config, subagent_type)
                 result = subagent.invoke(subagent_state, config=subagent_config)
                 if not runtime.tool_call_id:
                     raise ValueError("Tool call ID is required for subagent invocation")
                 return _return_command_with_state_update(result, runtime.tool_call_id)
 
             async def patched_atask(description: str, subagent_type: str, runtime: ToolRuntime):
-                import time
-                import copy
                 subagent, subagent_state = _validate_and_prepare_state(subagent_type, description, runtime)
-
-                # Create modified config with subagent-specific start time
-                # This gives each subagent its own time budget instead of inheriting session time
-                subagent_config = copy.deepcopy(runtime.config) if runtime.config else {}
-                if 'configurable' not in subagent_config:
-                    subagent_config['configurable'] = {}
-
-                # Set subagent start time and budget (5 min per subagent)
-                subagent_config['configurable']['__subagent_start_time_ms__'] = time.time() * 1000
-                subagent_config['configurable']['__subagent_time_budget_seconds__'] = 300
-
-                print(f"[Subagent] Launching '{subagent_type}' with 5-min budget")
+                subagent_config = _create_subagent_config(runtime.config, subagent_type)
                 result = await subagent.ainvoke(subagent_state, config=subagent_config)
                 if not runtime.tool_call_id:
                     raise ValueError("Tool call ID is required for subagent invocation")
