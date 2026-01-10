@@ -35,6 +35,55 @@ class ActivityLogger:
         self.user_id = user_id
         self.namespace = (user_id, "activity")
 
+    async def alog_activity(
+        self,
+        action_type: str,
+        status: str,
+        details: Dict[str, Any],
+        target: Optional[str] = None
+    ) -> str:
+        """
+        Log an activity to the Store (ASYNC version - use this in async context!)
+
+        Args:
+            action_type: Type of action ("post", "comment", "like", "unlike", "search", "web_search")
+            status: "success" or "failed"
+            details: Action-specific details (content, post_id, error message, etc.)
+            target: Target user or post (e.g., "@elonmusk", "post_id_123")
+
+        Returns:
+            Activity ID (key in the store)
+        """
+        timestamp = datetime.utcnow()
+        activity_id = f"{action_type}_{timestamp.strftime('%Y%m%d_%H%M%S_%f')}"
+
+        activity_data = {
+            "id": activity_id,
+            "timestamp": timestamp.isoformat(),
+            "action_type": action_type,
+            "status": status,
+            "details": details,
+            "target": target
+        }
+
+        # Save to store using ASYNC method
+        print(f"🔍 [ActivityLogger] Storing to namespace={self.namespace}, key={activity_id}")
+        print(f"🔍 [ActivityLogger] Data: {activity_data}")
+        try:
+            await self.store.aput(
+                self.namespace,
+                activity_id,
+                activity_data
+            )
+            print(f"✅ [ActivityLogger] Successfully stored to database: {action_type} - {status}")
+        except Exception as e:
+            print(f"❌ [ActivityLogger] FAILED to store activity: {e}")
+            import traceback
+            traceback.print_exc()
+            raise
+
+        return activity_id
+
     def log_activity(
         self,
         action_type: str,
@@ -43,7 +92,7 @@ class ActivityLogger:
         target: Optional[str] = None
     ) -> str:
         """
-        Log an activity to the Store
+        Log an activity to the Store (SYNC version - avoid in async context!)
 
         Args:
             action_type: Type of action ("post", "comment", "like", "unlike", "search", "web_search")
@@ -123,6 +172,55 @@ class ActivityLogger:
             details["error"] = error
 
         return self.log_activity(
+            action_type="like",
+            status=status,
+            details=details,
+            target=target
+        )
+
+    # ═══════════════════════════════════════════════════════════════
+    # ASYNC VERSIONS - Use these in async context (LangGraph tools)
+    # ═══════════════════════════════════════════════════════════════
+
+    async def alog_post(self, content: str, status: str, post_url: Optional[str] = None, error: Optional[str] = None, media_count: int = 0):
+        """Log a post creation (ASYNC)"""
+        details = {
+            "content": content[:200],
+            "post_url": post_url,
+            "media_count": media_count
+        }
+        if error:
+            details["error"] = error
+
+        return await self.alog_activity(
+            action_type="post",
+            status=status,
+            details=details
+        )
+
+    async def alog_comment(self, target: str, content: str, status: str, error: Optional[str] = None):
+        """Log a comment (ASYNC)"""
+        details = {
+            "content": content[:200],
+            "on_post": target
+        }
+        if error:
+            details["error"] = error
+
+        return await self.alog_activity(
+            action_type="comment",
+            status=status,
+            details=details,
+            target=target
+        )
+
+    async def alog_like(self, target: str, status: str, error: Optional[str] = None):
+        """Log a like (ASYNC)"""
+        details = {}
+        if error:
+            details["error"] = error
+
+        return await self.alog_activity(
             action_type="like",
             status=status,
             details=details,

@@ -21,6 +21,7 @@ import deepagents_patch  # noqa: F401 - imported for side effects
 from deepagents import create_deep_agent
 from deepagents.backends import CompositeBackend, StateBackend, StoreBackend
 from screenshot_middleware import screenshot_middleware
+from time_tracking_middleware import time_tracking_middleware
 
 # Patch StoreBackend to use x-user-id for namespace instead of assistant_id
 # This ensures files are isolated per user, not per thread's assistant_id (which is a UUID)
@@ -78,8 +79,11 @@ from langchain_community.tools import TavilySearchResults
 # Import your existing Playwright tools
 from async_playwright_tools import get_async_playwright_tools, create_post_on_x
 
-# Import Chrome Extension tools (superpowers!)
-from async_extension_tools import get_async_extension_tools
+# Extension tools disabled - require Chrome extension WebSocket connection
+# from async_extension_tools import get_async_extension_tools
+
+# Import analyze_post_tone_and_intent - it only uses Claude API, not extension!
+from async_extension_tools import create_async_extension_tools
 
 # Import workflows
 from x_growth_workflows import get_workflow_prompt, list_workflows, WORKFLOWS
@@ -160,6 +164,196 @@ def create_anthropic_web_search_tool():
         return result if result else "No search results found for this query."
 
     return anthropic_web_search
+
+
+# ============================================================================
+# RATE LIMIT TRACKING
+# ============================================================================
+
+import time
+
+class RateLimitTracker:
+    """Track Anthropic API rate limit state to avoid unnecessary calls"""
+
+    def __init__(self):
+        self.last_rate_limit_time = 0
+        self.rate_limit_count = 0
+        self.cooldown_seconds = 60  # Wait 60 seconds after rate limit
+
+    def record_rate_limit(self):
+        """Record that we hit a rate limit"""
+        self.last_rate_limit_time = time.time()
+        self.rate_limit_count += 1
+        print(f"🚫 [Rate Limit Tracker] Hit rate limit #{self.rate_limit_count}. Cooldown for {self.cooldown_seconds}s.")
+
+    def is_rate_limited(self) -> bool:
+        """Check if we're in cooldown period"""
+        if self.last_rate_limit_time == 0:
+            return False
+        elapsed = time.time() - self.last_rate_limit_time
+        if elapsed < self.cooldown_seconds:
+            remaining = int(self.cooldown_seconds - elapsed)
+            print(f"⏳ [Rate Limit Tracker] In cooldown. {remaining}s remaining.")
+            return True
+        return False
+
+    def get_status(self) -> dict:
+        """Get current rate limit status"""
+        elapsed = time.time() - self.last_rate_limit_time if self.last_rate_limit_time > 0 else 0
+        return {
+            "total_rate_limits": self.rate_limit_count,
+            "in_cooldown": self.is_rate_limited(),
+            "seconds_since_last": int(elapsed) if elapsed > 0 else None,
+            "cooldown_remaining": max(0, int(self.cooldown_seconds - elapsed)) if elapsed > 0 else 0
+        }
+
+# Global rate limit tracker
+_rate_limit_tracker = RateLimitTracker()
+
+
+# ============================================================================
+# ASYNC STYLE PROMPT BUILDER (Replaces sync XWritingStyleManager calls)
+# ============================================================================
+
+async def async_build_few_shot_prompt(
+    store,
+    user_id: str,
+    context: str,
+    content_type: str = "comment"
+) -> str:
+    """
+    Build a few-shot prompt using ASYNC store calls.
+    Replicates XWritingStyleManager.generate_few_shot_prompt() without sync calls.
+    """
+    print(f"🔧 [Async Style] Building few-shot prompt for {content_type}...")
+
+    # Step 1: Fetch writing samples (ASYNC)
+    samples = await store.asearch((user_id, "writing_samples"), limit=10)
+    sample_count = len(samples) if samples else 0
+    print(f"📝 [Async Style] Found {sample_count} writing samples")
+
+    # Step 2: Fetch style profile (ASYNC)
+    profile_item = await store.aget((user_id, "writing_style"), "profile")
+    profile_data = profile_item.value if profile_item else {}
+
+    # Default profile values if not found
+    tone = profile_data.get("tone", "casual")
+    avg_length = profile_data.get("avg_comment_length", 100) if content_type == "comment" else profile_data.get("avg_post_length", 200)
+    uses_emojis = profile_data.get("uses_emojis", False)
+    uses_questions = profile_data.get("uses_questions", False)
+    sentence_structure = profile_data.get("sentence_structure", "varied")
+    technical_terms = profile_data.get("technical_terms", [])[:5]
+
+    print(f"📊 [Async Style] Profile: tone={tone}, avg_length={avg_length}, emojis={uses_emojis}")
+
+    # Step 3: Fetch high-performing competitor posts (ASYNC)
+    competitor_posts = []
+    try:
+        competitors = await store.asearch((user_id, "competitor_profiles"), limit=30)
+        for comp_item in competitors:
+            comp_data = comp_item.value if hasattr(comp_item, 'value') else {}
+            posts = comp_data.get("posts", [])
+            for post in posts:
+                likes = post.get("likes", 0)
+                if likes >= 100:
+                    competitor_posts.append({
+                        "text": post.get("text", ""),
+                        "likes": likes,
+                        "retweets": post.get("retweets", 0),
+                        "replies": post.get("replies", 0)
+                    })
+        # Sort by engagement and take top 5
+        competitor_posts.sort(key=lambda x: x["likes"] + x["retweets"] + x["replies"], reverse=True)
+        competitor_posts = competitor_posts[:5]
+        print(f"🏆 [Async Style] Found {len(competitor_posts)} high-performing competitor posts")
+    except Exception as e:
+        print(f"⚠️ [Async Style] Could not fetch competitors: {e}")
+
+    # Step 4: Build the sophisticated few-shot prompt
+    prompt = f"""You are a Parallel Universe AI writing assistant. Your ONLY job is to write EXACTLY like this specific user.
+
+CRITICAL RULES:
+1. You MUST sound INDISTINGUISHABLE from this user
+2. Copy their EXACT tone, vocabulary, and sentence patterns
+3. Match their writing length PRECISELY (target: {avg_length} chars)
+4. Use their EXACT style - don't be generic or formal
+5. If they're casual, be casual. If they're technical, be technical.
+6. NEVER use hashtags - X's algorithm penalizes them
+
+WRITING STYLE PROFILE:
+- Tone: {tone}
+- Average length: {avg_length} characters
+- Uses emojis: {uses_emojis}
+- Uses questions: {uses_questions}
+- Sentence structure: {sentence_structure}
+- Technical terms: {', '.join(technical_terms) if technical_terms else 'N/A'}
+
+EXAMPLES OF USER'S WRITING (STUDY THESE CAREFULLY):
+"""
+
+    # Add user examples
+    for i, sample in enumerate(samples[:5], 1):
+        sample_data = sample.value if hasattr(sample, 'value') else {}
+        content = sample_data.get("content", "")[:400]
+        engagement = sample_data.get("engagement", {})
+        total_eng = sum(engagement.values()) if engagement else 0
+
+        prompt += f"\nExample {i}:"
+        prompt += f"\nUser wrote: {content}"
+        if total_eng > 0:
+            prompt += f" (Got {total_eng} engagement)"
+        prompt += "\n"
+
+    # Add competitor examples if available
+    if competitor_posts:
+        prompt += """
+---
+
+HIGH-PERFORMING POSTS IN YOUR NICHE (Learn what works):
+These are top posts from accounts in your niche with high engagement.
+"""
+        for i, post in enumerate(competitor_posts, 1):
+            engagement = post["likes"] + post["retweets"] + post["replies"]
+            prompt += f"\nHigh-Performing Example {i}:"
+            prompt += f"\nMetrics: {post['likes']} likes, {post['retweets']} retweets, {post['replies']} replies"
+            prompt += f"\nContent: {post['text'][:300]}\n"
+
+    # Add the generation instructions
+    prompt += f"""
+---
+
+NOW WRITE THE {content_type.upper()}
+Context: {context}
+
+CRITICAL INSTRUCTIONS:
+Write this {content_type} so it's IMPOSSIBLE to tell it wasn't written by the user.
+
+REPLICATE:
+1. Their vocabulary and word choice (use THEIR words)
+2. Their sentence rhythm and flow
+3. Their level of formality/casualness
+4. Their punctuation style and emoji usage
+5. Their length (around {avg_length} chars)
+
+🚨 BANNED AI-SOUNDING PHRASES (NEVER USE):
+- "Great post!" / "Love this!" / "This is amazing!"
+- "This is so underrated" / "Couldn't agree more"
+- "This resonates" / "Well said" / "Spot on"
+- Any generic compliments
+
+🚨 BANNED REPETITIVE PATTERNS (VARY YOUR STRUCTURE):
+- DON'T always start with "Wait, so..."
+- DON'T always say "is wild" or "that's wild" or "actually wild"
+- DON'T always end with a question
+- DON'T follow the same structure every time
+- Mix up: statements, observations, personal takes, specific details
+- Sometimes start with an observation, sometimes a reaction, sometimes a fact
+
+VARIETY IS KEY: Each comment should feel DIFFERENT in structure!
+
+Write ONLY the {content_type} text, nothing else:"""
+
+    return prompt
 
 
 # ============================================================================
@@ -812,23 +1006,31 @@ def get_atomic_subagents(store=None, user_id=None, model=None, model_provider="a
     current_time = datetime.now(pacific_tz)
     date_time_str = f"Current date: {current_time.strftime('%A, %B %d, %Y')} at {current_time.strftime('%I:%M %p')} Pacific Time"
 
-    # Get all Playwright tools
+    # Get all Playwright tools (work autonomously without Chrome extension)
     playwright_tools = get_async_playwright_tools()
 
-    # Get all Extension tools (superpowers!)
-    extension_tools = get_async_extension_tools()
+    # Extension tools disabled - require Chrome extension WebSocket connection
+    # extension_tools = get_async_extension_tools()
 
     # Add the Playwright posting tool (uses real keyboard typing!)
     posting_tool = create_post_on_x
 
-    # Combine all tool sets - IMPORTANT: Playwright tools come LAST to override extension tools
-    # This ensures get_post_context uses Playwright (works in scheduled mode) over extension version
-    all_tools = extension_tools + playwright_tools + [posting_tool]
+    # Combine tools - using only Playwright tools (work autonomously)
+    all_tools = playwright_tools + [posting_tool]
 
     # Create a dict for easy lookup
-    # Playwright tools override extension tools with same name (e.g., get_post_context)
     tool_dict = {tool.name: tool for tool in all_tools}
-    print(f"🔧 Tool override: get_post_context is now using Playwright version (works without extension)")
+    print(f"🔧 Loaded {len(playwright_tools)} Playwright tools + posting tool (no extension tools)")
+
+    # Add analyze_post_tone_and_intent from extension tools (it only uses Claude API, not extension!)
+    try:
+        extension_tools = create_async_extension_tools()
+        extension_tool_dict = {tool.name: tool for tool in extension_tools}
+        if "analyze_post_tone_and_intent" in extension_tool_dict:
+            tool_dict["analyze_post_tone_and_intent"] = extension_tool_dict["analyze_post_tone_and_intent"]
+            print(f"✅ Added analyze_post_tone_and_intent (Claude API tool)")
+    except Exception as e:
+        print(f"⚠️ Could not load analyze_post_tone_and_intent: {e}")
 
     # Add user data tools to tool_dict if user_id is available
     user_data_tools = []
@@ -1099,26 +1301,49 @@ Generate a {content_type} that someone would genuinely write if they found this 
                 print(f"🔍 [Validation] Starting validation for user={user_id}, content_type={content_type}, "
                       f"comment_length={len(generated_comment)}, examples_count={len(user_examples or [])}")
 
-                # Step 1: Banned phrase check (SYNC, fast)
-                banned_manager = BannedPatternsManager(store, user_id)
-                is_valid, detected_banned = banned_manager.validate_content(generated_comment)
+                # Step 1: Banned phrase check (SYNC - may fail with PGStore)
+                is_valid = True
+                detected_banned = []
+                try:
+                    print("🔍 [TRACE] Step 1: Starting BannedPatternsManager...")
+                    banned_manager = BannedPatternsManager(store, user_id)
+                    is_valid, detected_banned = banned_manager.validate_content(generated_comment)
+                    print("🔍 [TRACE] Step 1: BannedPatternsManager completed")
+                except Exception as banned_err:
+                    print(f"⚠️ [TRACE] Step 1 FAILED (sync store): {banned_err}")
+                    # Continue without banned phrase check
 
                 if not is_valid and detected_banned:
                     banned_phrases = [d.get('phrase', str(d))[:30] for d in detected_banned[:5]]
                     print(f"🚫 [Validation] BANNED_PHRASES_DETECTED count={len(detected_banned)} phrases={banned_phrases}")
                     validation_result["warnings"].append(f"Banned phrases detected: {len(detected_banned)}")
-                    # Don't remove phrases - let the scorer/grader handle improvement
                 else:
                     print(f"✅ [Validation] No banned phrases detected")
 
-                # Step 2: Style match scoring (SYNC, NLP-based)
-                style_scorer = StyleMatchScorer(store, user_id)
-                style_score = style_scorer.score_content(
-                    generated_comment,
-                    content_type=content_type,
-                    style_profile=style_profile or {},
-                    user_examples=user_examples or []
-                )
+                # Step 2: Style match scoring (SYNC - may fail with PGStore)
+                style_score = None
+                try:
+                    print("🔍 [TRACE] Step 2: Starting StyleMatchScorer...")
+                    style_scorer = StyleMatchScorer(store, user_id)
+                    style_score = style_scorer.score_content(
+                        generated_comment,
+                        content_type=content_type,
+                        style_profile=style_profile or {},
+                        user_examples=user_examples or []
+                    )
+                    print("🔍 [TRACE] Step 2: StyleMatchScorer completed")
+                except Exception as style_err:
+                    print(f"⚠️ [TRACE] Step 2 FAILED (sync store): {style_err}")
+                    # Skip validation - return comment as-is
+                    print("🔍 [TRACE] Skipping validation due to sync store error - returning comment as-is")
+                    validation_result["method"] = "skipped_sync_error"
+                    validation_result["passed"] = True
+                    return generated_comment, validation_result
+
+                # If style_score is None (shouldn't happen but safety check)
+                if style_score is None:
+                    print("⚠️ [TRACE] style_score is None - returning comment as-is")
+                    return generated_comment, validation_result
 
                 validation_result["score"] = style_score.overall_score
                 validation_result["method"] = "rule_based"
@@ -1186,6 +1411,163 @@ Generate a {content_type} that someone would genuinely write if they found this 
                 validation_result["warnings"].append(f"Validation error: {str(e)[:100]}")
                 return generated_comment, validation_result
 
+        # ═══════════════════════════════════════════════════════════════
+        # BANNED PATTERN DETECTION (used by comment refinement)
+        # ═══════════════════════════════════════════════════════════════
+        BANNED_COMMENT_PATTERNS_INLINE = [
+            ("wait, so", "Starting with 'Wait, so...'"),
+            ("wait so", "Starting with 'Wait so...'"),
+            ("is wild", "Using 'is wild'"),
+            ("that's wild", "Using 'that's wild'"),
+            ("actually wild", "Using 'actually wild'"),
+            ("this is wild", "Using 'this is wild'"),
+            ("ngl this", "Overusing 'ngl'"),
+            ("lowkey think", "Overusing 'lowkey'"),
+            ("genuinely think", "Using 'genuinely think'"),
+            ("honestly think", "Using 'honestly think'"),
+            ("can't stop thinking", "Using 'can't stop thinking'"),
+        ]
+
+        def detect_banned_comment_patterns(text: str) -> list:
+            """Detect banned repetitive patterns in comment text"""
+            text_lower = text.lower()
+            found = []
+            for pattern, description in BANNED_COMMENT_PATTERNS_INLINE:
+                if pattern in text_lower:
+                    found.append({"pattern": pattern, "description": description})
+            return found
+
+        # ═══════════════════════════════════════════════════════════════
+        # GENERATE STYLED COMMENT (without posting)
+        # Returns the generated comment for review/refinement before posting
+        # ═══════════════════════════════════════════════════════════════
+        @tool
+        async def generate_styled_comment(
+            post_content: str,
+            runtime: ToolRuntime = None
+        ) -> str:
+            """
+            Generate a comment in the user's writing style WITHOUT posting.
+
+            Args:
+                post_content: The post content to generate a comment for
+                runtime: Tool runtime context (injected by LangGraph)
+
+            Returns:
+                The generated comment text (not posted yet - use post_comment to post)
+            """
+            print(f"🎨 [GenerateComment] Generating styled comment for: {post_content[:100]}...")
+
+            # Check rate limit status before making expensive API calls
+            if _rate_limit_tracker.is_rate_limited():
+                status = _rate_limit_tracker.get_status()
+                return f"❌ IN COOLDOWN: Anthropic API rate limit recovery. Wait {status['cooldown_remaining']}s"
+
+            # Do background research
+            research_context = ""
+            try:
+                print(f"🔬 [GenerateComment] Researching topic...")
+                research_context = await do_background_research(post_content, model)
+                if research_context:
+                    print(f"✅ [GenerateComment] Got {len(research_context)} chars of research")
+            except Exception as research_error:
+                error_str = str(research_error).lower()
+                if "429" in error_str or "rate" in error_str:
+                    _rate_limit_tracker.record_rate_limit()
+                    return f"❌ RATE LIMITED during research"
+                print(f"⚠️ [GenerateComment] Research failed: {research_error}")
+
+            # Build context
+            research_section = ""
+            if research_context:
+                research_section = f"\n\n🔍 RESEARCH:\n{research_context[:1500]}"
+
+            context = f"""POST TO COMMENT ON:
+{post_content}
+{research_section}
+
+Write a comment that sounds EXACTLY like the user wrote it themselves.
+- Reference something SPECIFIC from the post
+- Match the user's tone and vocabulary
+- AVOID generic phrases like "love this", "great post"
+"""
+
+            # Generate comment using style
+            try:
+                store = runtime.store
+                few_shot_prompt = await async_build_few_shot_prompt(store, user_id, context, "comment")
+
+                if few_shot_prompt:
+                    response = model.invoke(few_shot_prompt)
+                    generated_comment = response.content.strip()
+
+                    # Quality checks
+                    if len(generated_comment) < 10:
+                        response = model.invoke(few_shot_prompt + "\n\nIMPORTANT: Make it at least 20 characters.")
+                        generated_comment = response.content.strip()
+
+                    print(f"✅ [GenerateComment] Generated: {generated_comment}")
+                    return generated_comment
+                else:
+                    return "❌ Could not build style prompt"
+
+            except Exception as e:
+                error_str = str(e).lower()
+                if "429" in error_str or "rate" in error_str:
+                    _rate_limit_tracker.record_rate_limit()
+                return f"❌ Generation failed: {str(e)[:100]}"
+
+        tool_dict["generate_styled_comment"] = generate_styled_comment
+        print(f"✅ Added generate_styled_comment tool")
+
+        # ═══════════════════════════════════════════════════════════════
+        # POST COMMENT (posts a pre-written comment)
+        # ═══════════════════════════════════════════════════════════════
+        @tool
+        async def post_comment(
+            post_identifier: str,
+            comment_text: str,
+            runtime: ToolRuntime = None
+        ) -> str:
+            """
+            Post a pre-written comment to a post. Does NOT generate - just posts.
+
+            Args:
+                post_identifier: The author name or unique text to identify the post
+                comment_text: The exact comment text to post
+                runtime: Tool runtime context (injected by LangGraph)
+
+            Returns:
+                Success/failure message
+            """
+            print(f"📝 [PostComment] Posting comment: {comment_text[:50]}...")
+
+            # Use original comment tool to post
+            result = await original_comment_tool.ainvoke({
+                "author_or_content": post_identifier,
+                "comment_text": comment_text,
+                "runtime": runtime
+            })
+
+            # Log activity
+            status = "success" if ("successfully" in result.lower() or "✅" in result) else "failed"
+            try:
+                activity_logger = get_activity_logger_from_runtime(runtime)
+                if activity_logger:
+                    await activity_logger.alog_comment(
+                        target=post_identifier,
+                        content=comment_text,
+                        status=status
+                    )
+                    print(f"✅ [PostComment] Activity logged")
+            except Exception as e:
+                print(f"⚠️ [PostComment] Activity logging failed: {e}")
+
+            return result
+
+        tool_dict["post_comment"] = post_comment
+        print(f"✅ Added post_comment tool")
+
         # Create wrapper that auto-generates content in user's style
         @tool
         async def _styled_comment_on_post(
@@ -1206,6 +1588,11 @@ Generate a {content_type} that someone would genuinely write if they found this 
             post_text = post_content_for_style or author_or_content
             research_context = ""
 
+            # Check rate limit status before making expensive API calls
+            if _rate_limit_tracker.is_rate_limited():
+                status = _rate_limit_tracker.get_status()
+                return f"❌ IN COOLDOWN: Anthropic API rate limit recovery in progress. Wait {status['cooldown_remaining']}s. Total hits: {status['total_rate_limits']}"
+
             try:
                 print(f"🔬 [Background Research] Researching topic before commenting...")
                 research_context = await do_background_research(post_text, model)
@@ -1214,6 +1601,14 @@ Generate a {content_type} that someone would genuinely write if they found this 
                 else:
                     print("⚠️ [Background Research] No research results, proceeding without")
             except Exception as research_error:
+                error_str = str(research_error).lower()
+                if "429" in error_str or "rate" in error_str or "too many" in error_str:
+                    _rate_limit_tracker.record_rate_limit()
+                    status = _rate_limit_tracker.get_status()
+                    print(f"🚫 ANTHROPIC RATE LIMIT during research phase!")
+                    print(f"   Error: {research_error}")
+                    print(f"   Status: {status}")
+                    return f"❌ RATE LIMITED during research: Anthropic API limit reached. Cooldown: {status['cooldown_remaining']}s. Total hits: {status['total_rate_limits']}. Error: {str(research_error)[:150]}"
                 print(f"⚠️ [Background Research] Research failed: {research_error}, proceeding without")
 
             # Step 1: Enhanced context with full post details + research
@@ -1244,66 +1639,48 @@ Write a comment that sounds EXACTLY like the user wrote it themselves.
 
             print(f"🎨 Auto-generating comment in your style for: {(post_content_for_style or author_or_content)[:100]}...")
 
-            generated_comment = "Interesting post!"
+            generated_comment = None  # No garbage default - must generate or fail
             few_shot_prompt = None
 
             try:
-                style_manager = XWritingStyleManager(store, user_id)
+                # ═══════════════════════════════════════════════════════════════
+                # USE ASYNC STYLE BUILDER (avoids sync PGStore issue)
+                # ═══════════════════════════════════════════════════════════════
+                store = runtime.store  # Extract store from runtime
 
-                # ✅ NEW: 3-Tier Fallback Strategy
-                samples = await store.asearch((user_id, "writing_samples"))
+                # First check if we have writing samples
+                samples = await store.asearch((user_id, "writing_samples"), limit=1)
                 sample_count = len(samples) if samples else 0
 
                 if sample_count == 0:
-                    print("⚠️  WARNING: No writing samples found! Checking alternatives...")
-
-                    # Tier 1: Try fetching user's posts on-demand
+                    print("⚠️  No writing samples found! Trying to fetch posts...")
                     try:
                         my_posts_tool = tool_dict["get_my_posts"]
                         my_posts_result = await my_posts_tool.ainvoke({"limit": 20, "runtime": runtime})
-                        print(f"📥 Attempted to fetch user posts: {my_posts_result[:200]}")
+                        print(f"📥 Fetched user posts: {my_posts_result[:200]}")
+                    except Exception as fetch_err:
+                        print(f"⚠️ Failed to fetch posts: {fetch_err}")
 
-                        # Verify samples were imported
-                        samples_after = await store.asearch((user_id, "writing_samples"))
-                        if len(samples_after) > 0:
-                            print(f"✅ Successfully imported {len(samples_after)} writing samples")
-                            few_shot_prompt = style_manager.generate_few_shot_prompt(context, "comment", num_examples=10)
-                        else:
-                            # Tier 2: No posts exist - try profile description
-                            print("⚠️  User has no posts on X. Checking profile description...")
-                            try:
-                                profile_data = await store.asearch((user_id, "social_graph"), filter={"type": "profile"})
-                                if profile_data and len(profile_data) > 0:
-                                    profile_description = profile_data[0].get("value", {}).get("description", "")
-                                    if profile_description:
-                                        print(f"✅ Using profile description for style: {profile_description[:100]}")
-                                        few_shot_prompt = style_manager.generate_style_from_description(
-                                            description=profile_description,
-                                            context=context,
-                                            content_type="comment"
-                                        )
-                                    else:
-                                        # Tier 3: Generic fallback
-                                        print("⚠️  No profile description found. Using quality generic style.")
-                                        few_shot_prompt = generate_quality_generic_prompt(context, "comment")
-                                else:
-                                    # Tier 3: Generic fallback
-                                    print("⚠️  No profile data found. Using quality generic style.")
-                                    few_shot_prompt = generate_quality_generic_prompt(context, "comment")
-                            except Exception as profile_error:
-                                print(f"❌ Failed to fetch profile: {profile_error}. Using generic style.")
-                                few_shot_prompt = generate_quality_generic_prompt(context, "comment")
-                    except Exception as fetch_error:
-                        print(f"❌ Failed to fetch posts: {fetch_error}. Using generic style.")
-                        few_shot_prompt = generate_quality_generic_prompt(context, "comment")
-                else:
-                    print(f"✅ Found {sample_count} writing samples in store")
-                    few_shot_prompt = style_manager.generate_few_shot_prompt(context, "comment", num_examples=10)
+                # Build few-shot prompt using ASYNC helper (no sync store calls!)
+                few_shot_prompt = await async_build_few_shot_prompt(store, user_id, context, "comment")
 
                 # Generate comment using the appropriate prompt
                 if few_shot_prompt:
-                    response = model.invoke(few_shot_prompt)
-                    generated_comment = response.content.strip()
+                    try:
+                        response = model.invoke(few_shot_prompt)
+                        generated_comment = response.content.strip()
+                    except Exception as gen_error:
+                        error_str = str(gen_error).lower()
+                        if "429" in error_str or "rate" in error_str or "too many" in error_str:
+                            _rate_limit_tracker.record_rate_limit()
+                            status = _rate_limit_tracker.get_status()
+                            print(f"🚫 ANTHROPIC RATE LIMIT HIT during comment generation!")
+                            print(f"   Error: {gen_error}")
+                            print(f"   Status: {status}")
+                            return f"❌ RATE LIMITED during comment generation. Cooldown: {status['cooldown_remaining']}s. Total hits: {status['total_rate_limits']}. Error: {str(gen_error)[:150]}"
+                        else:
+                            print(f"❌ Comment generation failed: {gen_error}")
+                            raise
 
                     # ✅ NEW: Quality checks
                     if len(generated_comment) < 10:
@@ -1335,7 +1712,8 @@ Write a comment that sounds EXACTLY like the user wrote it themselves.
                         # Prepare style profile for validation
                         style_profile_dict = None
                         try:
-                            profile = style_manager.get_style_profile()
+                            import asyncio
+                            profile = await asyncio.to_thread(style_manager.get_style_profile)
                             if profile:
                                 style_profile_dict = {
                                     "tone": getattr(profile, 'tone', 'casual'),
@@ -1397,9 +1775,55 @@ Write a comment that sounds EXACTLY like the user wrote it themselves.
                     print("❌ No prompt generated, using fallback")
 
             except Exception as e:
+                error_str = str(e).lower()
                 print(f"❌ Style generation failed: {e}")
                 import traceback
                 traceback.print_exc()
+
+                # Check if this is a rate limit error
+                if "429" in error_str or "rate" in error_str or "too many" in error_str or "overloaded" in error_str:
+                    _rate_limit_tracker.record_rate_limit()
+                    status = _rate_limit_tracker.get_status()
+                    return f"❌ RATE LIMITED during style generation. Cooldown: {status['cooldown_remaining']}s. Total hits: {status['total_rate_limits']}. Error: {str(e)[:150]}"
+
+                # Check if this is the sync PGStore error
+                if "synchronous" in error_str or "pgstore" in error_str or "event loop" in error_str:
+                    return f"❌ ASYNC ERROR: Store operation failed in async context. This is a code bug. Error: {str(e)[:200]}"
+
+                # Generic failure - return error, don't fall through
+                return f"❌ COMMENT GENERATION FAILED: {str(e)[:200]}"
+
+            # ═══════════════════════════════════════════════════════════════
+            # QUALITY GATE: Refuse to post garbage comments
+            # ═══════════════════════════════════════════════════════════════
+            if generated_comment is None:
+                return "❌ COMMENT GENERATION FAILED: No comment was generated. Check logs for details."
+
+            BANNED_GENERIC_COMMENTS = [
+                "interesting post!",
+                "interesting post",
+                "great post!",
+                "great post",
+                "love this!",
+                "love this",
+                "amazing!",
+                "amazing",
+                "so true!",
+                "so true",
+                "this is great",
+                "nice post",
+                "cool post",
+            ]
+
+            comment_lower = generated_comment.lower().strip()
+            if comment_lower in BANNED_GENERIC_COMMENTS or len(generated_comment) < 15:
+                error_msg = f"❌ REFUSED to post generic comment: '{generated_comment}'. Generation failed (likely rate limit). Try again later."
+                print(error_msg)
+                return error_msg
+
+            # NOTE: Refinement is now handled by the refine_comment SUBAGENT
+            # The like_and_comment subagent uses: generate_styled_comment -> refine_comment -> post_comment
+            # This _styled_comment_on_post is kept for backwards compatibility but refinement happens externally
 
             # Step 2: Post using original tool
             result = await original_comment_tool.ainvoke({
@@ -1415,7 +1839,7 @@ Write a comment that sounds EXACTLY like the user wrote it themselves.
             try:
                 activity_logger = get_activity_logger_from_runtime(runtime)
                 if activity_logger:
-                    activity_id = activity_logger.log_comment(
+                    activity_id = await activity_logger.alog_comment(
                         target=author_or_content,
                         content=generated_comment,
                         status=status,
@@ -1544,8 +1968,11 @@ Use the research above to write a post that demonstrates expertise and provides 
 
                 generated_post = post_text[:280]
                 try:
+                    import asyncio
                     style_manager = XWritingStyleManager(store, user_id)
-                    few_shot_prompt = style_manager.generate_few_shot_prompt(enhanced_topic, "post", num_examples=10)
+                    few_shot_prompt = await asyncio.to_thread(
+                        style_manager.generate_few_shot_prompt, enhanced_topic, "post", num_examples=10
+                    )
                     response = model.invoke(few_shot_prompt)
                     generated_post = response.content.strip()
                     print(f"✍️ Generated post using 10 examples: {generated_post}")
@@ -1577,7 +2004,7 @@ Use the research above to write a post that demonstrates expertise and provides 
             try:
                 activity_logger = get_activity_logger_from_runtime(runtime)
                 if activity_logger:
-                    activity_id = activity_logger.log_post(
+                    activity_id = await activity_logger.alog_post(
                         content=final_post_text,
                         status=status,
                         post_url=post_url,
@@ -1645,7 +2072,7 @@ Use the research above to write a post that demonstrates expertise and provides 
                 try:
                     activity_logger = get_activity_logger_from_runtime(runtime)
                     if activity_logger:
-                        activity_id = activity_logger.log_like(
+                        activity_id = await activity_logger.alog_like(
                             target=author_or_content,
                             status=status
                         )
@@ -1667,6 +2094,130 @@ Use the research above to write a post that demonstrates expertise and provides 
         tool_dict["create_post_on_x"] = _styled_create_post_on_x
 
         print(f"✅ Wrapped comment_on_post and create_post_on_x with AUTOMATIC style transfer!")
+
+    # ═══════════════════════════════════════════════════════════════
+    # COMMENT QUALITY REFINEMENT TOOL
+    # Subagent-powered tool to detect and fix repetitive AI patterns
+    # ═══════════════════════════════════════════════════════════════
+    BANNED_COMMENT_PATTERNS = [
+        ("wait, so", "Starting with 'Wait, so...'"),
+        ("wait so", "Starting with 'Wait so...'"),
+        ("is wild", "Using 'is wild'"),
+        ("that's wild", "Using 'that's wild'"),
+        ("actually wild", "Using 'actually wild'"),
+        ("this is wild", "Using 'this is wild'"),
+        ("ngl this", "Overusing 'ngl'"),
+        ("lowkey think", "Overusing 'lowkey'"),
+        ("genuinely think", "Using 'genuinely think'"),
+        ("honestly think", "Using 'honestly think'"),
+        ("can't stop thinking", "Using 'can't stop thinking'"),
+    ]
+
+    def detect_banned_comment_patterns(text: str) -> list:
+        """Detect banned repetitive patterns in comment text"""
+        text_lower = text.lower()
+        found = []
+        for pattern, description in BANNED_COMMENT_PATTERNS:
+            if pattern in text_lower:
+                found.append({"pattern": pattern, "description": description})
+        return found
+
+    @tool
+    async def refine_comment(
+        draft_comment: str,
+        post_context: str = "",
+        runtime=None
+    ) -> str:
+        """
+        Refine a draft comment to remove repetitive AI patterns.
+
+        Args:
+            draft_comment: The draft comment to refine
+            post_context: Context about the post being commented on
+            runtime: Runtime context (injected by LangGraph)
+
+        Returns:
+            Refined comment with varied structure, or original if no issues found
+        """
+        print(f"🔍 [RefineComment] Checking: {draft_comment[:100]}...")
+
+        # Detect banned patterns
+        detected = detect_banned_comment_patterns(draft_comment)
+
+        if not detected:
+            print(f"✅ [RefineComment] No banned patterns found, using original")
+            return draft_comment
+
+        pattern_list = [d["description"] for d in detected]
+        print(f"⚠️ [RefineComment] Detected patterns: {pattern_list}")
+
+        # Get model from runtime config
+        config = getattr(runtime, 'config', {}) if runtime else {}
+        configurable = config.get('configurable', {})
+        model_name = configurable.get('model_name', 'claude-sonnet-4-20250514')
+
+        # Create refinement model
+        try:
+            from langchain.chat_models import init_chat_model
+            refine_model = init_chat_model(model_name)
+        except Exception as e:
+            print(f"⚠️ [RefineComment] Could not init model: {e}, using original")
+            return draft_comment
+
+        # Build refinement prompt
+        refine_prompt = f"""You are a comment refinement specialist. Your job is to rewrite comments to sound MORE NATURAL and VARIED.
+
+ORIGINAL COMMENT:
+{draft_comment}
+
+POST CONTEXT:
+{post_context[:500] if post_context else "N/A"}
+
+DETECTED ISSUES:
+{chr(10).join('- ' + p for p in pattern_list)}
+
+YOUR TASK:
+Rewrite this comment with a COMPLETELY DIFFERENT structure. Keep the same meaning and tone, but use different words and sentence patterns.
+
+STRUCTURE OPTIONS (pick one that fits):
+1. Lead with specific detail: "The [specific thing] part..."
+2. Agreement + elaboration: "Yeah [specific detail] makes sense because..."
+3. Thoughtful question: "Does this mean that..."
+4. Personal connection: "This reminds me of..."
+5. Direct observation: "[Thing] is interesting because..."
+6. Contrarian take: "Hmm I wonder if [alternative view]..."
+
+RULES:
+- Keep similar length (within 20% of original)
+- Keep the same core message
+- Sound natural, not robotic
+- NO "Wait, so..." or "is wild" or similar patterns
+- Vary sentence structure
+
+Write ONLY the refined comment, nothing else:"""
+
+        try:
+            response = await refine_model.ainvoke(refine_prompt)
+            refined = response.content.strip()
+
+            # Verify refinement doesn't have same issues
+            still_detected = detect_banned_comment_patterns(refined)
+            if still_detected:
+                print(f"⚠️ [RefineComment] Refinement still has issues: {[d['pattern'] for d in still_detected]}")
+                # Try one more time with stronger instruction
+                retry_prompt = refine_prompt + f"\n\nCRITICAL: Your previous attempt still had these patterns: {[d['pattern'] for d in still_detected]}. Avoid them completely!"
+                response = await refine_model.ainvoke(retry_prompt)
+                refined = response.content.strip()
+
+            print(f"✅ [RefineComment] Refined: {refined[:100]}...")
+            return refined
+
+        except Exception as e:
+            print(f"❌ [RefineComment] Refinement failed: {e}, using original")
+            return draft_comment
+
+    tool_dict["refine_comment"] = refine_comment
+    print(f"✅ Added refine_comment tool for comment quality control")
 
     return [
         {
@@ -1794,7 +2345,7 @@ CRITICAL:
 - The screenshots are automatically captured by middleware
 - Review the before/after images carefully to confirm success""",
                         "tools": [tool_dict["like_post"]] + user_data_tools,
-            "middleware": [screenshot_middleware]
+            "middleware": [time_tracking_middleware, screenshot_middleware]
         },
         
         {
@@ -1817,7 +2368,52 @@ CRITICAL:
 
 NOTE: The comment text should already be in the user's writing style (generated by the main agent).""",
                         "tools": [tool_dict["comment_on_post"]] + user_data_tools,
-            "middleware": [screenshot_middleware]
+            "middleware": [time_tracking_middleware, screenshot_middleware]
+        },
+
+        {
+            "name": "refine_comment",
+            "description": "Check a draft comment for repetitive AI patterns (Wait so, is wild, etc) and rewrite if needed",
+            "system_prompt": """You are a comment quality specialist.
+
+Your ONLY job: Check if a comment has repetitive AI patterns and rewrite it if needed.
+
+BANNED PATTERNS TO DETECT:
+- "Wait, so..." / "Wait so..." (starting with these)
+- "is wild" / "that's wild" / "actually wild" / "this is wild"
+- "ngl this" / "lowkey think"
+- "genuinely think" / "honestly think"
+- "can't stop thinking"
+
+Steps:
+1. Read the draft comment provided
+2. Check if ANY banned patterns exist (case-insensitive)
+3. If NO banned patterns found:
+   - Return the original comment unchanged
+   - Say: "✅ No patterns detected, comment is good"
+4. If banned patterns ARE found:
+   - Rewrite the comment with a COMPLETELY DIFFERENT structure
+   - Keep the same meaning and approximate length
+   - Use one of these alternative structures:
+     * Lead with specific detail: "The [specific thing] part..."
+     * Agreement + elaboration: "Yeah [specific detail] makes sense because..."
+     * Thoughtful question: "Does this mean that..."
+     * Personal connection: "This reminds me of..."
+     * Direct observation: "[Thing] is interesting because..."
+   - Return the rewritten comment
+
+CRITICAL:
+- The refined comment MUST NOT contain any banned patterns
+- Keep the same casual tone
+- Keep similar length (within 20% of original)
+- DO NOT add hashtags or emojis unless original had them
+
+Output format:
+If clean: "✅ CLEAN: [original comment]"
+If rewritten: "🔧 REFINED: [rewritten comment]"
+""",
+            "tools": [tool_dict["refine_comment"]] if "refine_comment" in tool_dict else [],
+            "middleware": [time_tracking_middleware]
         },
 
         {
@@ -1870,22 +2466,20 @@ Steps:
    b. Call like_post with the post identifier
    c. Call get_comprehensive_context to verify like succeeded
 
-   d. WRITING STYLE AUTO-LOADING:
-      - comment_on_post will automatically check if writing samples are loaded
-      - If samples missing, it will fetch them automatically using get_my_posts
-      - If no posts exist on your profile, it will use your profile description for style
-      - If neither exist, it will generate high-quality contextual comments
-      - You don't need to do anything - just call comment_on_post normally
+   d. GENERATE COMMENT (3-step process):
+      Step 1: Call generate_styled_comment with the post content
+              → This generates a draft comment in user's style
 
-   e. WRITE YOUR COMMENT USING RESEARCH:
-      - Reference specific facts/stats from your web research
-      - Add insights that show you know the topic deeply
-      - Combine research with the post's specific points
-      - Keep it casual and conversational (not essay-like)
+      Step 2: Call refine_comment subagent with the draft
+              → This checks for "Wait so", "is wild", etc. and rewrites if needed
+              → Returns "✅ CLEAN: [comment]" or "🔧 REFINED: [comment]"
 
-   f. Call comment_on_post with your informed, researched comment
-   g. Call get_comprehensive_context to verify comment appeared
-   h. Return success with analysis summary
+      Step 3: Extract the final comment and call post_comment
+              → Parse the comment from refine_comment output
+              → Call post_comment(post_identifier, final_comment)
+
+   e. Call get_comprehensive_context to verify comment appeared
+   f. Return success with analysis summary
 
 🚨🚨🚨 BANNED AI PHRASES - NEVER USE THESE IN ANY COMMENT 🚨🚨🚨
 These phrases INSTANTLY reveal AI wrote the comment. NEVER use them:
@@ -1960,18 +2554,23 @@ ENGAGEMENT POLICY (BE LENIENT):
 - promotion intent? Still engage if it's genuine work (not corporate ads)
 - When in doubt: COMMENT. We grow by engaging, not by being picky.
 
-NOTE: The comment_on_post tool AUTOMATICALLY generates comments in the user's writing style.
-NOTE: If you analyzed a YouTube video, the summary is already in your context - just reference it naturally in the comment.""",
+NOTE: If you analyzed a YouTube video, the summary is already in your context - just reference it naturally in the comment.
+
+🔧 COMMENT QUALITY (3-STEP SUBAGENT FLOW):
+1. generate_styled_comment → gets draft in user's style
+2. refine_comment subagent → checks/rewrites banned patterns
+3. post_comment → posts the final refined comment""",
             "tools": [
                 tool_dict["get_post_context"],
                 tool_dict["analyze_post_tone_and_intent"],
                 create_anthropic_web_search_tool(),  # 🔍 Web research for informed comments
                 analyze_youtube_transcript,  # For analyzing YouTube videos in posts
                 tool_dict["like_post"],
-                tool_dict["comment_on_post"],
+                tool_dict["generate_styled_comment"],  # Step 1: Generate draft
+                tool_dict["post_comment"],  # Step 3: Post refined comment
                 tool_dict["get_comprehensive_context"]
             ],
-            "middleware": [screenshot_middleware]
+            "middleware": [time_tracking_middleware, screenshot_middleware]
         },
 
         {
@@ -2022,7 +2621,7 @@ You: Screenshot → Call create_post_on_x(post_text="Check this out!", media_url
 
 That's it. ONE post only.""",
             "tools": [tool_dict["create_post_on_x"], tool_dict["get_comprehensive_context"]] + ([native_web_search_tool] if native_web_search_tool else []),
-            "middleware": [screenshot_middleware]
+            "middleware": [time_tracking_middleware, screenshot_middleware]
         },
 
         {
@@ -2079,7 +2678,7 @@ QUALITY CHECK:
 
 That's it. Create the full thread, then post.""",
             "tools": [tool_dict["create_post_on_x"], tool_dict["navigate_to_url"], tool_dict["click_at_coordinates"], tool_dict["type_text"], tool_dict["get_comprehensive_context"]],
-            "middleware": [screenshot_middleware]
+            "middleware": [time_tracking_middleware, screenshot_middleware]
         },
 
         {
@@ -2120,7 +2719,7 @@ GOOD QUOTE TWEET PATTERNS:
 
 Write in the USER'S exact writing style - casual, specific, brief.""",
             "tools": [tool_dict["create_post_on_x"], tool_dict["navigate_to_url"], tool_dict["click_at_coordinates"], tool_dict["type_text"], tool_dict["get_comprehensive_context"]],
-            "middleware": [screenshot_middleware]
+            "middleware": [time_tracking_middleware, screenshot_middleware]
         },
 
         {

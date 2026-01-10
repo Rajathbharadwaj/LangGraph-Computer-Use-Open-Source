@@ -1,3 +1,4 @@
+# Build timestamp: 1767874394
 #!/usr/bin/env python3
 """
 Async Playwright CUA Tools for LangGraph ASGI Servers
@@ -2113,7 +2114,816 @@ SCREENSHOT_DATA: {screenshot_b64}
                 
         except Exception as e:
             return f"Like by keywords failed: {str(e)}"
-    
+
+    # =========================================================================
+    # NEW TOOLS - Ported from extension tools (use DOM queries via Playwright)
+    # =========================================================================
+
+    @tool
+    async def get_post_url(post_identifier: str, runtime: ToolRuntime) -> str:
+        """
+        Extract the URL of a specific post to navigate to its detail page.
+
+        This enables viewing the full thread including all replies, which is critical
+        for detecting YouTube links that might be in thread conversations.
+
+        Args:
+            post_identifier: Author name/handle or unique post text to identify the post
+
+        Returns:
+            Post URL (e.g., https://x.com/username/status/1234567890) or error message
+        """
+        try:
+            client = _get_client(runtime)
+
+            # Escape quotes in identifier for JavaScript
+            safe_identifier = post_identifier.replace("'", "\\'").replace('"', '\\"')
+
+            script = f"""(() => {{
+                const posts = document.querySelectorAll('article');
+                const identifier = "{safe_identifier}".toLowerCase();
+
+                for (const post of posts) {{
+                    const text = post.innerText.toLowerCase();
+                    if (text.includes(identifier)) {{
+                        // Find the status link (contains /status/)
+                        const links = post.querySelectorAll('a[href*="/status/"]');
+                        for (const link of links) {{
+                            const href = link.href;
+                            if (href && href.includes('/status/')) {{
+                                return href;
+                            }}
+                        }}
+                    }}
+                }}
+                return null;
+            }})()"""
+
+            result = await client._request("POST", "/playwright/evaluate", {"script": script})
+            url = result.get("result")
+
+            if url:
+                print(f"✅ [Playwright] Found post URL: {url}")
+                return f"✅ Post URL extracted: {url}"
+            return f"❌ Could not find post matching '{post_identifier}' on current page"
+
+        except Exception as e:
+            return f"❌ Error extracting post URL: {str(e)}"
+
+    @tool
+    async def get_trending_topics(runtime: ToolRuntime) -> str:
+        """
+        Get current trending topics from X sidebar.
+
+        Returns trending hashtags and topics with volume information.
+        Use this to find opportunities for engagement!
+
+        Returns:
+            List of trending topics with names and volumes
+        """
+        try:
+            client = _get_client(runtime)
+
+            script = """(() => {
+                const trends = [];
+
+                // Try multiple selectors for trending section
+                const trendSelectors = [
+                    '[data-testid="trend"]',
+                    '[aria-label*="Timeline: Trending"]',
+                    '[aria-label*="Trending"] > div > div'
+                ];
+
+                let trendItems = [];
+                for (const selector of trendSelectors) {
+                    trendItems = document.querySelectorAll(selector);
+                    if (trendItems.length > 0) break;
+                }
+
+                trendItems.forEach((item, i) => {
+                    if (i < 10) {
+                        const textContent = item.innerText || '';
+                        const lines = textContent.split('\\n').filter(l => l.trim());
+
+                        // Usually format is: Category, Topic Name, Volume
+                        const name = lines.find(l => l.startsWith('#') || (l.length > 2 && !l.includes('·'))) || lines[0] || '';
+                        const volume = lines.find(l => l.includes('posts') || l.includes('K') || l.includes('M')) || '';
+
+                        if (name && name.length > 1) {
+                            trends.push({
+                                name: name.trim(),
+                                volume: volume.trim(),
+                                rank: trends.length + 1
+                            });
+                        }
+                    }
+                });
+
+                return trends;
+            })()"""
+
+            result = await client._request("POST", "/playwright/evaluate", {"script": script})
+            trends = result.get("result", [])
+
+            if trends and len(trends) > 0:
+                output = "🔥 Trending Now:\n"
+                for t in trends:
+                    output += f"\n{t['rank']}. {t['name']}"
+                    if t.get('volume'):
+                        output += f"\n   Volume: {t['volume']}"
+                output += "\n\nUse these topics to find engagement opportunities!"
+                return output
+            return "❌ Could not find trending topics. Navigate to X home page first."
+
+        except Exception as e:
+            return f"❌ Error getting trending topics: {str(e)}"
+
+    @tool
+    async def check_session_health(runtime: ToolRuntime) -> str:
+        """
+        Check if browser session is healthy and logged in.
+
+        Monitors for session expiration, login issues, or account restrictions.
+        Use this periodically to ensure agent stays authenticated!
+
+        Returns:
+            Session health status including login state and any warnings
+        """
+        try:
+            client = _get_client(runtime)
+
+            script = """(() => {
+                const health = {
+                    isLoggedIn: false,
+                    username: null,
+                    hasErrors: false,
+                    errorMessage: null,
+                    accountStatus: 'unknown'
+                };
+
+                // Check for username in profile link (indicates logged in)
+                const userLink = document.querySelector('[data-testid="AppTabBar_Profile_Link"]');
+                if (userLink) {
+                    health.isLoggedIn = true;
+                    const href = userLink.getAttribute('href');
+                    health.username = href ? href.replace('/', '') : null;
+                    health.accountStatus = 'active';
+                }
+
+                // Alternative: Check for account switcher
+                const accountSwitcher = document.querySelector('[data-testid="SideNav_AccountSwitcher_Button"]');
+                if (accountSwitcher && !health.isLoggedIn) {
+                    health.isLoggedIn = true;
+                    const nameEl = accountSwitcher.querySelector('span');
+                    if (nameEl) health.username = nameEl.innerText;
+                }
+
+                // Check for login button (indicates logged out)
+                const loginBtn = document.querySelector('[data-testid="loginButton"]');
+                if (loginBtn) {
+                    health.isLoggedIn = false;
+                    health.accountStatus = 'logged_out';
+                }
+
+                // Check for error/warning messages
+                const pageText = document.body.innerText.toLowerCase();
+                const warningPhrases = ['suspended', 'locked', 'restricted', 'verify your'];
+                for (const phrase of warningPhrases) {
+                    if (pageText.includes(phrase)) {
+                        health.hasErrors = true;
+                        health.errorMessage = phrase;
+                        health.accountStatus = 'warning';
+                        break;
+                    }
+                }
+
+                return health;
+            })()"""
+
+            result = await client._request("POST", "/playwright/evaluate", {"script": script})
+            health = result.get("result", {})
+
+            if health.get("isLoggedIn"):
+                status = f"""✅ Session Healthy
+Login status: Logged in
+Account: @{health.get('username', 'Unknown')}
+Account status: {health.get('accountStatus', 'active').title()}"""
+                if health.get('hasErrors'):
+                    status += f"\n⚠️ Warning detected: {health.get('errorMessage')}"
+                status += "\n\nSafe to continue operations! 🟢"
+                return status
+            else:
+                return f"""⚠️ Session Issues Detected!
+Login status: Not logged in
+Account status: {health.get('accountStatus', 'unknown').title()}
+{f"Warning: {health.get('errorMessage')}" if health.get('hasErrors') else ""}
+
+🛑 Action needed: Re-authenticate"""
+
+        except Exception as e:
+            return f"❌ Error checking session health: {str(e)}"
+
+    @tool
+    async def check_rate_limit_status(runtime: ToolRuntime) -> str:
+        """
+        Check if X is showing rate limit warnings.
+
+        Detects rate limit indicators in the UI to prevent getting banned.
+        Use this BEFORE performing actions to stay safe!
+
+        Returns:
+            Rate limit status and recommendations
+        """
+        try:
+            client = _get_client(runtime)
+
+            script = """(() => {
+                const status = {
+                    isLimited: false,
+                    message: null,
+                    indicators: []
+                };
+
+                // Check for rate limit error messages in page text
+                const pageText = document.body.innerText.toLowerCase();
+                const limitPhrases = [
+                    'rate limit',
+                    'too many requests',
+                    'try again later',
+                    'you are being rate limited',
+                    'slow down',
+                    'temporarily limited'
+                ];
+
+                for (const phrase of limitPhrases) {
+                    if (pageText.includes(phrase)) {
+                        status.isLimited = true;
+                        status.message = phrase;
+                        status.indicators.push('text: ' + phrase);
+                        break;
+                    }
+                }
+
+                // Check for disabled action buttons
+                const buttons = document.querySelectorAll('[role="button"]');
+                let disabledCount = 0;
+                buttons.forEach(btn => {
+                    if (btn.getAttribute('aria-disabled') === 'true' || btn.disabled) {
+                        disabledCount++;
+                    }
+                });
+                if (disabledCount > 5) {
+                    status.indicators.push('multiple disabled buttons');
+                }
+
+                // Check for error toasts/dialogs
+                const errorDialogs = document.querySelectorAll('[role="alert"], [data-testid="toast"]');
+                errorDialogs.forEach(dialog => {
+                    const text = dialog.innerText.toLowerCase();
+                    if (text.includes('limit') || text.includes('error')) {
+                        status.isLimited = true;
+                        status.indicators.push('error dialog');
+                    }
+                });
+
+                return status;
+            })()"""
+
+            result = await client._request("POST", "/playwright/evaluate", {"script": script})
+            status = result.get("result", {})
+
+            if status.get("isLimited"):
+                indicators = ', '.join(status.get('indicators', ['unknown']))
+                return f"""⚠️ RATE LIMITED!
+Status: Active rate limit detected
+Indicator: {status.get('message', 'Rate limit warning')}
+Detection: {indicators}
+
+🛑 Recommendation: Wait 5-15 minutes before retrying"""
+            return """✅ No Rate Limits Detected
+Status: CLEAR - Safe to engage
+
+Proceed with actions 🟢"""
+
+        except Exception as e:
+            return f"❌ Error checking rate limit: {str(e)}"
+
+    @tool
+    async def find_high_engagement_posts(topic: str = "", limit: int = 5, runtime: ToolRuntime = None) -> str:
+        """
+        Find high-engagement posts on the current page, optionally filtered by topic.
+
+        Searches visible posts and ranks them by engagement (likes, replies, reposts).
+        Use this to find the BEST posts to engage with!
+
+        Args:
+            topic: Optional topic/keyword to filter posts (empty = all posts)
+            limit: Number of posts to return (default 5)
+
+        Returns:
+            Ranked list of high-engagement posts with metrics
+        """
+        try:
+            client = _get_client(runtime)
+
+            # Escape topic for JavaScript
+            safe_topic = topic.replace("'", "\\'").replace('"', '\\"') if topic else ""
+
+            script = f"""(() => {{
+                const posts = [];
+                const topic = "{safe_topic}".toLowerCase();
+                const articles = document.querySelectorAll('article');
+
+                articles.forEach(article => {{
+                    try {{
+                        const text = article.innerText || '';
+
+                        // Filter by topic if provided
+                        if (topic && !text.toLowerCase().includes(topic)) return;
+
+                        // Extract author
+                        const authorEl = article.querySelector('[data-testid="User-Name"]');
+                        const author = authorEl ? authorEl.innerText.split('\\n')[0] : 'Unknown';
+
+                        // Extract handle
+                        const handleEl = article.querySelector('a[href^="/"][role="link"]');
+                        const handle = handleEl ? handleEl.getAttribute('href')?.replace('/', '') : '';
+
+                        // Parse engagement metrics from aria-labels or text
+                        let likes = 0, replies = 0, reposts = 0;
+
+                        const likeBtn = article.querySelector('[data-testid="like"], [data-testid="unlike"]');
+                        const replyBtn = article.querySelector('[data-testid="reply"]');
+                        const retweetBtn = article.querySelector('[data-testid="retweet"]');
+
+                        if (likeBtn) {{
+                            const label = likeBtn.getAttribute('aria-label') || '';
+                            const match = label.match(/(\\d+)/);
+                            likes = match ? parseInt(match[1]) : 0;
+                        }}
+                        if (replyBtn) {{
+                            const label = replyBtn.getAttribute('aria-label') || '';
+                            const match = label.match(/(\\d+)/);
+                            replies = match ? parseInt(match[1]) : 0;
+                        }}
+                        if (retweetBtn) {{
+                            const label = retweetBtn.getAttribute('aria-label') || '';
+                            const match = label.match(/(\\d+)/);
+                            reposts = match ? parseInt(match[1]) : 0;
+                        }}
+
+                        // Get post URL
+                        const timeLink = article.querySelector('time')?.closest('a');
+                        const url = timeLink?.href || '';
+
+                        // Calculate engagement score (weighted)
+                        const engagement = likes + (replies * 2) + (reposts * 3);
+
+                        if (text.length > 20) {{ // Filter out tiny/empty posts
+                            posts.push({{
+                                author: author.substring(0, 50),
+                                handle: handle,
+                                text: text.substring(0, 200).replace(/\\n/g, ' '),
+                                likes,
+                                replies,
+                                reposts,
+                                engagement,
+                                url
+                            }});
+                        }}
+                    }} catch(e) {{}}
+                }});
+
+                // Sort by engagement score descending
+                posts.sort((a, b) => b.engagement - a.engagement);
+                return posts.slice(0, {limit});
+            }})()"""
+
+            result = await client._request("POST", "/playwright/evaluate", {"script": script})
+            posts = result.get("result", [])
+
+            if posts and len(posts) > 0:
+                header = f"🎯 High-Engagement Posts"
+                if topic:
+                    header += f" on '{topic}'"
+                output = header + ":\n"
+
+                for i, p in enumerate(posts, 1):
+                    output += f"\n{i}. {p.get('author', 'Unknown')}"
+                    if p.get('handle'):
+                        output += f" (@{p['handle']})"
+                    output += f"\n   \"{p.get('text', '')[:100]}...\""
+                    output += f"\n   ❤️ {p.get('likes', 0)} | 💬 {p.get('replies', 0)} | 🔄 {p.get('reposts', 0)}"
+                    if p.get('url'):
+                        output += f"\n   URL: {p['url']}"
+                    output += "\n"
+
+                output += "\nThese posts have the highest engagement potential!"
+                return output
+
+            msg = "❌ No posts found on current page"
+            if topic:
+                msg += f" matching '{topic}'"
+            return msg
+
+        except Exception as e:
+            return f"❌ Error finding high engagement posts: {str(e)}"
+
+    @tool
+    async def extract_post_engagement_data(post_identifier: str, runtime: ToolRuntime) -> str:
+        """
+        Extract engagement data from a post using Playwright DOM inspection.
+
+        Args:
+            post_identifier: Author name or content snippet to identify the post
+
+        Returns engagement metrics:
+        - Likes, Replies, Reposts, Views (if visible)
+        - Engagement rate estimate
+        - Post URL
+
+        Example: extract_post_engagement_data("akshay dots-ocr")
+        """
+        try:
+            client = _get_client(runtime)
+
+            # Escape the identifier for JavaScript
+            safe_identifier = post_identifier.replace("'", "\\'").replace('"', '\\"')
+
+            script = f"""(() => {{
+                const posts = document.querySelectorAll('article');
+                const identifier = "{safe_identifier}".toLowerCase();
+
+                for (const article of posts) {{
+                    const text = article.innerText.toLowerCase();
+                    if (!text.includes(identifier)) continue;
+
+                    // Found matching post - extract data
+                    const data = {{
+                        found: true,
+                        author: null,
+                        text: null,
+                        likes: 0,
+                        replies: 0,
+                        reposts: 0,
+                        views: 0,
+                        url: null
+                    }};
+
+                    // Get author
+                    const authorEl = article.querySelector('[data-testid="User-Name"] a');
+                    if (authorEl) data.author = authorEl.innerText;
+
+                    // Get post text (first few lines)
+                    const tweetText = article.querySelector('[data-testid="tweetText"]');
+                    if (tweetText) data.text = tweetText.innerText.substring(0, 200);
+
+                    // Get post URL
+                    const timeLink = article.querySelector('time')?.closest('a');
+                    if (timeLink) data.url = timeLink.href;
+
+                    // Extract metrics from group containers
+                    const groups = article.querySelectorAll('[role="group"]');
+                    groups.forEach(group => {{
+                        const buttons = group.querySelectorAll('[role="button"]');
+                        buttons.forEach(btn => {{
+                            const testId = btn.getAttribute('data-testid') || '';
+                            const countEl = btn.querySelector('[data-testid="app-text-transition-container"]');
+                            const count = countEl ? parseInt(countEl.innerText.replace(/[^0-9]/g, '')) || 0 : 0;
+
+                            if (testId.includes('like')) data.likes = count;
+                            else if (testId.includes('reply')) data.replies = count;
+                            else if (testId.includes('retweet')) data.reposts = count;
+                        }});
+                    }});
+
+                    // Try to get views (analytics icon)
+                    const viewsEl = article.querySelector('a[href*="/analytics"]');
+                    if (viewsEl) {{
+                        const viewText = viewsEl.innerText.replace(/[^0-9KMB.]/gi, '');
+                        if (viewText) {{
+                            let views = parseFloat(viewText) || 0;
+                            if (viewText.toUpperCase().includes('K')) views *= 1000;
+                            else if (viewText.toUpperCase().includes('M')) views *= 1000000;
+                            data.views = Math.round(views);
+                        }}
+                    }}
+
+                    return data;
+                }}
+
+                return {{ found: false }};
+            }})()"""
+
+            result = await client._request("POST", "/playwright/evaluate", {"script": script})
+            data = result.get("result", {})
+
+            if data.get("found"):
+                # Calculate engagement rate if views available
+                total_engagement = data.get('likes', 0) + data.get('replies', 0) + data.get('reposts', 0)
+                views = data.get('views', 0)
+                engagement_rate = round((total_engagement / views * 100), 2) if views > 0 else "N/A"
+
+                return f"""✅ Engagement Data Extracted:
+Post: {post_identifier}
+Author: {data.get('author', 'Unknown')}
+Content: {data.get('text', 'N/A')[:100]}...
+
+📊 Metrics:
+❤️ Likes: {data.get('likes', 0)}
+💬 Replies: {data.get('replies', 0)}
+🔄 Reposts: {data.get('reposts', 0)}
+👁️ Views: {data.get('views', 0) if data.get('views') else 'Hidden'}
+📈 Engagement Rate: {engagement_rate}{'%' if isinstance(engagement_rate, float) else ''}
+
+🔗 URL: {data.get('url', 'N/A')}
+
+Note: Some metrics (impressions, demographics) require X Analytics access."""
+            else:
+                return f"❌ Could not find post matching '{post_identifier}'. Make sure the post is visible on the current page."
+
+        except Exception as e:
+            return f"❌ Error extracting engagement data: {str(e)}"
+
+    @tool
+    async def extract_account_insights(username: str, runtime: ToolRuntime) -> str:
+        """
+        Extract account insights from a user's profile page.
+
+        Args:
+            username: X username (without @)
+
+        Returns visible metrics:
+        - Follower/following counts
+        - Bio information
+        - Recent post activity
+        - Join date
+
+        Use this to understand an account before engaging!
+        """
+        try:
+            client = _get_client(runtime)
+
+            # Clean username
+            clean_username = username.replace("@", "").strip()
+
+            script = f"""(() => {{
+                const data = {{
+                    found: false,
+                    username: "{clean_username}",
+                    displayName: null,
+                    bio: null,
+                    followers: null,
+                    following: null,
+                    postsCount: null,
+                    joinDate: null,
+                    verified: false,
+                    isPrivate: false
+                }};
+
+                // Check if we're on a profile page
+                const profileHeader = document.querySelector('[data-testid="UserName"]');
+                const profileUrl = window.location.href;
+
+                // If on profile page, extract data
+                if (profileHeader || profileUrl.includes('/{clean_username}')) {{
+                    data.found = true;
+
+                    // Display name
+                    const nameEl = document.querySelector('[data-testid="UserName"] span');
+                    if (nameEl) data.displayName = nameEl.innerText;
+
+                    // Bio
+                    const bioEl = document.querySelector('[data-testid="UserDescription"]');
+                    if (bioEl) data.bio = bioEl.innerText;
+
+                    // Followers/Following
+                    const links = document.querySelectorAll('a[href*="/followers"], a[href*="/following"]');
+                    links.forEach(link => {{
+                        const text = link.innerText;
+                        const count = text.match(/([\\d,.]+[KMB]?)/i);
+                        if (count) {{
+                            const countStr = count[1].toUpperCase();
+                            let num = parseFloat(countStr.replace(/,/g, ''));
+                            if (countStr.includes('K')) num *= 1000;
+                            else if (countStr.includes('M')) num *= 1000000;
+                            else if (countStr.includes('B')) num *= 1000000000;
+
+                            if (link.href.includes('/followers')) data.followers = Math.round(num);
+                            else if (link.href.includes('/following')) data.following = Math.round(num);
+                        }}
+                    }});
+
+                    // Verified badge
+                    const verifiedBadge = document.querySelector('[data-testid="icon-verified"]');
+                    data.verified = !!verifiedBadge;
+
+                    // Join date
+                    const joinEl = document.querySelector('[data-testid="UserJoinDate"]');
+                    if (joinEl) data.joinDate = joinEl.innerText.replace('Joined ', '');
+
+                    // Private account
+                    const privateEl = document.querySelector('[data-testid="icon-lock"]');
+                    data.isPrivate = !!privateEl;
+                }}
+
+                return data;
+            }})()"""
+
+            result = await client._request("POST", "/playwright/evaluate", {"script": script})
+            data = result.get("result", {})
+
+            if data.get("found"):
+                # Calculate engagement estimate
+                followers = data.get('followers', 0) or 0
+                engagement_note = "Low activity" if followers < 100 else ("Active" if followers < 10000 else "High reach")
+
+                return f"""📈 Account Insights: @{clean_username}
+
+PROFILE:
+- Display Name: {data.get('displayName', 'Unknown')}
+- Verified: {'✅ Yes' if data.get('verified') else '❌ No'}
+- Private: {'🔒 Yes' if data.get('isPrivate') else '🌐 Public'}
+- Joined: {data.get('joinDate', 'Unknown')}
+
+STATS:
+- Followers: {data.get('followers', 'N/A'):,}
+- Following: {data.get('following', 'N/A'):,}
+- Activity Level: {engagement_note}
+
+BIO:
+{data.get('bio', 'No bio available')[:200]}
+
+RECOMMENDATION:
+- Worth engaging: {'✅ Yes - active public account' if not data.get('isPrivate') and followers > 50 else '⚠️ Review carefully'}
+
+Note: Navigate to /{clean_username} profile page for more detailed insights."""
+            else:
+                return f"""⚠️ Profile data not found for @{clean_username}.
+
+To get insights, first navigate to the profile:
+- Run: navigate_to_url("https://x.com/{clean_username}")
+- Then run: extract_account_insights("{clean_username}")"""
+
+        except Exception as e:
+            return f"❌ Error extracting account insights: {str(e)}"
+
+    @tool
+    async def human_like_click(element_description: str, runtime: ToolRuntime) -> str:
+        """
+        Click an element with realistic timing (adds slight delay).
+        Falls back to standard click via Playwright.
+
+        Args:
+            element_description: Description of element to click
+
+        Returns click result with realistic timing behavior.
+        """
+        try:
+            client = _get_client(runtime)
+
+            # Try to find and click the element using Playwright's element finding
+            script = f"""(async () => {{
+                const description = "{element_description.replace('"', '\\"')}".toLowerCase();
+
+                // Find matching element
+                const allElements = document.querySelectorAll('button, a, [role="button"], [data-testid]');
+                let targetElement = null;
+
+                for (const el of allElements) {{
+                    const text = (el.innerText || el.getAttribute('aria-label') || el.getAttribute('data-testid') || '').toLowerCase();
+                    if (text.includes(description)) {{
+                        targetElement = el;
+                        break;
+                    }}
+                }}
+
+                if (targetElement) {{
+                    // Add small random delay for realism
+                    await new Promise(r => setTimeout(r, 50 + Math.random() * 100));
+                    targetElement.click();
+                    return {{ success: true, element: targetElement.tagName }};
+                }}
+
+                return {{ success: false, error: 'Element not found' }};
+            }})()"""
+
+            result = await client._request("POST", "/playwright/evaluate", {"script": script})
+            data = result.get("result", {})
+
+            if data.get("success"):
+                return f"""✅ Clicked element matching '{element_description}'
+Element type: {data.get('element', 'Unknown')}
+Timing: Realistic delay applied 🎯"""
+            else:
+                return f"""❌ Could not find element matching '{element_description}'
+Try using click_at_coordinates or click_button_by_text for more precise targeting."""
+
+        except Exception as e:
+            return f"❌ Error performing human-like click: {str(e)}"
+
+    @tool
+    async def monitor_action_result(action_type: str, timeout_seconds: int = 5, runtime: ToolRuntime = None) -> str:
+        """
+        Check if a recent action succeeded by monitoring the page state.
+
+        Args:
+            action_type: Type of action (like, comment, follow, post)
+            timeout_seconds: How long to wait for result
+
+        Returns action success/failure status.
+        """
+        try:
+            client = _get_client(runtime)
+
+            # Check for common success/failure indicators
+            script = f"""(() => {{
+                const actionType = "{action_type}".toLowerCase();
+                const status = {{
+                    success: false,
+                    message: null,
+                    indicators: []
+                }};
+
+                // Check for error toasts/messages
+                const errorPatterns = ['something went wrong', 'error', 'failed', 'rate limit', 'try again'];
+                const successPatterns = ['posted', 'liked', 'followed', 'sent', 'success'];
+
+                const pageText = document.body.innerText.toLowerCase();
+
+                // Check for error indicators
+                for (const pattern of errorPatterns) {{
+                    if (pageText.includes(pattern)) {{
+                        status.success = false;
+                        status.message = 'Error detected: ' + pattern;
+                        status.indicators.push(pattern);
+                        return status;
+                    }}
+                }}
+
+                // Check action-specific success indicators
+                if (actionType === 'like') {{
+                    const likedBtn = document.querySelector('[data-testid="unlike"]');
+                    if (likedBtn) {{
+                        status.success = true;
+                        status.message = 'Like action succeeded - unlike button visible';
+                    }}
+                }} else if (actionType === 'comment' || actionType === 'reply') {{
+                    // Check if comment field is cleared or success message
+                    const replyField = document.querySelector('[data-testid="tweetTextarea_0"]');
+                    if (replyField && !replyField.textContent) {{
+                        status.success = true;
+                        status.message = 'Comment likely posted - reply field cleared';
+                    }}
+                }} else if (actionType === 'follow') {{
+                    const followingBtn = document.querySelector('[data-testid="userActions"]');
+                    if (followingBtn && followingBtn.innerText.toLowerCase().includes('following')) {{
+                        status.success = true;
+                        status.message = 'Follow action succeeded';
+                    }}
+                }} else if (actionType === 'post') {{
+                    // Check for tweet compose closing or success toast
+                    const composeBox = document.querySelector('[data-testid="tweetTextarea_0"]');
+                    if (!composeBox) {{
+                        status.success = true;
+                        status.message = 'Post likely succeeded - compose box closed';
+                    }}
+                }}
+
+                // Generic success check
+                for (const pattern of successPatterns) {{
+                    if (pageText.includes(pattern)) {{
+                        status.success = true;
+                        status.indicators.push(pattern);
+                    }}
+                }}
+
+                if (!status.message && status.success) {{
+                    status.message = 'Action appears successful';
+                }} else if (!status.message) {{
+                    status.message = 'No clear success or failure indicators found';
+                }}
+
+                return status;
+            }})()"""
+
+            result = await client._request("POST", "/playwright/evaluate", {"script": script})
+            status = result.get("result", {})
+
+            if status.get("success"):
+                return f"""✅ Action Monitor: {action_type.upper()} SUCCEEDED
+{status.get('message', 'Action completed')}
+Indicators: {', '.join(status.get('indicators', [])) or 'Standard success'}"""
+            else:
+                return f"""⚠️ Action Monitor: {action_type.upper()} - UNCERTAIN
+{status.get('message', 'Could not confirm action result')}
+Indicators found: {', '.join(status.get('indicators', [])) or 'None'}
+
+Recommendation: Check the page visually or retry the action."""
+
+        except Exception as e:
+            return f"❌ Error monitoring action result: {str(e)}"
+
     # Return the @tool decorated functions
     return [
         take_browser_screenshot,
@@ -2133,6 +2943,7 @@ SCREENSHOT_DATA: {screenshot_b64}
         enter_password,
         check_login_success,
         get_comprehensive_context,
+        get_post_context,
         get_screenshot_with_analysis,
         like_post,
         unlike_post,
@@ -2140,7 +2951,17 @@ SCREENSHOT_DATA: {screenshot_b64}
         get_current_username,
         navigate_to_user_replies,
         delete_own_comment,
-        like_specific_post_by_keywords
+        like_specific_post_by_keywords,
+        # New tools ported from extension
+        get_post_url,
+        get_trending_topics,
+        check_session_health,
+        check_rate_limit_status,
+        find_high_engagement_posts,
+        extract_post_engagement_data,
+        extract_account_insights,
+        human_like_click,
+        monitor_action_result
     ]
 
 
