@@ -8332,6 +8332,111 @@ async def trigger_historical_import(user_id: str = Depends(get_current_user)):
     }
 
 
+# ============================================================================
+# Early Access Requests (Public - No Auth Required)
+# ============================================================================
+
+class EarlyAccessRequestBody(BaseModel):
+    """Request body for early access form submission"""
+    email: str
+    role: str
+    platform: str
+    mainConcern: str
+    philosophy: str
+    manualFirstOk: str
+    openToConversation: str
+    additionalNotes: Optional[str] = None
+    linkedinUrl: Optional[str] = None
+
+
+@app.post("/api/early-access")
+async def submit_early_access_request(request: EarlyAccessRequestBody):
+    """
+    Submit an early access request from the blog/landing page.
+    This endpoint is PUBLIC - no authentication required.
+
+    - Saves request to database
+    - Sends email notification to founder
+    """
+    from database.models import EarlyAccessRequest
+    from work_integrations.services.email_notifications import get_email_notification_service
+
+    db = SessionLocal()
+    try:
+        # Create database record
+        early_access = EarlyAccessRequest(
+            email=request.email,
+            role=request.role,
+            platform=request.platform,
+            main_concern=request.mainConcern,
+            philosophy=request.philosophy,
+            manual_first_ok=request.manualFirstOk,
+            open_to_conversation=request.openToConversation,
+            additional_notes=request.additionalNotes,
+            linkedin_url=request.linkedinUrl,
+            source="blog",
+            status="new"
+        )
+        db.add(early_access)
+        db.commit()
+
+        print(f"✅ Early access request saved: {request.email}")
+
+        # Send email notification to founder
+        email_service = get_email_notification_service()
+
+        # Format the notification email
+        philosophy_text = "Trust-first (restraint)" if request.philosophy == "trust_first" else "Growth-first"
+        manual_text = {"yes": "Yes - safety > speed", "depends": "Depends", "no": "No - expects full automation"}.get(request.manualFirstOk, request.manualFirstOk)
+
+        html_content = f"""
+        <!DOCTYPE html>
+        <html>
+        <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+            <h2 style="color: #f97316;">🚀 New Early Access Request</h2>
+
+            <div style="background: #f8f9fa; padding: 20px; border-radius: 12px; margin: 20px 0;">
+                <p><strong>Email:</strong> {request.email}</p>
+                <p><strong>Role:</strong> {request.role}</p>
+                <p><strong>Platform:</strong> {request.platform}</p>
+                <p><strong>Philosophy:</strong> {philosophy_text}</p>
+                <p><strong>Manual-first OK:</strong> {manual_text}</p>
+                <p><strong>Open to conversation:</strong> {request.openToConversation}</p>
+                {f'<p><strong>LinkedIn:</strong> <a href="{request.linkedinUrl}">{request.linkedinUrl}</a></p>' if request.linkedinUrl else ''}
+            </div>
+
+            <h3>What worries them about automation:</h3>
+            <div style="background: #fef3c7; padding: 16px; border-radius: 8px; border-left: 4px solid #f97316;">
+                <p style="margin: 0; white-space: pre-wrap;">{request.mainConcern}</p>
+            </div>
+
+            {f'<h3>Additional notes:</h3><p style="color: #4b5563;">{request.additionalNotes}</p>' if request.additionalNotes else ''}
+
+            <hr style="margin: 24px 0; border: none; border-top: 1px solid #e5e7eb;">
+            <p style="color: #9ca3af; font-size: 12px;">Submitted at {datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")}</p>
+        </body>
+        </html>
+        """
+
+        await email_service.send_email(
+            to_email="rajathrajath940@gmail.com",
+            subject=f"🚀 Early Access: {request.email} ({request.role})",
+            html_content=html_content
+        )
+
+        return {
+            "success": True,
+            "message": "Thank you for your interest. We'll be in touch if there's a fit."
+        }
+
+    except Exception as e:
+        print(f"❌ Early access submission failed: {e}")
+        db.rollback()
+        raise HTTPException(status_code=500, detail="Failed to submit request. Please try again.")
+    finally:
+        db.close()
+
+
 if __name__ == "__main__":
     import uvicorn
     print("🚀 Starting Parallel Universe Backend...")

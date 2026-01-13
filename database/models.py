@@ -1588,3 +1588,41 @@ class PendingBooking(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     submitted_at = Column(DateTime)
     expires_at = Column(DateTime)  # created_at + 1 hour
+
+
+# ============================================================================
+# Early Access Requests (Lead Qualification)
+# ============================================================================
+
+class EarlyAccessRequest(Base):
+    """
+    Early access request submissions from the blog/landing page.
+    Captures qualified leads with their context and preferences.
+    """
+    __tablename__ = "early_access_requests"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    email = Column(String(255), nullable=False)
+
+    # Qualification data
+    role = Column(String(50))  # founder_operator, solo_builder, smb_owner, marketer_growth, other
+    platform = Column(String(50))  # x_twitter, linkedin, local_business, customer_messages, figuring_out
+    main_concern = Column(Text)  # Free text: what worries them about automation
+    philosophy = Column(String(20))  # growth_first or trust_first
+    manual_first_ok = Column(String(20))  # yes, depends, no
+    open_to_conversation = Column(String(20))  # yes, maybe, no
+
+    # Optional fields
+    additional_notes = Column(Text)
+    linkedin_url = Column(String(500))
+
+    # Tracking
+    source = Column(String(50), default="blog")  # Where they came from
+
+    # Status (for internal use)
+    status = Column(String(20), default="new")  # new, contacted, qualified, not_fit
+    notes = Column(Text)  # Internal notes
+
+    # Timestamps
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
