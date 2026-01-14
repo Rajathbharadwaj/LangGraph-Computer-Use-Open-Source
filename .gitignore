@@ -17,3 +17,4 @@ cloud_run_services_config.md
 # Launch materials (private)
 product-hunt-launch.md
 .env.other
+squashfs-root/
