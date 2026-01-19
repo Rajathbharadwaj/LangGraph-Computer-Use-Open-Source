@@ -72,8 +72,8 @@ class PollingService:
         logger.info("Starting work integrations poll cycle")
 
         # Create database session
-        from database.database import DATABASE_URL
-        engine = create_async_engine(DATABASE_URL, echo=False)
+        from database.database import ASYNC_DATABASE_URL
+        engine = create_async_engine(ASYNC_DATABASE_URL, echo=False)
         async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
         async with async_session() as db:
