@@ -308,6 +308,94 @@ async def create_recommendations_batch(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# =============================================================================
+# Mobile-Friendly Endpoint
+# =============================================================================
+
+
+class MobileBatchRequest(BaseModel):
+    """Request for mobile recommendations."""
+    count: int = Field(default=10, ge=1, le=20)
+    exclude_ids: Optional[List[str]] = None
+
+
+@router.post("/mobile/batch")
+async def get_mobile_recommendations(
+    request: MobileBatchRequest,
+    clerk_user_id: str = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Get recommendations for mobile app.
+
+    Unlike the web POST /batch endpoint which requires candidates from scraping,
+    this endpoint returns cached/stored recommendations suitable for mobile.
+
+    For now, returns recent pending recommendations from the database,
+    or mock data if none exist.
+    """
+    if not clerk_user_id:
+        raise HTTPException(status_code=401, detail="Authentication required")
+
+    try:
+        # Try to get pending recommendations from database
+        pending_recs = db.query(PostRecommendation).filter(
+            PostRecommendation.clerk_user_id == clerk_user_id,
+            PostRecommendation.action == "pending"
+        ).order_by(PostRecommendation.recommendation_score.desc()).limit(request.count).all()
+
+        if pending_recs:
+            recommendations = []
+            for rec in pending_recs:
+                recommendations.append({
+                    "id": str(rec.id),
+                    "postId": rec.post_url or str(rec.id),
+                    "authorUsername": rec.author_username or "unknown",
+                    "authorDisplayName": rec.author_username,
+                    "authorProfileImageUrl": None,
+                    "content": rec.post_content or "",
+                    "timestamp": rec.created_at.isoformat() if rec.created_at else None,
+                    "likeCount": 0,
+                    "replyCount": 0,
+                    "retweetCount": 0,
+                    "score": rec.recommendation_score,
+                    "reason": rec.recommendation_reason
+                })
+
+            return {
+                "recommendations": recommendations,
+                "hasMore": len(recommendations) >= request.count
+            }
+
+        # Return mock data for testing if no real recommendations
+        mock_recommendations = [
+            {
+                "id": f"mock_{i}",
+                "postId": f"mock_post_{i}",
+                "authorUsername": f"user_{i}",
+                "authorDisplayName": f"Test User {i}",
+                "authorProfileImageUrl": None,
+                "content": f"This is a sample post #{i} for testing the Engage feature. Swipe right if you like it!",
+                "timestamp": datetime.utcnow().isoformat(),
+                "likeCount": 100 + i * 10,
+                "replyCount": 10 + i,
+                "retweetCount": 20 + i * 2,
+                "score": 0.8 - (i * 0.05),
+                "reason": "Sample recommendation for testing"
+            }
+            for i in range(min(request.count, 5))
+        ]
+
+        return {
+            "recommendations": mock_recommendations,
+            "hasMore": False
+        }
+
+    except Exception as e:
+        logger.error(f"Failed to get mobile recommendations: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.get("/reasons")
 async def get_reason_options(
     decision: str,
