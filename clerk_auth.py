@@ -88,7 +88,10 @@ def _verify_jwt_with_jwks(token: str) -> Dict[str, Any]:
         raise HTTPException(status_code=401, detail=f"Invalid token: {str(e)}")
 
 
-def verify_clerk_token(authorization: str = Header(None)) -> dict:
+def verify_clerk_token(
+    authorization: str = Header(None),
+    x_clerk_user_id: Optional[str] = Header(None, alias="X-Clerk-User-Id")
+) -> dict:
     """
     Verify Clerk JWT token from Authorization header
 
@@ -149,7 +152,7 @@ def verify_clerk_token(authorization: str = Header(None)) -> dict:
         user_id = payload.get("sub")
 
         # Check if sub looks like a Clerk user ID (starts with user_)
-        # If not, try to find it in other claims
+        # If not, try to find it in other claims or use the X-Clerk-User-Id header
         if user_id and not user_id.startswith("user_"):
             # sub might be external OAuth ID, look for Clerk user ID elsewhere
             # Try common Clerk JWT claim locations
@@ -162,11 +165,16 @@ def verify_clerk_token(authorization: str = Header(None)) -> dict:
             if clerk_user_id and clerk_user_id.startswith("user_"):
                 print(f"🔄 Using Clerk user ID from metadata: {clerk_user_id} (sub was: {user_id})")
                 user_id = clerk_user_id
+            elif x_clerk_user_id and x_clerk_user_id.startswith("user_"):
+                # Use the X-Clerk-User-Id header as fallback (from mobile app)
+                print(f"🔄 Using Clerk user ID from X-Clerk-User-Id header: {x_clerk_user_id} (sub was: {user_id})")
+                user_id = x_clerk_user_id
             else:
                 # Log the full payload to debug
                 print(f"⚠️ JWT sub is external ID: {user_id}")
                 print(f"   Full payload keys: {list(payload.keys())}")
                 print(f"   Full payload: {payload}")
+                print(f"   X-Clerk-User-Id header: {x_clerk_user_id}")
 
                 # CRITICAL: If we can't find Clerk user ID, we MUST fail
                 # Using external OAuth ID will cause multi-tenancy leakage
