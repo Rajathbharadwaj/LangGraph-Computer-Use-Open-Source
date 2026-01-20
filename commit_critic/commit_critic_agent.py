@@ -129,7 +129,7 @@ def create_commit_critic_agent(config: Optional[Dict[str, Any]] = None):
 
     print(f"🤖 Creating Commit Critic Agent...")
     print(f"   Model: {model_name} ({model_provider})")
-    print(f"   Repo: {repo_path}")
+    print(f"   Target: {repo_path}")
     print(f"   Thread: {thread_id}")
 
     # Initialize the LLM

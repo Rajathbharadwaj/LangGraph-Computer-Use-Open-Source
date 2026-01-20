@@ -81,8 +81,9 @@ def run_analyze(url: Optional[str] = None, limit: int = 50, thread_id: Optional[
         task = progress.add_task("Creating agent...", total=None)
 
         # Create agent with thread support
+        # Pass URL as repo context when analyzing remote, otherwise local path
         agent, thread_id = create_commit_critic_agent({
-            "repo_path": repo_path,
+            "repo_path": url if url else repo_path,
             "thread_id": thread_id
         })
 

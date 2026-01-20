@@ -25,7 +25,7 @@ def get_commits_tool(repo_path: str = ".", limit: int = 50) -> str:
 
     Args:
         repo_path: Path to the git repository (default: current directory)
-        limit: Maximum number of commits to fetch (default: 50)
+        limit: Maximum number of commits to fetch (default: 50, max: 500)
 
     Returns:
         JSON string with list of commits, each containing:
@@ -34,11 +34,15 @@ def get_commits_tool(repo_path: str = ".", limit: int = 50) -> str:
         - body: Rest of commit message (if any)
     """
     try:
-        # Use NULL separator for multi-line commit bodies
+        # Validate and clamp limit to reasonable range
+        limit = max(1, min(int(limit), 500))
+
+        # Use ASCII Unit Separator (\x1f) between fields - won't appear in commit messages
+        # Use NULL (\x00) between commits for multi-line body support
         result = subprocess.run(
             [
                 "git", "-C", repo_path, "log", f"-n{limit}",
-                "--format=%H|||%s|||%b%x00"
+                "--format=%H%x1f%s%x1f%b%x00"
             ],
             capture_output=True,
             text=True,
@@ -51,7 +55,8 @@ def get_commits_tool(repo_path: str = ".", limit: int = 50) -> str:
             if not entry:
                 continue
 
-            parts = entry.split('|||')
+            # Split by Unit Separator (ASCII 31)
+            parts = entry.split('\x1f')
             if len(parts) >= 2:
                 commits.append({
                     "hash": parts[0][:8],  # Short hash
@@ -92,15 +97,34 @@ def clone_repo_tool(url: str) -> str:
         - error: Error message if failed
     """
     try:
+        # Basic URL validation
+        url = url.strip()
+        if not url:
+            return json.dumps({
+                "success": False,
+                "repo_path": None,
+                "error": "Empty URL provided"
+            })
+
+        # Only allow http(s) and git protocols for security
+        if not (url.startswith("https://") or url.startswith("http://") or
+                url.startswith("git://") or url.startswith("git@")):
+            return json.dumps({
+                "success": False,
+                "repo_path": None,
+                "error": f"Invalid URL protocol. Use https://, http://, git://, or git@ URLs"
+            })
+
         # Create temp directory (kept for debugging)
         temp_dir = tempfile.mkdtemp(prefix="commit_critic_")
 
-        # Clone with shallow depth for efficiency
+        # Clone with shallow depth for efficiency, 60 second timeout
         result = subprocess.run(
             ["git", "clone", "--depth=50", url, temp_dir],
             capture_output=True,
             text=True,
-            check=True
+            check=True,
+            timeout=60  # 60 second timeout for clone
         )
 
         return json.dumps({
@@ -109,6 +133,12 @@ def clone_repo_tool(url: str) -> str:
             "message": f"Successfully cloned {url} to {temp_dir}"
         })
 
+    except subprocess.TimeoutExpired:
+        return json.dumps({
+            "success": False,
+            "repo_path": None,
+            "error": "Clone timed out after 60 seconds. Repository may be too large or network is slow."
+        })
     except subprocess.CalledProcessError as e:
         return json.dumps({
             "success": False,
@@ -212,6 +242,14 @@ def create_commit_tool(message: str, repo_path: str = ".") -> str:
         - error: Error message if failed
     """
     try:
+        # Validate message
+        message = message.strip() if message else ""
+        if not message:
+            return json.dumps({
+                "success": False,
+                "error": "Empty commit message provided"
+            })
+
         result = subprocess.run(
             ["git", "-C", repo_path, "commit", "-m", message],
             capture_output=True,
