@@ -161,6 +161,12 @@ def create_commit_critic_agent(config: Optional[Dict[str, Any]] = None):
     else:
         print(f"   Checkpointer: InMemory (session only - install langgraph-checkpoint-sqlite for persistence)")
 
+    # Context optimization middleware (built into deepagents by default):
+    # - FilesystemMiddleware: Auto-evicts large tool outputs to files (>20k tokens)
+    # - SummarizationMiddleware: Auto-summarizes conversation when context exceeds limit
+    # - AnthropicPromptCachingMiddleware: Caches system prompts for cost reduction
+    print(f"   Middleware: FilesystemMiddleware, SummarizationMiddleware, PromptCaching (built-in)")
+
     # Create the deep agent with checkpointer
     agent = create_deep_agent(
         model=model,

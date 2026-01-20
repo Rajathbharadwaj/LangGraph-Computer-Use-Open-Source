@@ -68,6 +68,13 @@ Present results in this format:
 - Section for commits that need work (with suggestions)
 - Section for well-written commits (with praise)
 - Stats summary: average score, vague %, one-word %
+
+💾 CONTEXT MANAGEMENT:
+When analyzing many commits (>20):
+- Write the FULL detailed analysis to /analysis_report.md using write_file
+- Present only a SUMMARY in your response (stats, key findings, top/bottom examples)
+- This keeps the conversation context manageable
+- Users can read /analysis_report.md for full details
 """
 
 
