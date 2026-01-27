@@ -28,7 +28,7 @@ DATABASE_ENABLED = bool(os.getenv("DATABASE_URL"))
 if DATABASE_ENABLED:
     try:
         from database.database import SessionLocal, engine, Base, get_db
-        from database.models import User, XAccount, UserCookies
+        from database.models import User, XAccount, UserCookies, LinkedInAccount, LinkedInCookies
     except Exception as e:
         print(f"⚠️ Database import failed: {e}")
         DATABASE_ENABLED = False
@@ -37,6 +37,8 @@ else:
     User = None
     XAccount = None
     UserCookies = None
+    LinkedInAccount = None
+    LinkedInCookies = None
 
 # Encryption key for cookies (in production, use a proper secret management)
 COOKIE_ENCRYPTION_KEY = os.getenv("COOKIE_ENCRYPTION_KEY", Fernet.generate_key().decode())
@@ -64,6 +66,10 @@ pending_requests: Dict[str, asyncio.Future] = {}
 # In-memory cache for active session cookies (also persisted to DB)
 # Key: user_id, Value: {username, cookies, timestamp}
 user_cookies: Dict[str, dict] = {}
+
+# LinkedIn in-memory cookie cache
+# Key: user_id, Value: {profile_url, cookies, timestamp}
+linkedin_cookies: Dict[str, dict] = {}
 
 
 # ============================================================================
@@ -183,6 +189,113 @@ def load_cookies_from_db(db: Session, user_id: str = None, username: str = None)
         return None
     except Exception as e:
         print(f"❌ Error loading cookies from database: {e}")
+        return None
+
+
+# ============================================================================
+# LinkedIn Database Helper Functions
+# ============================================================================
+
+def get_or_create_linkedin_account(db: Session, user_id: str, profile_url: str, display_name: str = None) -> "LinkedInAccount":
+    """Get or create a LinkedIn account for a user"""
+    user = get_or_create_user(db, user_id)
+
+    # Extract username from profile URL
+    username = None
+    if profile_url:
+        # Extract from linkedin.com/in/username
+        if '/in/' in profile_url:
+            username = profile_url.split('/in/')[-1].strip('/').split('/')[0].split('?')[0]
+
+    # Check if account already exists
+    linkedin_account = db.query(LinkedInAccount).filter(
+        LinkedInAccount.user_id == user_id
+    ).first()
+
+    if not linkedin_account:
+        linkedin_account = LinkedInAccount(
+            user_id=user_id,
+            profile_url=profile_url,
+            username=username,
+            display_name=display_name,
+            is_connected=True
+        )
+        db.add(linkedin_account)
+        db.commit()
+        db.refresh(linkedin_account)
+    else:
+        # Update info
+        linkedin_account.is_connected = True
+        linkedin_account.profile_url = profile_url or linkedin_account.profile_url
+        linkedin_account.username = username or linkedin_account.username
+        if display_name:
+            linkedin_account.display_name = display_name
+        linkedin_account.last_synced_at = datetime.utcnow()
+        db.commit()
+
+    return linkedin_account
+
+
+def save_linkedin_cookies_to_db(db: Session, user_id: str, profile_url: str, cookies: list, display_name: str = None) -> bool:
+    """Save encrypted LinkedIn cookies to database"""
+    try:
+        linkedin_account = get_or_create_linkedin_account(db, user_id, profile_url, display_name)
+
+        # Encrypt cookies
+        cookies_json = json.dumps(cookies)
+        encrypted_cookies = fernet.encrypt(cookies_json.encode()).decode()
+
+        # Check if cookies already exist for this account
+        existing_cookies = db.query(LinkedInCookies).filter(
+            LinkedInCookies.linkedin_account_id == linkedin_account.id
+        ).first()
+
+        if existing_cookies:
+            existing_cookies.encrypted_cookies = encrypted_cookies
+            existing_cookies.captured_at = datetime.utcnow()
+        else:
+            new_cookies = LinkedInCookies(
+                linkedin_account_id=linkedin_account.id,
+                encrypted_cookies=encrypted_cookies,
+                captured_at=datetime.utcnow()
+            )
+            db.add(new_cookies)
+
+        db.commit()
+        print(f"✅ LinkedIn cookies saved to database for {profile_url}")
+        return True
+    except Exception as e:
+        print(f"❌ Error saving LinkedIn cookies to database: {e}")
+        db.rollback()
+        return False
+
+
+def load_linkedin_cookies_from_db(db: Session, user_id: str = None) -> Optional[dict]:
+    """Load and decrypt LinkedIn cookies from database"""
+    try:
+        query = db.query(LinkedInAccount, LinkedInCookies).join(
+            LinkedInCookies, LinkedInAccount.id == LinkedInCookies.linkedin_account_id
+        )
+
+        if user_id:
+            query = query.filter(LinkedInAccount.user_id == user_id)
+
+        result = query.first()
+
+        if result:
+            linkedin_account, linkedin_cookies_record = result
+            decrypted_cookies = fernet.decrypt(linkedin_cookies_record.encrypted_cookies.encode()).decode()
+            return {
+                "user_id": linkedin_account.user_id,
+                "profile_url": linkedin_account.profile_url,
+                "username": linkedin_account.username,
+                "display_name": linkedin_account.display_name,
+                "cookies": json.loads(decrypted_cookies),
+                "captured_at": linkedin_cookies_record.captured_at.isoformat()
+            }
+        return None
+    except Exception as e:
+        print(f"❌ Error loading LinkedIn cookies from database: {e}")
         return None
 
 
@@ -832,6 +945,192 @@ async def disconnect_user(user_id: str):
 
 
 # ============================================================================
+# LinkedIn Cookie Endpoints
+# ============================================================================
+
+@app.post("/linkedin/cookies")
+async def save_linkedin_cookies_endpoint(data: dict):
+    """
+    Save LinkedIn cookies from extension or manual capture.
+
+    Expected payload:
+    {
+        "user_id": "clerk_user_id",
+        "profile_url": "https://linkedin.com/in/username",
+        "display_name": "John Doe",
+        "cookies": [...]
+    }
+    """
+    user_id = data.get("user_id")
+    profile_url = data.get("profile_url")
+    display_name = data.get("display_name")
+    cookies = data.get("cookies", [])
+
+    if not user_id:
+        return {"success": False, "error": "user_id is required"}
+    if not cookies:
+        return {"success": False, "error": "cookies are required"}
+
+    # Store in memory cache
+    linkedin_cookies[user_id] = {
+        "profile_url": profile_url,
+        "display_name": display_name,
+        "cookies": cookies,
+        "timestamp": datetime.utcnow().isoformat()
+    }
+    print(f"🔗 LinkedIn cookies stored for user {user_id}")
+
+    # Persist to database if enabled
+    if DATABASE_ENABLED and SessionLocal:
+        db = SessionLocal()
+        try:
+            init_database()
+            save_linkedin_cookies_to_db(db, user_id, profile_url, cookies, display_name)
+        except Exception as e:
+            print(f"⚠️ Failed to save LinkedIn cookies to database: {e}")
+        finally:
+            db.close()
+
+    return {
+        "success": True,
+        "message": f"Stored {len(cookies)} LinkedIn cookies",
+        "user_id": user_id,
+        "profile_url": profile_url
+    }
+
+
+@app.get("/linkedin/cookies/{user_id}")
+async def get_linkedin_cookies_endpoint(user_id: str):
+    """Get LinkedIn cookies for a specific user"""
+    # First check in-memory cache
+    if user_id in linkedin_cookies:
+        cookie_data = linkedin_cookies[user_id]
+        return {
+            "success": True,
+            "profile_url": cookie_data.get("profile_url"),
+            "display_name": cookie_data.get("display_name"),
+            "cookies": cookie_data.get("cookies", []),
+            "captured_at": cookie_data.get("timestamp")
+        }
+
+    # Then check database if enabled
+    if DATABASE_ENABLED and SessionLocal:
+        db = SessionLocal()
+        try:
+            cookie_data = load_linkedin_cookies_from_db(db, user_id=user_id)
+            if cookie_data:
+                return {
+                    "success": True,
+                    "profile_url": cookie_data.get("profile_url"),
+                    "username": cookie_data.get("username"),
+                    "display_name": cookie_data.get("display_name"),
+                    "cookies": cookie_data["cookies"],
+                    "captured_at": cookie_data["captured_at"]
+                }
+        except Exception as e:
+            print(f"⚠️ Error loading LinkedIn cookies from database: {e}")
+        finally:
+            db.close()
+
+    return {
+        "success": False,
+        "error": "No LinkedIn cookies found for user"
+    }
+
+
+@app.delete("/linkedin/disconnect/{user_id}")
+async def disconnect_linkedin_user(user_id: str):
+    """
+    Disconnect a user's LinkedIn account by clearing their cookies.
+    """
+    cleared_memory = False
+    cleared_database = False
+    profile_url = None
+
+    # Clear from in-memory cache
+    if user_id in linkedin_cookies:
+        profile_url = linkedin_cookies[user_id].get("profile_url")
+        del linkedin_cookies[user_id]
+        cleared_memory = True
+        print(f"🗑️ Cleared LinkedIn in-memory cookies for user {user_id}")
+
+    # Clear from database if enabled
+    if DATABASE_ENABLED and SessionLocal:
+        try:
+            db = SessionLocal()
+            try:
+                linkedin_account = db.query(LinkedInAccount).filter(
+                    LinkedInAccount.user_id == user_id
+                ).first()
+                if linkedin_account:
+                    profile_url = profile_url or linkedin_account.profile_url
+                    # Delete associated cookies
+                    db.query(LinkedInCookies).filter(
+                        LinkedInCookies.linkedin_account_id == linkedin_account.id
+                    ).delete()
+                    # Delete the LinkedIn account record
+                    db.delete(linkedin_account)
+                    db.commit()
+                    cleared_database = True
+                    print(f"🗑️ Cleared LinkedIn database cookies for user {user_id}")
+            finally:
+                db.close()
+        except Exception as e:
+            print(f"⚠️ Error clearing LinkedIn database cookies: {e}")
+
+    if cleared_memory or cleared_database:
+        return {
+            "success": True,
+            "message": f"Disconnected LinkedIn for user {user_id}",
+            "profile_url": profile_url,
+            "cleared_memory": cleared_memory,
+            "cleared_database": cleared_database
+        }
+    else:
+        return {
+            "success": False,
+            "error": "No LinkedIn data found for this user",
+            "user_id": user_id
+        }
+
+
+@app.get("/linkedin/status/{user_id}")
+async def linkedin_status(user_id: str):
+    """Check LinkedIn connection status for a user"""
+    has_cookies = False
+    profile_url = None
+    display_name = None
+
+    # Check in-memory cache
+    if user_id in linkedin_cookies:
+        has_cookies = True
+        profile_url = linkedin_cookies[user_id].get("profile_url")
+        display_name = linkedin_cookies[user_id].get("display_name")
+
+    # Check database if not in memory
+    if not has_cookies and DATABASE_ENABLED and SessionLocal:
+        db = SessionLocal()
+        try:
+            cookie_data = load_linkedin_cookies_from_db(db, user_id=user_id)
+            if cookie_data:
+                has_cookies = True
+                profile_url = cookie_data.get("profile_url")
+                display_name = cookie_data.get("display_name")
+        except Exception as e:
+            print(f"⚠️ Error checking LinkedIn status: {e}")
+        finally:
+            db.close()
+
+    return {
+        "success": True,
+        "user_id": user_id,
+        "is_connected": has_cookies,
+        "profile_url": profile_url,
+        "display_name": display_name
+    }
+
+
+# ============================================================================
 # Main
 # ============================================================================
 
@@ -839,6 +1138,7 @@ if __name__ == "__main__":
     print("🚀 Starting Extension Backend Server...")
     print("📡 Extension should connect to: ws://localhost:8001/ws/extension/{user_id}")
     print("🔧 Agent tools will call: http://localhost:8001/extension/*")
+    print("🔗 LinkedIn endpoints available at: http://localhost:8001/linkedin/*")
     
     uvicorn.run(
         "backend_extension_server:app",
