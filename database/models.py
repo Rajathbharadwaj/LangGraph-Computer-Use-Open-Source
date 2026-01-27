@@ -26,6 +26,7 @@ class User(Base):
 
     # Relationships
     x_accounts = relationship("XAccount", back_populates="user", cascade="all, delete-orphan")
+    linkedin_accounts = relationship("LinkedInAccount", back_populates="user", cascade="all, delete-orphan")
     api_usage = relationship("APIUsage", back_populates="user", cascade="all, delete-orphan")
     cron_jobs = relationship("CronJob", back_populates="user", cascade="all, delete-orphan")
     subscription = relationship("Subscription", back_populates="user", uselist=False, cascade="all, delete-orphan")
@@ -187,6 +188,136 @@ class ReceivedComment(Base):
     # Relationships
     user_post = relationship("UserPost", backref="comments_received")
     x_account = relationship("XAccount", backref="comments_received")
+
+
+# =============================================================================
+# LinkedIn Platform Integration Models
+# =============================================================================
+
+
+class LinkedInAccount(Base):
+    """
+    Connected LinkedIn accounts for automation.
+    Mirrors XAccount structure for consistency.
+    """
+    __tablename__ = "linkedin_accounts"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(String, ForeignKey("users.id"), nullable=False)
+
+    # LinkedIn profile info
+    profile_url = Column(String)  # linkedin.com/in/username
+    username = Column(String)  # LinkedIn username/vanity URL
+    display_name = Column(String)
+    headline = Column(String)  # Job title/headline
+    profile_image_url = Column(String)
+
+    # Status
+    is_connected = Column(Boolean, default=True)
+    connections_count = Column(Integer)
+    last_synced_at = Column(DateTime)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    # Cookies stored directly as JSON (like XAccount)
+    cookies = Column(JSON)
+
+    # Relationships
+    user = relationship("User", back_populates="linkedin_accounts")
+    encrypted_cookies = relationship("LinkedInCookies", back_populates="linkedin_account", cascade="all, delete-orphan")
+    posts = relationship("LinkedInPost", back_populates="linkedin_account", cascade="all, delete-orphan")
+    comments_made = relationship("LinkedInComment", back_populates="linkedin_account", cascade="all, delete-orphan")
+
+
+class LinkedInCookies(Base):
+    """
+    Encrypted LinkedIn cookies for each account.
+    Uses Fernet encryption (same as UserCookies for X).
+    """
+    __tablename__ = "linkedin_cookies"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    linkedin_account_id = Column(Integer, ForeignKey("linkedin_accounts.id"), nullable=False)
+
+    # Encrypted cookie data
+    encrypted_cookies = Column(Text, nullable=False)
+
+    # Metadata
+    captured_at = Column(DateTime, default=datetime.utcnow)
+    expires_at = Column(DateTime)
+
+    # Relationships
+    linkedin_account = relationship("LinkedInAccount", back_populates="encrypted_cookies")
+
+
+class LinkedInPost(Base):
+    """
+    LinkedIn posts for writing style learning and analytics.
+    """
+    __tablename__ = "linkedin_posts"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    linkedin_account_id = Column(Integer, ForeignKey("linkedin_accounts.id"), nullable=False)
+
+    # Post content
+    content = Column(Text)
+    post_url = Column(String)
+    post_type = Column(String(20), default="post")  # post, article, document, video, poll
+
+    # Engagement metrics
+    reactions = Column(Integer, default=0)  # Total reactions (all types)
+    comments = Column(Integer, default=0)
+    reposts = Column(Integer, default=0)
+    impressions = Column(Integer, default=0)
+
+    # Source tracking
+    source = Column(String(20), default="imported")  # agent, manual, imported
+
+    # Timestamps
+    posted_at = Column(DateTime)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    # Relationships
+    linkedin_account = relationship("LinkedInAccount", back_populates="posts")
+
+
+class LinkedInComment(Base):
+    """
+    Track comments WE make on other people's LinkedIn posts.
+    Used for measuring engagement effectiveness.
+    """
+    __tablename__ = "linkedin_comments"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    linkedin_account_id = Column(Integer, ForeignKey("linkedin_accounts.id"), nullable=False)
+
+    # Our comment content
+    content = Column(Text, nullable=False)
+    comment_url = Column(String(500))
+
+    # Target post info
+    target_post_url = Column(String(500))
+    target_post_author = Column(String(255))
+    target_post_content_preview = Column(Text)
+
+    # Engagement OUR comment receives
+    reactions = Column(Integer, default=0)
+    replies = Column(Integer, default=0)
+
+    # Source tracking
+    source = Column(String(20), default="agent")  # agent, manual, imported
+
+    # Scraping metadata
+    last_scraped_at = Column(DateTime)
+    scrape_status = Column(String(20), default="pending")
+
+    # Timestamps
+    commented_at = Column(DateTime)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    # Relationships
+    linkedin_account = relationship("LinkedInAccount", back_populates="comments_made")
 
 
 class APIUsage(Base):
