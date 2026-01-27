@@ -5,6 +5,7 @@ Handles subscription management and billing operations.
 """
 import os
 import logging
+from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, Request, Header
 from pydantic import BaseModel
 from typing import Optional
@@ -164,7 +165,25 @@ async def create_checkout(
 
     user = db.query(User).filter(User.id == clerk_user_id).first()
     if not user:
-        raise HTTPException(status_code=404, detail="User not found")
+        # User not in database yet (race condition with Clerk webhook)
+        # Create user on-the-fly using JWT email or fetch from Clerk API
+        user_email = jwt_email
+        if not user_email:
+            user_email = get_clerk_user_email(clerk_user_id)
+        if not user_email:
+            user_email = f"{clerk_user_id}@unknown.com"
+
+        user = User(
+            id=clerk_user_id,
+            email=user_email,
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+            plan="free",
+            is_active=True
+        )
+        db.add(user)
+        db.commit()
+        logger.info(f"Created user {clerk_user_id} on-the-fly during checkout (webhook race condition)")
 
     # Use JWT email if database email looks invalid (contains user_ or @unknown)
     user_email = user.email
