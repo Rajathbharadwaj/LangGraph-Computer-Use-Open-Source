@@ -8443,12 +8443,12 @@ async def submit_early_access_request(request: EarlyAccessRequestBody):
 
 @app.get("/api/linkedin/accounts")
 async def list_linkedin_accounts(
-    request: Request,
+    clerk_user_id: str = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """List all connected LinkedIn accounts for a user"""
     try:
-        user_id = await get_user_id_from_request(request, db)
+        user_id = clerk_user_id
         if not user_id:
             raise HTTPException(status_code=401, detail="User not authenticated")
 
@@ -8486,12 +8486,12 @@ async def list_linkedin_accounts(
 @app.get("/api/linkedin/accounts/{account_id}")
 async def get_linkedin_account(
     account_id: int,
-    request: Request,
+    clerk_user_id: str = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """Get a specific LinkedIn account"""
     try:
-        user_id = await get_user_id_from_request(request, db)
+        user_id = clerk_user_id
         if not user_id:
             raise HTTPException(status_code=401, detail="User not authenticated")
 
@@ -8530,12 +8530,12 @@ async def get_linkedin_account(
 @app.delete("/api/linkedin/accounts/{account_id}")
 async def disconnect_linkedin_account(
     account_id: int,
-    request: Request,
+    clerk_user_id: str = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """Disconnect a LinkedIn account"""
     try:
-        user_id = await get_user_id_from_request(request, db)
+        user_id = clerk_user_id
         if not user_id:
             raise HTTPException(status_code=401, detail="User not authenticated")
 
@@ -8612,12 +8612,12 @@ class LinkedInWorkflowRunRequest(BaseModel):
 @app.post("/api/linkedin/workflows/run")
 async def run_linkedin_workflow(
     run_request: LinkedInWorkflowRunRequest,
-    request: Request,
+    clerk_user_id: str = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """Execute a LinkedIn workflow"""
     try:
-        user_id = await get_user_id_from_request(request, db)
+        user_id = clerk_user_id
         if not user_id:
             raise HTTPException(status_code=401, detail="User not authenticated")
 
@@ -8674,13 +8674,13 @@ Execute this workflow now, using subagents for each action.
 
 @app.get("/api/linkedin/analytics")
 async def get_linkedin_analytics(
-    request: Request,
+    clerk_user_id: str = Depends(get_current_user),
     db: Session = Depends(get_db),
     days: int = 30
 ):
     """Get LinkedIn engagement analytics"""
     try:
-        user_id = await get_user_id_from_request(request, db)
+        user_id = clerk_user_id
         if not user_id:
             raise HTTPException(status_code=401, detail="User not authenticated")
 
@@ -8757,12 +8757,12 @@ async def get_linkedin_analytics(
 
 @app.get("/api/linkedin/daily-limits")
 async def get_linkedin_daily_limits(
-    request: Request,
+    clerk_user_id: str = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """Get LinkedIn daily action limits and current usage"""
     try:
-        user_id = await get_user_id_from_request(request, db)
+        user_id = clerk_user_id
         if not user_id:
             raise HTTPException(status_code=401, detail="User not authenticated")
 
