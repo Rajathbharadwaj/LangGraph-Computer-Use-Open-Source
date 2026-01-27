@@ -8437,6 +8437,358 @@ async def submit_early_access_request(request: EarlyAccessRequestBody):
         db.close()
 
 
+# =============================================================================
+# LINKEDIN API ENDPOINTS
+# =============================================================================
+
+@app.get("/api/linkedin/accounts")
+async def list_linkedin_accounts(
+    request: Request,
+    db: Session = Depends(get_db)
+):
+    """List all connected LinkedIn accounts for a user"""
+    try:
+        user_id = await get_user_id_from_request(request, db)
+        if not user_id:
+            raise HTTPException(status_code=401, detail="User not authenticated")
+
+        from database.models import LinkedInAccount
+
+        accounts = db.query(LinkedInAccount).filter(
+            LinkedInAccount.user_id == user_id,
+            LinkedInAccount.is_connected == True
+        ).all()
+
+        return {
+            "success": True,
+            "accounts": [
+                {
+                    "id": acc.id,
+                    "username": acc.username,
+                    "display_name": acc.display_name,
+                    "headline": acc.headline,
+                    "profile_url": acc.profile_url,
+                    "profile_image_url": acc.profile_image_url,
+                    "connections_count": acc.connections_count,
+                    "last_synced_at": acc.last_synced_at.isoformat() if acc.last_synced_at else None,
+                    "created_at": acc.created_at.isoformat() if acc.created_at else None,
+                }
+                for acc in accounts
+            ]
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"❌ Error listing LinkedIn accounts: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/linkedin/accounts/{account_id}")
+async def get_linkedin_account(
+    account_id: int,
+    request: Request,
+    db: Session = Depends(get_db)
+):
+    """Get a specific LinkedIn account"""
+    try:
+        user_id = await get_user_id_from_request(request, db)
+        if not user_id:
+            raise HTTPException(status_code=401, detail="User not authenticated")
+
+        from database.models import LinkedInAccount
+
+        account = db.query(LinkedInAccount).filter(
+            LinkedInAccount.id == account_id,
+            LinkedInAccount.user_id == user_id
+        ).first()
+
+        if not account:
+            raise HTTPException(status_code=404, detail="LinkedIn account not found")
+
+        return {
+            "success": True,
+            "account": {
+                "id": account.id,
+                "username": account.username,
+                "display_name": account.display_name,
+                "headline": account.headline,
+                "profile_url": account.profile_url,
+                "profile_image_url": account.profile_image_url,
+                "connections_count": account.connections_count,
+                "is_connected": account.is_connected,
+                "last_synced_at": account.last_synced_at.isoformat() if account.last_synced_at else None,
+                "created_at": account.created_at.isoformat() if account.created_at else None,
+            }
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"❌ Error getting LinkedIn account: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/api/linkedin/accounts/{account_id}")
+async def disconnect_linkedin_account(
+    account_id: int,
+    request: Request,
+    db: Session = Depends(get_db)
+):
+    """Disconnect a LinkedIn account"""
+    try:
+        user_id = await get_user_id_from_request(request, db)
+        if not user_id:
+            raise HTTPException(status_code=401, detail="User not authenticated")
+
+        from database.models import LinkedInAccount, LinkedInCookies
+
+        account = db.query(LinkedInAccount).filter(
+            LinkedInAccount.id == account_id,
+            LinkedInAccount.user_id == user_id
+        ).first()
+
+        if not account:
+            raise HTTPException(status_code=404, detail="LinkedIn account not found")
+
+        # Delete cookies
+        db.query(LinkedInCookies).filter(
+            LinkedInCookies.linkedin_account_id == account_id
+        ).delete()
+
+        # Mark account as disconnected (or delete entirely)
+        account.is_connected = False
+        account.cookies = None
+        db.commit()
+
+        print(f"🔓 LinkedIn account {account_id} disconnected for user {user_id}")
+
+        return {"success": True, "message": "LinkedIn account disconnected"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"❌ Error disconnecting LinkedIn account: {e}")
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/linkedin/workflows")
+async def list_linkedin_workflows():
+    """List available LinkedIn workflows"""
+    try:
+        from linkedin_growth_workflows import list_workflows
+
+        workflows = list_workflows()
+        return {
+            "success": True,
+            "workflows": workflows
+        }
+    except Exception as e:
+        print(f"❌ Error listing LinkedIn workflows: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/linkedin/workflows/{workflow_id}")
+async def get_linkedin_workflow(workflow_id: str):
+    """Get a specific LinkedIn workflow definition"""
+    try:
+        from linkedin_growth_workflows import get_workflow
+
+        workflow = get_workflow(workflow_id)
+        return {
+            "success": True,
+            "workflow": workflow
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        print(f"❌ Error getting LinkedIn workflow: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class LinkedInWorkflowRunRequest(BaseModel):
+    workflow_id: str
+    params: dict = {}
+
+
+@app.post("/api/linkedin/workflows/run")
+async def run_linkedin_workflow(
+    run_request: LinkedInWorkflowRunRequest,
+    request: Request,
+    db: Session = Depends(get_db)
+):
+    """Execute a LinkedIn workflow"""
+    try:
+        user_id = await get_user_id_from_request(request, db)
+        if not user_id:
+            raise HTTPException(status_code=401, detail="User not authenticated")
+
+        from linkedin_growth_workflows import get_workflow
+        from linkedin_growth_agent import create_linkedin_growth_agent
+
+        # Validate workflow exists
+        workflow = get_workflow(run_request.workflow_id)
+
+        # Create agent with user context
+        config = {
+            "configurable": {
+                "user_id": user_id,
+                "model_name": "claude-sonnet-4-5-20250929",
+            }
+        }
+        agent = create_linkedin_growth_agent(config)
+
+        # Build workflow prompt
+        workflow_prompt = f"""Execute the {workflow['name']} workflow.
+
+Description: {workflow['description']}
+
+Steps to follow:
+{chr(10).join(f"- {step['name']}: {step.get('description', step['action'])}" for step in workflow['steps'])}
+
+Parameters provided:
+{run_request.params}
+
+Execute this workflow now, using subagents for each action.
+"""
+
+        # Execute (in background for long-running workflows)
+        result = await agent.ainvoke({
+            "messages": [workflow_prompt]
+        })
+
+        return {
+            "success": True,
+            "workflow_id": run_request.workflow_id,
+            "message": "Workflow started",
+            "result": str(result) if result else None
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"❌ Error running LinkedIn workflow: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/linkedin/analytics")
+async def get_linkedin_analytics(
+    request: Request,
+    db: Session = Depends(get_db),
+    days: int = 30
+):
+    """Get LinkedIn engagement analytics"""
+    try:
+        user_id = await get_user_id_from_request(request, db)
+        if not user_id:
+            raise HTTPException(status_code=401, detail="User not authenticated")
+
+        from database.models import LinkedInAccount, LinkedInPost, LinkedInComment
+        from datetime import datetime, timedelta
+        from sqlalchemy import func
+
+        # Get user's LinkedIn accounts
+        accounts = db.query(LinkedInAccount).filter(
+            LinkedInAccount.user_id == user_id
+        ).all()
+
+        if not accounts:
+            return {
+                "success": True,
+                "analytics": {
+                    "total_posts": 0,
+                    "total_comments": 0,
+                    "total_reactions_received": 0,
+                    "posts_by_day": [],
+                    "comments_by_day": [],
+                }
+            }
+
+        account_ids = [acc.id for acc in accounts]
+        since_date = datetime.utcnow() - timedelta(days=days)
+
+        # Get post stats
+        posts = db.query(LinkedInPost).filter(
+            LinkedInPost.linkedin_account_id.in_(account_ids),
+            LinkedInPost.created_at >= since_date
+        ).all()
+
+        # Get comment stats
+        comments = db.query(LinkedInComment).filter(
+            LinkedInComment.linkedin_account_id.in_(account_ids),
+            LinkedInComment.created_at >= since_date
+        ).all()
+
+        # Calculate totals
+        total_reactions = sum(p.reactions or 0 for p in posts)
+        total_comment_reactions = sum(c.reactions or 0 for c in comments)
+
+        # Group by day
+        posts_by_day = {}
+        for post in posts:
+            day = post.created_at.strftime("%Y-%m-%d") if post.created_at else "unknown"
+            posts_by_day[day] = posts_by_day.get(day, 0) + 1
+
+        comments_by_day = {}
+        for comment in comments:
+            day = comment.created_at.strftime("%Y-%m-%d") if comment.created_at else "unknown"
+            comments_by_day[day] = comments_by_day.get(day, 0) + 1
+
+        return {
+            "success": True,
+            "analytics": {
+                "total_posts": len(posts),
+                "total_comments": len(comments),
+                "total_reactions_received": total_reactions + total_comment_reactions,
+                "avg_reactions_per_post": total_reactions / len(posts) if posts else 0,
+                "posts_by_day": [{"date": k, "count": v} for k, v in sorted(posts_by_day.items())],
+                "comments_by_day": [{"date": k, "count": v} for k, v in sorted(comments_by_day.items())],
+            }
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"❌ Error getting LinkedIn analytics: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/linkedin/daily-limits")
+async def get_linkedin_daily_limits(
+    request: Request,
+    db: Session = Depends(get_db)
+):
+    """Get LinkedIn daily action limits and current usage"""
+    try:
+        user_id = await get_user_id_from_request(request, db)
+        if not user_id:
+            raise HTTPException(status_code=401, detail="User not authenticated")
+
+        from linkedin_growth_principles import DAILY_LIMITS
+        from linkedin_growth_agent import _linkedin_rate_limit_tracker
+
+        remaining = _linkedin_rate_limit_tracker.check_daily_limits()
+
+        return {
+            "success": True,
+            "limits": DAILY_LIMITS,
+            "used_today": {
+                "reactions": _linkedin_rate_limit_tracker.daily_reactions,
+                "comments": _linkedin_rate_limit_tracker.daily_comments,
+                "connection_requests": _linkedin_rate_limit_tracker.daily_connection_requests,
+                "posts": _linkedin_rate_limit_tracker.daily_posts,
+            },
+            "remaining": remaining,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"❌ Error getting LinkedIn limits: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 if __name__ == "__main__":
     import uvicorn
     print("🚀 Starting Parallel Universe Backend...")
