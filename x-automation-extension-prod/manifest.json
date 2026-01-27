@@ -12,6 +12,8 @@
   "host_permissions": [
     "https://x.com/*",
     "https://twitter.com/*",
+    "https://www.linkedin.com/*",
+    "https://linkedin.com/*",
     "https://app.paralleluniverse.ai/*",
     "http://localhost:3000/*"
   ],
@@ -27,6 +29,14 @@
         "http://localhost:3000/*"
       ],
       "js": ["content.js", "extension_agent_bridge.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://www.linkedin.com/*",
+        "https://linkedin.com/*"
+      ],
+      "js": ["linkedin_content.js"],
       "run_at": "document_idle"
     }
   ],

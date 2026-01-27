@@ -410,6 +410,42 @@ async def extension_websocket(websocket: WebSocket, user_id: str):
                 
                 print(f"✅ Cookies stored for {user_id} (@{username})")
             
+            # Handle LinkedIn cookies from extension
+            elif data.get("type") == "LINKEDIN_COOKIES_CAPTURED":
+                username = data.get("username")
+                cookies = data.get("cookies", [])
+                print(f"🔗 Received {len(cookies)} LinkedIn cookies for {username or 'user'}")
+
+                # Store cookies in memory cache
+                linkedin_cookies[user_id] = {
+                    "username": username,
+                    "cookies": cookies,
+                    "timestamp": data.get("timestamp")
+                }
+
+                # Persist cookies to database
+                if DATABASE_ENABLED and SessionLocal:
+                    db = SessionLocal()
+                    try:
+                        save_linkedin_cookies_to_db(db, user_id, username, cookies)
+                        print(f"✅ LinkedIn cookies saved to database for {user_id}")
+                    except Exception as e:
+                        print(f"⚠️ Failed to save LinkedIn cookies to database: {e}")
+                    finally:
+                        db.close()
+
+                # Acknowledge receipt
+                await websocket.send_json({
+                    "type": "LINKEDIN_COOKIES_RECEIVED",
+                    "message": f"Stored {len(cookies)} LinkedIn cookies for {username or 'user'}"
+                })
+
+                print(f"✅ LinkedIn cookies stored for {user_id}")
+
+            # Handle LinkedIn login status
+            elif data.get("type") == "LINKEDIN_LOGIN_STATUS":
+                print(f"🔗 LinkedIn login status: {data.get('username')} - {data.get('loggedIn')}")
+
             # Handle login status
             elif data.get("type") == "LOGIN_STATUS":
                 print(f"👤 Login status: {data.get('username')} - {data.get('loggedIn')}")
