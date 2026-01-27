@@ -82,6 +82,8 @@ def init_db():
     from .models import UserComment, ReceivedComment
     # Import Learning Engine models (recommendation + preference learning)
     from .models import PostRecommendation, PreferenceSignal, RecommendationModel
+    # Import LinkedIn models
+    from .models import LinkedInAccount, LinkedInCookies, LinkedInPost, LinkedInComment
     Base.metadata.create_all(bind=engine)
     print("✅ Database tables created")
 

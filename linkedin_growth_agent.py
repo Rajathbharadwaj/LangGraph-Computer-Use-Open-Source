@@ -30,7 +30,7 @@ from langchain_openai import ChatOpenAI
 from langchain_core.tools import tool
 
 # Import LinkedIn Playwright tools
-from async_linkedin_tools import get_async_linkedin_tools
+from async_linkedin_tools import create_async_linkedin_tools
 
 # Import LinkedIn workflows
 from linkedin_growth_workflows import get_workflow, list_workflows, LINKEDIN_WORKFLOWS
@@ -268,7 +268,7 @@ def get_linkedin_subagents(store=None, user_id=None, model=None, model_provider=
     date_time_str = f"Current date: {current_time.strftime('%A, %B %d, %Y')} at {current_time.strftime('%I:%M %p')} Eastern Time"
 
     # Get LinkedIn tools
-    linkedin_tools = get_async_linkedin_tools()
+    linkedin_tools = create_async_linkedin_tools()
     tool_dict = {tool.name: tool for tool in linkedin_tools}
     print(f"🔧 [LinkedIn] Loaded {len(linkedin_tools)} LinkedIn Playwright tools")
 
@@ -619,7 +619,7 @@ You have access to persistent memory via /memories/ filesystem:
     subagents = get_linkedin_subagents(store_for_agent, user_id, model, model_provider)
 
     # Get tools for main agent
-    linkedin_tools = get_async_linkedin_tools()
+    linkedin_tools = create_async_linkedin_tools()
 
     # Main agent only gets the context tool
     main_tools = []
