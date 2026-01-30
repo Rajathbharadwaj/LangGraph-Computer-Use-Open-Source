@@ -366,15 +366,16 @@ def create_async_linkedin_tools():
         Returns:
             JSON with success status
         """
+        # Validate reaction type first (before CUA check)
+        valid_reactions = ['like', 'celebrate', 'support', 'love', 'insightful', 'funny']
+        if reaction_type.lower() not in valid_reactions:
+            return json.dumps({"error": f"Invalid reaction type. Must be one of: {valid_reactions}"})
+
         cua_url = _get_cua_url_from_runtime(runtime)
         if not cua_url:
             return json.dumps({"error": "No CUA URL available"})
 
         client = await _get_client_for_url(cua_url)
-
-        valid_reactions = ['like', 'celebrate', 'support', 'love', 'insightful', 'funny']
-        if reaction_type.lower() not in valid_reactions:
-            return json.dumps({"error": f"Invalid reaction type. Must be one of: {valid_reactions}"})
 
         try:
             # JavaScript to find post and click like button
@@ -454,17 +455,17 @@ def create_async_linkedin_tools():
         Returns:
             JSON with success status
         """
+        # Validate comment length first (before CUA check)
+        if len(comment_text) < 10:
+            return json.dumps({"error": "Comment too short. Minimum 10 characters."})
+        if len(comment_text) > 1250:
+            return json.dumps({"error": "Comment too long. Maximum 1250 characters."})
+
         cua_url = _get_cua_url_from_runtime(runtime)
         if not cua_url:
             return json.dumps({"error": "No CUA URL available"})
 
         client = await _get_client_for_url(cua_url)
-
-        # Validate comment length
-        if len(comment_text) < 10:
-            return json.dumps({"error": "Comment too short. Minimum 10 characters."})
-        if len(comment_text) > 1250:
-            return json.dumps({"error": "Comment too long. Maximum 1250 characters."})
 
         try:
             # Step 1: Find post and click comment button
@@ -659,15 +660,15 @@ def create_async_linkedin_tools():
         Returns:
             JSON with success status
         """
+        # Validate note length first (before CUA check)
+        if note and len(note) > 300:
+            return json.dumps({"error": "Note too long. Maximum 300 characters."})
+
         cua_url = _get_cua_url_from_runtime(runtime)
         if not cua_url:
             return json.dumps({"error": "No CUA URL available"})
 
         client = await _get_client_for_url(cua_url)
-
-        # Validate note length
-        if note and len(note) > 300:
-            return json.dumps({"error": "Note too long. Maximum 300 characters."})
 
         try:
             # Navigate to profile
@@ -682,22 +683,19 @@ def create_async_linkedin_tools():
             connect_js = """
             (function() {
                 // Try different connect button selectors
-                const selectors = [
-                    'button:has-text("Connect")',
-                    'button[aria-label*="Invite"][aria-label*="connect"]',
-                    '.pvs-profile-actions button:has-text("Connect")'
-                ];
+                // Try specific selectors first
+                const specificBtn = document.querySelector('button[aria-label*="Invite"][aria-label*="connect"]');
+                if (specificBtn && specificBtn.offsetParent !== null) {
+                    specificBtn.click();
+                    return JSON.stringify({clicked: true});
+                }
 
-                for (let selector of selectors) {
-                    try {
-                        const btn = document.querySelector(selector) ||
-                                   Array.from(document.querySelectorAll('button')).find(b =>
-                                       b.innerText.toLowerCase().includes('connect'));
-                        if (btn && btn.offsetParent !== null) {
-                            btn.click();
-                            return JSON.stringify({clicked: true});
-                        }
-                    } catch(e) {}
+                // Fallback: find any visible button containing "Connect"
+                const btn = Array.from(document.querySelectorAll('button')).find(b =>
+                    b.innerText.trim() === 'Connect' && b.offsetParent !== null);
+                if (btn) {
+                    btn.click();
+                    return JSON.stringify({clicked: true});
                 }
 
                 return JSON.stringify({clicked: false, error: 'Connect button not found'});
@@ -738,7 +736,8 @@ def create_async_linkedin_tools():
             send_js = """
             (function() {
                 const sendBtn = document.querySelector('button[aria-label*="Send"]') ||
-                               document.querySelector('button:has-text("Send")');
+                               Array.from(document.querySelectorAll('button')).find(b =>
+                                   b.innerText.trim() === 'Send' || b.innerText.trim() === 'Send now');
                 if (sendBtn && !sendBtn.disabled) {
                     sendBtn.click();
                     return JSON.stringify({sent: true});
@@ -775,17 +774,17 @@ def create_async_linkedin_tools():
         Returns:
             JSON with success status
         """
+        # Validate content first (before CUA check)
+        if len(content) > 3000:
+            return json.dumps({"error": "Post too long. Maximum 3000 characters for posts."})
+        if len(content) < 1:
+            return json.dumps({"error": "Post content cannot be empty."})
+
         cua_url = _get_cua_url_from_runtime(runtime)
         if not cua_url:
             return json.dumps({"error": "No CUA URL available"})
 
         client = await _get_client_for_url(cua_url)
-
-        # Validate content
-        if len(content) > 3000:
-            return json.dumps({"error": "Post too long. Maximum 3000 characters for posts."})
-        if len(content) < 1:
-            return json.dumps({"error": "Post content cannot be empty."})
 
         try:
             # Navigate to feed if not already there
@@ -799,7 +798,8 @@ def create_async_linkedin_tools():
             start_js = """
             (function() {
                 const startBtn = document.querySelector('.share-box-feed-entry__trigger') ||
-                                document.querySelector('button:has-text("Start a post")');
+                                Array.from(document.querySelectorAll('button')).find(b =>
+                                    b.innerText.toLowerCase().includes('start a post'));
                 if (startBtn) {
                     startBtn.click();
                     return JSON.stringify({clicked: true});
