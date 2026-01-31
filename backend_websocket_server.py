@@ -3627,6 +3627,7 @@ async def activity_websocket(websocket: WebSocket, user_id: str):
                         config={"configurable": {
                             "user_id": user_id,
                             "cua_url": vnc_url,
+                            "cdp_url": f"{vnc_url}/cdp" if vnc_url else None,  # For Playwright MCP via CDP
                             # Extract host and port for screenshot middleware
                             "x-cua-host": vnc_url.split("://")[1].split(":")[0] if vnc_url and "://" in vnc_url else None,
                             "x-cua-port": vnc_url.split(":")[-1].rstrip("/") if vnc_url and ":" in vnc_url else None,
@@ -3845,6 +3846,135 @@ async def inject_cookies_to_docker(
         return {"success": False, "error": "user_id required"}
 
     return await _inject_cookies_internal(extension_user_id, clerk_user_id)
+
+
+@app.post("/api/linkedin/inject-cookies-to-docker")
+async def inject_linkedin_cookies_to_docker(
+    request: dict,
+    clerk_user_id: str = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Inject user's LinkedIn cookies into their per-user VNC browser session.
+
+    Request: {"user_id": "clerk_user_id"}
+
+    This endpoint:
+    1. Gets the Clerk user's VNC session from Redis
+    2. Fetches LinkedIn cookies from extension backend
+    3. Injects cookies into the user's VNC session
+    """
+    import aiohttp
+    
+    user_id = request.get("user_id") or clerk_user_id
+    if not user_id:
+        return {"success": False, "error": "user_id required"}
+
+    try:
+        # Get user's VNC session URL from Redis (use user_id consistently, same as X injection)
+        vnc_manager = await get_vnc_manager()
+        if not vnc_manager:
+            return {"success": False, "error": "VNC session manager not available"}
+        
+        vnc_session = await vnc_manager.get_session(user_id)
+        
+        # Auto-create VNC session if one doesn't exist (same as X injection)
+        if not vnc_session or not vnc_session.get("https_url"):
+            print(f"⚠️ No VNC session found for user {user_id}, creating new session...")
+            try:
+                vnc_session = await vnc_manager.get_or_create_session(user_id)
+                print(f"✅ Created new VNC session for user {user_id}")
+            except Exception as e:
+                print(f"❌ Failed to create VNC session: {e}")
+                return {"success": False, "error": f"Failed to create VNC session: {str(e)}"}
+        
+        vnc_service_url = vnc_session.get("https_url")
+        if not vnc_service_url:
+            return {"success": False, "error": "No VNC session URL found"}
+
+        # Fetch LinkedIn cookies from extension backend (use global EXTENSION_BACKEND_URL constant, same as X)
+        cookies_url = f"{EXTENSION_BACKEND_URL}/linkedin/cookies/{user_id}"
+
+        async with aiohttp.ClientSession() as session:
+            async with session.get(cookies_url, timeout=aiohttp.ClientTimeout(total=10)) as response:
+                if response.status != 200:
+                    return {"success": False, "error": f"Failed to fetch LinkedIn cookies (status {response.status})"}
+
+                data = await response.json()
+                if not data.get("success"):
+                    return {"success": False, "error": data.get("error", "No LinkedIn cookies found")}
+
+                cookies = data.get("cookies", [])
+                if not cookies:
+                    return {"success": False, "error": "No LinkedIn cookies found for this user"}
+
+                print(f"🔗 Got {len(cookies)} LinkedIn cookies for user {user_id}")
+
+                # Convert Chrome cookies to Playwright format (same as X)
+                playwright_cookies = []
+                for cookie in cookies:
+                    # Handle expiration - Chrome uses expirationDate, Playwright uses expires
+                    expires_value = cookie.get("expirationDate", -1)
+                    if expires_value and expires_value != -1:
+                        expires_value = int(expires_value)
+                    else:
+                        expires_value = -1
+
+                    # Handle sameSite - must be exactly "Strict", "Lax", or "None"
+                    same_site = cookie.get("sameSite", "lax")
+                    if same_site:
+                        same_site_lower = same_site.lower()
+                        if same_site_lower == "strict":
+                            same_site = "Strict"
+                        elif same_site_lower == "lax":
+                            same_site = "Lax"
+                        elif same_site_lower in ("none", "no_restriction"):
+                            same_site = "None"
+                        else:
+                            same_site = "Lax"
+                    else:
+                        same_site = "Lax"
+
+                    pw_cookie = {
+                        "name": cookie["name"],
+                        "value": cookie["value"],
+                        "domain": cookie["domain"],
+                        "path": cookie.get("path", "/"),
+                        "expires": expires_value,
+                        "httpOnly": cookie.get("httpOnly", False),
+                        "secure": cookie.get("secure", False),
+                        "sameSite": same_site
+                    }
+                    playwright_cookies.append(pw_cookie)
+
+                print(f"🔄 Converted {len(playwright_cookies)} LinkedIn cookies to Playwright format")
+
+                # Inject cookies into VNC session using /session/load (same as X)
+                async with session.post(
+                    f"{vnc_service_url}/session/load",
+                    json={"cookies": playwright_cookies, "url": "https://www.linkedin.com"},
+                    timeout=aiohttp.ClientTimeout(total=30)
+                ) as inject_response:
+                    if inject_response.status != 200:
+                        return {"success": False, "error": f"Failed to inject cookies (status {inject_response.status})"}
+
+                    result = await inject_response.json()
+                    if result.get("success"):
+                        print(f"✅ Injected LinkedIn cookies into VNC session for user {user_id}")
+                        return {
+                            "success": True,
+                            "message": "LinkedIn session loaded",
+                            "logged_in": result.get("logged_in"),
+                            "vnc_url": vnc_service_url
+                        }
+                    else:
+                        return {"success": False, "error": result.get("error", "Failed to inject cookies")}
+
+    except Exception as e:
+        print(f"❌ Error injecting LinkedIn cookies: {e}")
+        import traceback
+        traceback.print_exc()
+        return {"success": False, "error": str(e)}
 
 
 @app.websocket("/ws/extension/{user_id}")
@@ -6048,6 +6178,7 @@ async def stream_agent_execution(user_id: str, thread_id: str, task: str, use_ro
                 "configurable": {
                     "user_id": user_id,
                     "cua_url": vnc_url,  # Per-user VNC URL
+                    "cdp_url": f"{vnc_url}/cdp" if vnc_url else None,  # For Playwright MCP via CDP
                     "x-cua-host": cua_host,
                     "x-cua-port": cua_port,
                     "x-user-id": user_id,  # For StoreBackend namespace (checked by DeepAgents)
@@ -6728,6 +6859,7 @@ async def execute_workflow_endpoint(workflow_json: dict, user_id: str = Depends(
             "configurable": {
                 "user_id": user_id,
                 "cua_url": vnc_url,
+                "cdp_url": f"{vnc_url}/cdp" if vnc_url else None,  # For Playwright MCP via CDP
                 "use_longterm_memory": True if user_id else False,
                 "x-cua-host": cua_host,
                 "x-cua-port": cua_port,
@@ -6947,6 +7079,7 @@ async def execute_workflow_stream_endpoint(websocket: WebSocket):
             "configurable": {
                 "user_id": user_id,
                 "cua_url": vnc_url,
+                "cdp_url": f"{vnc_url}/cdp" if vnc_url else None,  # For Playwright MCP via CDP
                 "use_longterm_memory": True if user_id else False,
                 "x-cua-host": cua_host,
                 "x-cua-port": cua_port,
@@ -8627,10 +8760,23 @@ async def run_linkedin_workflow(
         # Validate workflow exists
         workflow = get_workflow(run_request.workflow_id)
 
+        # Get VNC session for this user (needed for browser automation)
+        vnc_url = None
+        try:
+            vnc_manager = await get_vnc_manager()
+            if vnc_manager:
+                vnc_session = await vnc_manager.get_session(user_id)
+                if vnc_session:
+                    vnc_url = vnc_session.get("https_url") or vnc_session.get("cua_url")
+        except Exception as e:
+            print(f"⚠️ Could not get VNC session for LinkedIn workflow: {e}")
+
         # Create agent with user context
         config = {
             "configurable": {
                 "user_id": user_id,
+                "cua_url": vnc_url,
+                "cdp_url": f"{vnc_url}/cdp" if vnc_url else None,  # For Playwright MCP via CDP
                 "model_name": "claude-sonnet-4-5-20250929",
             }
         }
