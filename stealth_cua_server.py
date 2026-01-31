@@ -149,6 +149,8 @@ async def initialize_stealth_browser():
                     "--no-first-run",
                     "--no-default-browser-check",
                     "--display=:98",  # Use Docker's X display
+                    "--remote-debugging-port=9222",  # CDP for Playwright MCP
+                    "--remote-debugging-address=0.0.0.0",  # Allow external connections
                     f"--disable-extensions-except={extension_path}",
                     f"--load-extension={extension_path}"
                 ]
@@ -163,7 +165,9 @@ async def initialize_stealth_browser():
                     "--no-sandbox",
                     "--disable-dev-shm-usage",
                     "--no-first-run",
-                    "--display=:98"  # Use Docker's X display
+                    "--display=:98",  # Use Docker's X display
+                    "--remote-debugging-port=9222",  # CDP for Playwright MCP
+                    "--remote-debugging-address=0.0.0.0"  # Allow external connections
                 ]
             )
             context = await browser.new_context(
@@ -235,6 +239,26 @@ async def take_screenshot():
             return {"success": False, "error": "Failed to capture screenshot"}
     except Exception as e:
         return {"success": False, "error": str(e)}
+
+
+@app.get("/cdp")
+async def get_cdp_url():
+    """
+    Return CDP (Chrome DevTools Protocol) endpoint URLs for Playwright MCP connection.
+
+    This allows external tools like @playwright/mcp to connect to the running browser
+    via the Chrome DevTools Protocol for accessibility-based automation.
+
+    Returns:
+        cdp_url: WebSocket URL for CDP connection
+        cdp_http: HTTP URL for CDP API endpoints
+    """
+    return {
+        "cdp_url": "ws://localhost:9222",
+        "cdp_http": "http://localhost:9222",
+        "browser_ready": stealth_mode and page is not None
+    }
+
 
 class ClickSelectorRequest(BaseModel):
     selector: str
@@ -771,7 +795,7 @@ async def save_session():
 async def load_session(request: dict):
     """
     Load cookies into browser context to restore session
-    Request body: {"cookies": [...]}
+    Request body: {"cookies": [...], "url": "https://..." (optional, defaults to X)}
     """
     try:
         # Initialize browser if not already done
@@ -785,27 +809,53 @@ async def load_session(request: dict):
         if not cookies:
             return {"success": False, "error": "No cookies provided"}
         
+        # Get target URL (default to X for backward compatibility)
+        target_url = request.get("url", "https://x.com/home")
+        
         # Add cookies to context
         await context.add_cookies(cookies)
         
-        # Navigate to X to activate session
+        # Navigate to target URL to activate session
         if page:
-            await page.goto("https://x.com/home", wait_until="domcontentloaded", timeout=15000)
+            print(f"🔗 Navigating to: {target_url}")
+            await page.goto(target_url, wait_until="domcontentloaded", timeout=15000)
             
-            # Verify login status
-            try:
-                await page.wait_for_selector('[data-testid="SideNav_AccountSwitcher_Button"]', timeout=5000)
-                is_logged_in = True
-                
-                # Get username
+            # Platform-specific login verification
+            is_logged_in = False
+            username = "unknown"
+            
+            if "linkedin.com" in target_url:
+                # LinkedIn login verification
                 try:
-                    profile_link = await page.locator('a[href^="/"][aria-label*="Profile"]').first.get_attribute('href')
-                    username = profile_link.strip('/') if profile_link else "unknown"
+                    # Check for LinkedIn nav bar (indicates logged in)
+                    await page.wait_for_selector('.global-nav__me', timeout=5000)
+                    is_logged_in = True
+                    
+                    # Try to get profile name
+                    try:
+                        profile_element = await page.locator('.global-nav__me-photo').first
+                        alt_text = await profile_element.get_attribute('alt')
+                        username = alt_text if alt_text else "LinkedIn User"
+                    except:
+                        username = "LinkedIn User"
                 except:
+                    is_logged_in = False
                     username = "unknown"
-            except:
-                is_logged_in = False
-                username = "unknown"
+            else:
+                # X/Twitter login verification (default)
+                try:
+                    await page.wait_for_selector('[data-testid="SideNav_AccountSwitcher_Button"]', timeout=5000)
+                    is_logged_in = True
+                    
+                    # Get username
+                    try:
+                        profile_link = await page.locator('a[href^="/"][aria-label*="Profile"]').first.get_attribute('href')
+                        username = profile_link.strip('/') if profile_link else "unknown"
+                    except:
+                        username = "unknown"
+                except:
+                    is_logged_in = False
+                    username = "unknown"
             
             return {
                 "success": True,
@@ -820,31 +870,57 @@ async def load_session(request: dict):
 
 
 @app.post("/session/check")
-async def check_session():
+async def check_session(request: dict = {}):
     """
-    Check if current session is logged in to X
+    Check if current session is logged in to the specified platform.
+    
+    Request body (optional):
+        url: Target URL to check (defaults to X for backward compatibility)
     """
     try:
         if not page:
             return {"success": False, "error": "No active page"}
         
-        # Navigate to X home
-        await page.goto("https://x.com/home", wait_until="networkidle")
+        # Get target URL (default to X for backward compatibility)
+        target_url = request.get("url", "https://x.com/home")
         
-        # Check for login indicator
-        try:
-            await page.wait_for_selector('[data-testid="SideNav_AccountSwitcher_Button"]', timeout=5000)
-            is_logged_in = True
-            
-            # Get username
+        # Navigate to target URL
+        await page.goto(target_url, wait_until="networkidle")
+        
+        # Platform-specific login verification
+        is_logged_in = False
+        username = "unknown"
+        
+        if "linkedin.com" in target_url:
+            # LinkedIn login verification
             try:
-                profile_link = await page.locator('a[href^="/"][aria-label*="Profile"]').first.get_attribute('href')
-                username = profile_link.strip('/') if profile_link else "unknown"
+                await page.wait_for_selector('.global-nav__me', timeout=5000)
+                is_logged_in = True
+                
+                try:
+                    profile_element = await page.locator('.global-nav__me-photo').first
+                    alt_text = await profile_element.get_attribute('alt')
+                    username = alt_text if alt_text else "LinkedIn User"
+                except:
+                    username = "LinkedIn User"
             except:
+                is_logged_in = False
                 username = "unknown"
-        except:
-            is_logged_in = False
-            username = "unknown"
+        else:
+            # X/Twitter login verification (default)
+            try:
+                await page.wait_for_selector('[data-testid="SideNav_AccountSwitcher_Button"]', timeout=5000)
+                is_logged_in = True
+                
+                # Get username
+                try:
+                    profile_link = await page.locator('a[href^="/"][aria-label*="Profile"]').first.get_attribute('href')
+                    username = profile_link.strip('/') if profile_link else "unknown"
+                except:
+                    username = "unknown"
+            except:
+                is_logged_in = False
+                username = "unknown"
         
         return {
             "success": True,
